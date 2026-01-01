@@ -94,6 +94,28 @@ export default function Home() {
     role: 'operator'
   });
   const [adminStatus, setAdminStatus] = useState('');
+  const [sessionRole, setSessionRole] = useState<Role | null>(null);
+  const [sessionEmail, setSessionEmail] = useState<string | null>(null);
+  const [showAdmin, setShowAdmin] = useState(false);
+
+  async function fetchSessionInfo() {
+    const res = await fetch('/api/auth/me');
+    if (!res.ok) {
+      setSessionRole(null);
+      setSessionEmail(null);
+      setShowAdmin(false);
+      return;
+    }
+    const data = await res.json();
+    if (!data.authenticated) {
+      setSessionRole(null);
+      setSessionEmail(null);
+      setShowAdmin(false);
+      return;
+    }
+    setSessionRole(data.role ?? null);
+    setSessionEmail(data.email ?? null);
+  }
 
   async function login() {
     setStatus('로그인 중...');
@@ -104,6 +126,7 @@ export default function Home() {
     });
     if (res.ok) {
       setStatus('로그인 완료');
+      await fetchSessionInfo();
       await refresh();
     } else {
       const text = await res.text();
@@ -114,6 +137,9 @@ export default function Home() {
   async function logout() {
     await fetch('/api/auth/logout', { method: 'POST' });
     setStatus('로그아웃됨');
+    setSessionRole(null);
+    setSessionEmail(null);
+    setShowAdmin(false);
   }
 
   async function refresh() {
@@ -212,6 +238,7 @@ export default function Home() {
   const locationBreakdown = useMemo(() => aggregateLocations(filteredStock), [filteredStock]);
 
   useEffect(() => {
+    fetchSessionInfo();
     refresh();
   }, []);
 
@@ -221,7 +248,7 @@ export default function Home() {
         <div>
           <p className="eyebrow">재고 관리 대시보드</p>
           <p className="muted">Python 데스크톱에서 쓰던 순서를 그대로: 로그인 → 입/출고 입력 → 재고/이력 확인 → CSV 다운로드.</p>
-          <p className="muted">아래 "관리자 도구"에서 계정 생성과 레거시 데이터 병합 절차를 바로 안내합니다.</p>
+          <p className="muted">아래 "관리자 도구" 버튼을 눌러 계정 생성과 레거시 데이터 병합 절차를 확인하세요.</p>
         </div>
         <div className="status-panel">
           <div className="status-row">
@@ -229,9 +256,22 @@ export default function Home() {
             <span>{status}</span>
           </div>
           <div className="status-row">{isLoading ? '동기화 중...' : '대기'}</div>
+          {sessionEmail && (
+            <div className="status-row">{sessionEmail} ({sessionRole})</div>
+          )}
           <button className="ghost" onClick={refresh}>새로고침</button>
         </div>
       </header>
+
+      <div className="section-actions" style={{ justifyContent: 'flex-end', marginBottom: '8px' }}>
+        {sessionRole === 'admin' ? (
+          <button className="secondary" onClick={() => setShowAdmin((prev) => !prev)}>
+            {showAdmin ? '관리자 도구 숨기기' : '관리자 도구 열기'}
+          </button>
+        ) : (
+          <span className="muted">관리자 로그인 시 도구 버튼이 활성화됩니다.</span>
+        )}
+      </div>
 
       <Section
         title="로그인"
@@ -258,68 +298,70 @@ type="password"
         </div>
       </Section>
 
-      <Section
-        title="관리자 도구"
-        actions={<Pill>admin 전용</Pill>}
-      >
-        <div className="guide-grid">
-          <div className="guide-card">
-            <p className="mini-label">레거시 데이터 이관</p>
-            <ul>
-              <li>`inventory_data.json`을 최신으로 준비합니다.</li>
-              <li>Supabase SQL Editor에서 `supabase/schema.sql` 실행 후 비워진 테이블을 생성합니다.</li>
-              <li>`scripts/migrate_json.py`를 실행해 JSON 재고를 Supabase로 업서트합니다.</li>
-              <li>완료 후 아래 새로고침 → 재고/이력 테이블에서 반영 여부를 확인합니다.</li>
-            </ul>
-          </div>
-          <div className="guide-card">
-            <p className="mini-label">신규 계정 발급</p>
-            <p className="muted">관리자가 직접 이메일/비밀번호/권한을 생성합니다.</p>
-            <div className="form-grid two">
-              <label>
-                <span>이메일</span>
-                <input
-                  value={newUser.email}
-                  onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-                  placeholder="user@example.com"
-                />
-              </label>
-              <label>
-                <span>비밀번호</span>
-                <input
-                  type="password"
-                  value={newUser.password}
-                  onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-                  placeholder="8자 이상"
-                />
-              </label>
-              <label>
-                <span>역할</span>
-                <select
-                  value={newUser.role}
-                  onChange={(e) => setNewUser({ ...newUser, role: e.target.value as Role })}
-                >
-                  <option value="admin">admin (전체 권한)</option>
-                  <option value="operator">operator (입/출고)</option>
-                  <option value="viewer">viewer (조회 전용)</option>
-                </select>
-              </label>
+      {showAdmin && (
+        <Section
+          title="관리자 도구"
+          actions={<Pill>admin 전용</Pill>}
+        >
+          <div className="guide-grid">
+            <div className="guide-card">
+              <p className="mini-label">레거시 데이터 이관</p>
+              <ul>
+                <li>`inventory_data.json`을 최신으로 준비합니다.</li>
+                <li>Supabase SQL Editor에서 `supabase/schema.sql` 실행 후 비워진 테이블을 생성합니다.</li>
+                <li>`scripts/migrate_json.py`를 실행해 JSON 재고를 Supabase로 업서트합니다.</li>
+                <li>완료 후 아래 새로고침 → 재고/이력 테이블에서 반영 여부를 확인합니다.</li>
+              </ul>
             </div>
-            <div className="actions-row">
-              <button onClick={createUser}>계정 생성</button>
-              <span className="muted">{adminStatus || '로그인한 admin만 실행 가능'}</span>
+            <div className="guide-card">
+              <p className="mini-label">신규 계정 발급</p>
+              <p className="muted">관리자가 직접 이메일/비밀번호/권한을 생성합니다.</p>
+              <div className="form-grid two">
+                <label>
+                  <span>이메일</span>
+                  <input
+                    value={newUser.email}
+                    onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
+                    placeholder="user@example.com"
+                  />
+                </label>
+                <label>
+                  <span>비밀번호</span>
+                  <input
+                    type="password"
+                    value={newUser.password}
+                    onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                    placeholder="8자 이상"
+                  />
+                </label>
+                <label>
+                  <span>역할</span>
+                  <select
+                    value={newUser.role}
+                    onChange={(e) => setNewUser({ ...newUser, role: e.target.value as Role })}
+                  >
+                    <option value="admin">admin (전체 권한)</option>
+                    <option value="operator">operator (입/출고)</option>
+                    <option value="viewer">viewer (조회 전용)</option>
+                  </select>
+                </label>
+              </div>
+              <div className="actions-row">
+                <button onClick={createUser}>계정 생성</button>
+                <span className="muted">{adminStatus || '로그인한 admin만 실행 가능'}</span>
+              </div>
+            </div>
+            <div className="guide-card">
+              <p className="mini-label">작업 순서 요약</p>
+              <ol className="muted">
+                <li>관리자 계정으로 로그인 후 세션 확인</li>
+                <li>필요시 위에서 신규 계정 발급</li>
+                <li>입/출고 기록 → 재고/이력/CSV로 검증</li>
+              </ol>
             </div>
           </div>
-          <div className="guide-card">
-            <p className="mini-label">작업 순서 요약</p>
-            <ol className="muted">
-              <li>관리자 계정으로 로그인 후 세션 확인</li>
-              <li>필요시 위에서 신규 계정 발급</li>
-              <li>입/출고 기록 → 재고/이력/CSV로 검증</li>
-            </ol>
-          </div>
-        </div>
-      </Section>
+        </Section>
+      )}
 
       <Section
         title="입/출고 등록"

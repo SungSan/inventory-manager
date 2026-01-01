@@ -11,7 +11,7 @@ export async function verifyLogin(email: string, password: string) {
     .eq('email', email.toLowerCase())
     .single();
 
-  if (error || !data || !data.active) return null;
+  if (error || !data || data.active === false) return null;
   const ok = await bcrypt.compare(password, data.password_hash);
   if (!ok) return null;
   return { id: data.id as string, email: data.email as string, role: data.role as Role };
