@@ -12,7 +12,7 @@ function toCsv(rows: any[]) {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const type = searchParams.get('type') || 'inventory';
-  return withAuth(req as any, ['admin', 'operator', 'viewer'], async () => {
+  return withAuth(['admin', 'operator', 'viewer'], async () => {
     if (type === 'history') {
       const { data, error } = await supabaseAdmin
         .from('movements_view')
