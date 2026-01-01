@@ -28,6 +28,9 @@ label span { display: block; font-size: 0.85rem; color: var(--muted); margin-bot
 .table .align-right { text-align: right; }
 .table th { background: #f8fafc; font-weight: 700; }
 .table-wrapper { width: 100%; overflow-x: auto; }
+.table .row-actions { display: flex; justify-content: center; gap: 0.4rem; flex-wrap: wrap; }
+.selected-row { background: #e0f2fe !important; }
+.selected-row td { border-color: #bfdbfe; }
 
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 1.25rem; box-shadow: 0 10px 35px rgba(15, 23, 42, 0.05); margin-bottom: 1.25rem; }
 .section-heading { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1rem; }
@@ -79,6 +82,13 @@ label span { display: block; font-size: 0.85rem; color: var(--muted); margin-bot
 .mini-label { text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.8rem; color: var(--primary); margin: 0 0 0.35rem; font-weight: 700; }
 .guide-card ul { margin: 0.5rem 0; padding-left: 1.1rem; color: var(--muted); }
 .guide-card ol { margin: 0.5rem 0; padding-left: 1.1rem; }
+.inline-editor { margin-top: 1rem; padding: 1rem; border: 1px dashed var(--border); border-radius: 12px; background: #f8fafc; }
+.tab-row { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.tab { background: #e5e7eb; color: #111827; border: 1px solid var(--border); }
+.tab.active { background: #1e40af; color: white; border-color: #1e3a8a; }
+.row-actions .small { padding: 0.35rem 0.55rem; font-size: 0.85rem; }
+.danger { color: #b91c1c; border-color: #fecdd3; }
+.danger:hover { background: #fee2e2; }
 
 @media (max-width: 768px) {
   main.page { padding: 1.25rem; }
