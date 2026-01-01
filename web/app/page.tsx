@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 type InventoryRow = {
   artist: string;
@@ -21,6 +21,15 @@ type HistoryRow = {
   quantity: number;
   created_by: string;
   memo?: string;
+};
+
+type AdminLog = {
+  id: string;
+  action: string;
+  detail: string | null;
+  actor_email: string | null;
+  actor_id: string | null;
+  created_at: string;
 };
 
 type MovementPayload = {
@@ -94,6 +103,7 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [movement, setMovement] = useState<MovementPayload>(EMPTY_MOVEMENT);
   const [stockFilters, setStockFilters] = useState({ search: '', category: '', location: '', artist: '' });
+  const [locationPresets, setLocationPresets] = useState<string[]>([]);
   const today = useMemo(() => new Date(), []);
   const sevenDaysAgo = useMemo(() => {
     const d = new Date();
@@ -115,6 +125,14 @@ export default function Home() {
   const [sessionRole, setSessionRole] = useState<Role | null>(null);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [showAdmin, setShowAdmin] = useState(false);
+  const [sessionExpiry, setSessionExpiry] = useState<number | null>(null);
+  const [importStatus, setImportStatus] = useState('');
+  const [logStatus, setLogStatus] = useState('');
+  const [adminLogs, setAdminLogs] = useState<AdminLog[]>([]);
+  const [newLocation, setNewLocation] = useState('');
+  const [createUserStatus, setCreateUserStatus] = useState('');
+  const logoutTimeout = useRef<NodeJS.Timeout | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   async function fetchSessionInfo() {
     const res = await fetch('/api/auth/me');
@@ -122,17 +140,113 @@ export default function Home() {
       setSessionRole(null);
       setSessionEmail(null);
       setShowAdmin(false);
-      return;
+      setSessionExpiry(null);
+      return null;
     }
     const data = await res.json();
     if (!data.authenticated) {
       setSessionRole(null);
       setSessionEmail(null);
       setShowAdmin(false);
-      return;
+      setSessionExpiry(null);
+      return null;
     }
     setSessionRole(data.role ?? null);
     setSessionEmail(data.email ?? null);
+    setSessionExpiry(data.expiresAt ?? null);
+    await fetchLocations();
+    return data;
+  }
+
+  async function fetchLocations() {
+    try {
+      const res = await fetch('/api/admin/locations');
+      if (res.ok) {
+        const data = await res.json();
+        setLocationPresets(data || []);
+      }
+    } catch (err) {
+      // ignore silently
+    }
+  }
+
+  async function loadAdminLogs() {
+    setLogStatus('로그 불러오는 중...');
+    const res = await fetch('/api/admin/logs');
+    if (res.ok) {
+      setAdminLogs(await res.json());
+      setLogStatus('');
+    } else {
+      setLogStatus('로그 불러오기 실패');
+    }
+  }
+
+  async function uploadInventoryFromFile() {
+    const file = fileInputRef.current?.files?.[0];
+    if (!file) {
+      setImportStatus('JSON 파일을 선택하세요');
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+    setImportStatus('업로드 중...');
+
+    const res = await fetch('/api/admin/import', {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      setImportStatus(`업로드 완료: 재고 ${data.stockCount}건, 이력 ${data.historyCount}건`);
+      await refresh();
+      await fetchLocations();
+      await loadAdminLogs();
+    } else {
+      const text = await res.text();
+      setImportStatus(`실패: ${text || res.status}`);
+    }
+  }
+
+  async function addLocationPreset() {
+    if (!newLocation.trim()) {
+      setAdminStatus('로케이션 이름을 입력하세요');
+      return;
+    }
+
+    setAdminStatus('로케이션 저장 중...');
+    const res = await fetch('/api/admin/locations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newLocation }),
+    });
+
+    if (res.ok) {
+      setLocationPresets(await res.json());
+      setNewLocation('');
+      setAdminStatus('로케이션 저장 완료');
+    } else {
+      const text = await res.text();
+      setAdminStatus(`저장 실패: ${text || res.status}`);
+    }
+  }
+
+  async function removeLocationPreset(name: string) {
+    setAdminStatus('로케이션 삭제 중...');
+    const res = await fetch('/api/admin/locations', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+
+    if (res.ok) {
+      setLocationPresets(await res.json());
+      setAdminStatus('삭제 완료');
+    } else {
+      const text = await res.text();
+      setAdminStatus(`삭제 실패: ${text || res.status}`);
+    }
   }
 
   async function login() {
@@ -144,7 +258,10 @@ export default function Home() {
     });
     if (res.ok) {
       setStatus('로그인 완료');
-      await fetchSessionInfo();
+      const sessionInfo = await fetchSessionInfo();
+      if (sessionInfo?.role === 'admin') {
+        await loadAdminLogs();
+      }
       await refresh();
     } else {
       const text = await res.text();
@@ -152,14 +269,21 @@ export default function Home() {
     }
   }
 
-  async function logout() {
+  async function logout(reason?: 'expired') {
     await fetch('/api/auth/logout', { method: 'POST' });
-    setStatus('로그아웃됨');
+    setStatus(reason === 'expired' ? '세션 만료' : '로그아웃됨');
     setSessionRole(null);
     setSessionEmail(null);
+    setSessionExpiry(null);
     setShowAdmin(false);
     setStock([]);
     setHistory([]);
+    setAdminLogs([]);
+    setLocationPresets([]);
+    if (logoutTimeout.current) {
+      clearTimeout(logoutTimeout.current);
+      logoutTimeout.current = null;
+    }
   }
 
   const isLoggedIn = Boolean(sessionEmail);
@@ -170,6 +294,11 @@ export default function Home() {
     } else {
       await login();
     }
+  }
+
+  async function handleAutoLogout() {
+    await logout('expired');
+    alert('로그인 후 30분이 지나 자동 로그아웃되었습니다. 다시 로그인하세요.');
   }
 
   async function refresh() {
@@ -212,18 +341,18 @@ export default function Home() {
   }
 
   async function createUser() {
-    setAdminStatus('계정 생성 중...');
+    setCreateUserStatus('계정 생성 중...');
     const res = await fetch('/api/admin/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newUser)
     });
     if (res.ok) {
-      setAdminStatus('새 계정 생성 완료');
+      setCreateUserStatus('새 계정 생성 완료');
       setNewUser({ email: '', password: '', role: 'operator' });
     } else {
       const text = await res.text();
-      setAdminStatus(`생성 실패: ${text || res.status}`);
+      setCreateUserStatus(`생성 실패: ${text || res.status}`);
     }
   }
 
@@ -240,10 +369,17 @@ export default function Home() {
     });
   }, [stock, stockFilters]);
 
-  const locationOptions = useMemo(
+  const stockLocations = useMemo(
     () => Array.from(new Set(stock.map((row) => row.location))).filter(Boolean).sort(),
     [stock]
   );
+
+  const locationOptions = useMemo(
+    () => Array.from(new Set([...locationPresets, ...stockLocations])).filter(Boolean).sort(),
+    [locationPresets, stockLocations]
+  );
+
+  const filterLocationOptions = useMemo(() => stockLocations, [stockLocations]);
 
   const artistOptions = useMemo(
     () => Array.from(new Set(stock.map((row) => row.artist))).filter(Boolean).sort(),
@@ -282,6 +418,36 @@ export default function Home() {
     [filteredStock]
   );
   const locationBreakdown = useMemo(() => aggregateLocations(filteredStock), [filteredStock]);
+
+  useEffect(() => {
+    if (logoutTimeout.current) {
+      clearTimeout(logoutTimeout.current);
+      logoutTimeout.current = null;
+    }
+
+    if (!sessionExpiry || !isLoggedIn) return;
+
+    const remaining = sessionExpiry - Date.now();
+    if (remaining <= 0) {
+      handleAutoLogout();
+      return;
+    }
+
+    logoutTimeout.current = setTimeout(handleAutoLogout, remaining);
+
+    return () => {
+      if (logoutTimeout.current) {
+        clearTimeout(logoutTimeout.current);
+        logoutTimeout.current = null;
+      }
+    };
+  }, [sessionExpiry, isLoggedIn]);
+
+  useEffect(() => {
+    if (showAdmin && sessionRole === 'admin') {
+      loadAdminLogs();
+    }
+  }, [showAdmin, sessionRole]);
 
   useEffect(() => {
     fetchSessionInfo();
@@ -391,7 +557,7 @@ export default function Home() {
               </div>
               <div className="actions-row">
                 <button onClick={createUser}>계정 생성</button>
-                <span className="muted">{adminStatus || '로그인한 admin만 실행 가능'}</span>
+                <span className="muted">{createUserStatus || '로그인한 admin만 실행 가능'}</span>
               </div>
             </div>
             <div className="guide-card">
@@ -401,6 +567,83 @@ export default function Home() {
                 <li>필요시 위에서 신규 계정 발급</li>
                 <li>입/출고 기록 → 재고/이력/CSV로 검증</li>
               </ol>
+            </div>
+            <div className="guide-card">
+              <p className="mini-label">로케이션 사전 설정</p>
+              <p className="muted">관리자가 정한 창고/선반 목록을 입력하면 입/출고 입력창에서 바로 선택 가능합니다.</p>
+              <div className="form-grid two">
+                <label>
+                  <span>로케이션 이름</span>
+                  <input
+                    value={newLocation}
+                    onChange={(e) => setNewLocation(e.target.value)}
+                    placeholder="예: B-1 선반"
+                  />
+                </label>
+                <div className="actions-row">
+                  <button onClick={addLocationPreset}>추가/업서트</button>
+                  <span className="muted">{adminStatus || 'admin만 수정 가능'}</span>
+                </div>
+              </div>
+              <div className="pill-row scrollable">
+                {locationPresets.length === 0 && <span className="muted">등록된 로케이션이 없습니다.</span>}
+                {locationPresets.map((loc) => (
+                  <span key={loc} className="pill">
+                    {loc}
+                    <button className="chip-close" onClick={() => removeLocationPreset(loc)} aria-label={`${loc} 삭제`}>
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="guide-card">
+              <p className="mini-label">재고 JSON 업로드</p>
+              <p className="muted">기존 Python JSON을 그대로 업로드하면 재고/이력을 Supabase에 반영합니다.</p>
+              <input type="file" accept="application/json" ref={fileInputRef} />
+              <div className="actions-row">
+                <button onClick={uploadInventoryFromFile}>업로드</button>
+                <span className="muted">{importStatus || 'JSON 파일 선택 후 실행'}</span>
+              </div>
+            </div>
+            <div className="guide-card full-span">
+              <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
+                <div>
+                  <p className="mini-label">관리자 로그</p>
+                  <p className="muted">계정 생성, 업로드, 로케이션 변경 이력 등 관리 작업을 확인합니다.</p>
+                </div>
+                <div className="actions-row">
+                  <button className="ghost" onClick={loadAdminLogs}>새로고침</button>
+                  <span className="muted">{logStatus || ''}</span>
+                </div>
+              </div>
+              <div className="table-wrapper">
+                <table className="table compact-table">
+                  <thead>
+                    <tr>
+                      <th>일시</th>
+                      <th>작업</th>
+                      <th>세부 정보</th>
+                      <th>실행자</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {adminLogs.length === 0 && (
+                      <tr>
+                        <td colSpan={4}>로그가 없습니다. 새로고침을 눌러 확인하세요.</td>
+                      </tr>
+                    )}
+                    {adminLogs.map((log) => (
+                      <tr key={log.id}>
+                        <td>{formatDate(log.created_at)}</td>
+                        <td>{log.action}</td>
+                        <td>{log.detail || '-'}</td>
+                        <td>{log.actor_email || log.actor_id || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </Section>
@@ -530,7 +773,7 @@ export default function Home() {
               onChange={(e) => setStockFilters({ ...stockFilters, location: e.target.value })}
             >
               <option value="">전체 로케이션</option>
-              {locationOptions.map((loc) => (
+              {filterLocationOptions.map((loc) => (
                 <option key={loc} value={loc}>
                   {loc}
                 </option>

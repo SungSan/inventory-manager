@@ -11,6 +11,7 @@ export async function GET() {
     authenticated: true,
     userId: session.userId,
     email: session.email ?? null,
-    role: session.role ?? null
+    role: session.role ?? null,
+    expiresAt: session.expiresAt ?? null
   });
 }

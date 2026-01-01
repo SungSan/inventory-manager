@@ -6,5 +6,6 @@ declare module "iron-session" {
     userId?: string;
     email?: string;
     role?: Role;
+    expiresAt?: number;
   }
 }

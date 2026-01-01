@@ -37,6 +37,7 @@ export async function setSession(req: NextRequest, user: { id: string; email: st
   session.userId = user.id;
   session.email = user.email;
   session.role = user.role;
+  session.expiresAt = Date.now() + 30 * 60 * 1000;
   await session.save();
   return response;
 }

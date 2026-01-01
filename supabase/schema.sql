@@ -11,6 +11,8 @@ set search_path = public;
 -- drop table if exists public.items cascade;
 -- drop table if exists public.users cascade;
 -- drop table if exists public.idempotency_keys cascade;
+-- drop table if exists public.locations cascade;
+-- drop table if exists public.admin_logs cascade;
 -- drop type if exists public.user_role cascade;
 
 do $$
@@ -73,6 +75,22 @@ create table if not exists public.idempotency_keys (
   created_by uuid references public.users(id),
   created_at timestamptz not null default now()
 );
+
+create table if not exists public.locations (
+  name text primary key,
+  description text default '',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.admin_logs (
+  id uuid primary key default gen_random_uuid(),
+  actor_id uuid references public.users(id),
+  actor_email text,
+  action text not null,
+  detail text,
+  created_at timestamptz not null default now()
+);
+create index if not exists admin_logs_created_at_idx on public.admin_logs(created_at desc);
 
 -- materialized views
 create or replace view public.inventory_view as
