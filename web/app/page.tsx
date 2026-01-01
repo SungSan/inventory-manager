@@ -66,7 +66,14 @@ function Pill({ children }: { children: React.ReactNode }) {
 }
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleString();
+  return new Date(value).toLocaleString('ko-KR', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
 }
 
 function aggregateLocations(rows: InventoryRow[]) {
@@ -86,8 +93,19 @@ export default function Home() {
   const [stock, setStock] = useState<InventoryRow[]>([]);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [movement, setMovement] = useState<MovementPayload>(EMPTY_MOVEMENT);
-  const [stockFilters, setStockFilters] = useState({ search: '', category: '', location: '' });
-  const [historyFilters, setHistoryFilters] = useState({ search: '', direction: '' });
+  const [stockFilters, setStockFilters] = useState({ search: '', category: '', location: '', artist: '' });
+  const today = useMemo(() => new Date(), []);
+  const sevenDaysAgo = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    return d;
+  }, []);
+  const [historyFilters, setHistoryFilters] = useState({
+    search: '',
+    direction: '',
+    from: sevenDaysAgo.toISOString().slice(0, 10),
+    to: today.toISOString().slice(0, 10)
+  });
   const [newUser, setNewUser] = useState<{ email: string; password: string; role: Role }>({
     email: '',
     password: '',
@@ -140,6 +158,18 @@ export default function Home() {
     setSessionRole(null);
     setSessionEmail(null);
     setShowAdmin(false);
+    setStock([]);
+    setHistory([]);
+  }
+
+  const isLoggedIn = Boolean(sessionEmail);
+
+  async function handleAuthToggle() {
+    if (isLoggedIn) {
+      await logout();
+    } else {
+      await login();
+    }
   }
 
   async function refresh() {
@@ -156,10 +186,10 @@ export default function Home() {
     }
   }
 
-  async function submitMovement() {
+  async function submitMovement(direction: MovementPayload['direction']) {
     setIsSubmitting(true);
     setStatus('처리 중...');
-    const payload = { ...movement, quantity: Number(movement.quantity) };
+    const payload = { ...movement, quantity: Number(movement.quantity), direction };
     const res = await fetch('/api/movements', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -204,12 +234,25 @@ export default function Home() {
         .toLowerCase()
         .includes(stockFilters.search.toLowerCase());
       const matchesCategory = !stockFilters.category || row.category === stockFilters.category;
-      const matchesLocation = !stockFilters.location || row.location.includes(stockFilters.location);
-      return matchesSearch && matchesCategory && matchesLocation;
+      const matchesLocation = !stockFilters.location || row.location === stockFilters.location;
+      const matchesArtist = !stockFilters.artist || row.artist === stockFilters.artist;
+      return matchesSearch && matchesCategory && matchesLocation && matchesArtist;
     });
   }, [stock, stockFilters]);
 
+  const locationOptions = useMemo(
+    () => Array.from(new Set(stock.map((row) => row.location))).filter(Boolean).sort(),
+    [stock]
+  );
+
+  const artistOptions = useMemo(
+    () => Array.from(new Set(stock.map((row) => row.artist))).filter(Boolean).sort(),
+    [stock]
+  );
+
   const filteredHistory = useMemo(() => {
+    const fromDate = historyFilters.from ? new Date(historyFilters.from) : null;
+    const toDate = historyFilters.to ? new Date(`${historyFilters.to}T23:59:59`) : null;
     return history.filter((row) => {
       const matchesDirection = !historyFilters.direction || row.direction === historyFilters.direction;
       const matchesSearch = [
@@ -223,7 +266,10 @@ export default function Home() {
         .join(' ')
         .toLowerCase()
         .includes(historyFilters.search.toLowerCase());
-      return matchesDirection && matchesSearch;
+      const created = new Date(row.created_at);
+      const matchesFrom = !fromDate || created >= fromDate;
+      const matchesTo = !toDate || created <= toDate;
+      return matchesDirection && matchesSearch && matchesFrom && matchesTo;
     });
   }, [history, historyFilters]);
 
@@ -273,10 +319,7 @@ export default function Home() {
         )}
       </div>
 
-      <Section
-        title="로그인"
-        actions={<button className="secondary" onClick={logout}>로그아웃</button>}
-      >
+      <Section title="로그인">
         <div className="form-grid two">
           <label>
             <span>이메일</span>
@@ -285,14 +328,14 @@ export default function Home() {
           <label>
             <span>비밀번호</span>
             <input
-type="password"
+              type="password"
               placeholder="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
           <div className="actions-row">
-            <button onClick={login}>로그인</button>
+            <button onClick={handleAuthToggle}>{isLoggedIn ? '로그아웃' : '로그인'}</button>
             <button className="ghost" onClick={refresh}>세션 확인</button>
           </div>
         </div>
@@ -372,7 +415,7 @@ type="password"
           </div>
         }
       >
-        <div className="form-grid three">
+        <div className="form-row">
           <label>
             <span>아티스트</span>
             <input
@@ -381,7 +424,7 @@ type="password"
               placeholder="예: ARTIST"
             />
           </label>
-          <label>
+          <label className="compact">
             <span>카테고리</span>
             <select
               value={movement.category}
@@ -410,30 +453,27 @@ type="password"
           <label>
             <span>로케이션</span>
             <input
+              list="location-options"
               value={movement.location}
               onChange={(e) => setMovement({ ...movement, location: e.target.value })}
               placeholder="창고/선반"
             />
+            <datalist id="location-options">
+              {locationOptions.map((loc) => (
+                <option key={loc} value={loc} />
+              ))}
+            </datalist>
           </label>
-          <label>
+          <label className="compact">
             <span>수량</span>
             <input
-type="number"
+              type="number"
               value={movement.quantity}
               onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
             />
           </label>
-          <label>
-            <span>유형</span>
-            <select
-              value={movement.direction}
-              onChange={(e) => setMovement({ ...movement, direction: e.target.value as MovementPayload['direction'] })}
-            >
-              <option value="IN">입고</option>
-              <option value="OUT">출고</option>
-              <option value="ADJUST">재고조정</option>
-            </select>
-          </label>
+        </div>
+        <div className="form-row">
           <label className="wide">
             <span>메모</span>
             <input
@@ -452,19 +492,20 @@ type="number"
           </label>
         </div>
         <div className="actions-row">
-          <button disabled={isSubmitting} onClick={submitMovement}>
-            {isSubmitting ? '처리 중...' : '입/출고 기록'}
+          <button disabled={isSubmitting} onClick={() => submitMovement('IN')}>
+            {isSubmitting ? '처리 중...' : '입고'}
           </button>
-          <p className="muted">
-            Python GUI의 흐름처럼 필수 정보 입력 → 유형 선택 → 기록 버튼을 누르면 이력/재고가 실시간 반영됩니다.
-          </p>
+          <button disabled={isSubmitting} className="secondary" onClick={() => submitMovement('OUT')}>
+            {isSubmitting ? '처리 중...' : '출고'}
+          </button>
+          <p className="muted">입고/출고를 버튼으로 나눠 Python GUI와 동일한 동선을 제공합니다.</p>
         </div>
       </Section>
 
       <Section
         title="현재 재고"
         actions={
-          <div className="section-actions">
+          <div className="filter-row">
             <input
               className="inline-input"
               placeholder="검색 (아티스트/버전/옵션/위치)"
@@ -472,6 +513,31 @@ type="number"
               onChange={(e) => setStockFilters({ ...stockFilters, search: e.target.value })}
             />
             <select
+              className="scroll-select"
+              value={stockFilters.artist}
+              onChange={(e) => setStockFilters({ ...stockFilters, artist: e.target.value })}
+            >
+              <option value="">전체 아티스트</option>
+              {artistOptions.map((artist) => (
+                <option key={artist} value={artist}>
+                  {artist}
+                </option>
+              ))}
+            </select>
+            <select
+              className="scroll-select"
+              value={stockFilters.location}
+              onChange={(e) => setStockFilters({ ...stockFilters, location: e.target.value })}
+            >
+              <option value="">전체 로케이션</option>
+              {locationOptions.map((loc) => (
+                <option key={loc} value={loc}>
+                  {loc}
+                </option>
+              ))}
+            </select>
+            <select
+              className="compact"
               value={stockFilters.category}
               onChange={(e) => setStockFilters({ ...stockFilters, category: e.target.value })}
             >
@@ -479,13 +545,7 @@ type="number"
               <option value="album">앨범</option>
               <option value="md">MD</option>
             </select>
-            <input
-              className="inline-input"
-              placeholder="로케이션 필터"
-              value={stockFilters.location}
-              onChange={(e) => setStockFilters({ ...stockFilters, location: e.target.value })}
-            />
-            <a className="ghost" href="/api/export?type=inventory">CSV 내보내기</a>
+            <a className="ghost button-link" href="/api/export?type=inventory">CSV 내보내기</a>
           </div>
         }
       >
@@ -520,7 +580,7 @@ type="number"
                 <th>앨범/버전</th>
                 <th>옵션</th>
                 <th>로케이션</th>
-                <th style={{ textAlign: 'right' }}>현재고</th>
+                <th className="align-right">현재고</th>
               </tr>
             </thead>
             <tbody>
@@ -531,7 +591,7 @@ type="number"
                   <td>{row.album_version}</td>
                   <td>{row.option}</td>
                   <td>{row.location}</td>
-                  <td style={{ textAlign: 'right' }}>{row.quantity.toLocaleString()}</td>
+                  <td className="align-right">{row.quantity.toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
@@ -542,7 +602,7 @@ type="number"
       <Section
         title="입출고 이력"
         actions={
-          <div className="section-actions">
+          <div className="filter-row">
             <input
               className="inline-input"
               placeholder="검색 (품목/위치/담당/메모)"
@@ -550,18 +610,38 @@ type="number"
               onChange={(e) => setHistoryFilters({ ...historyFilters, search: e.target.value })}
             />
             <select
+              className="compact"
               value={historyFilters.direction}
               onChange={(e) => setHistoryFilters({ ...historyFilters, direction: e.target.value })}
             >
-              <option value="">전체</option>
+              <option value="">전체 유형</option>
               <option value="IN">입고</option>
               <option value="OUT">출고</option>
               <option value="ADJUST">조정</option>
             </select>
-            <a className="ghost" href="/api/export?type=history">CSV 내보내기</a>
+            <label className="compact date-label">
+              <span>시작</span>
+              <input
+                type="date"
+                value={historyFilters.from}
+                onChange={(e) => setHistoryFilters({ ...historyFilters, from: e.target.value })}
+              />
+            </label>
+            <label className="compact date-label">
+              <span>종료</span>
+              <input
+                type="date"
+                value={historyFilters.to}
+                onChange={(e) => setHistoryFilters({ ...historyFilters, to: e.target.value })}
+              />
+            </label>
+            <a className="ghost button-link" href="/api/export?type=history">CSV 내보내기</a>
           </div>
         }
       >
+        <p className="muted" style={{ margin: '0 0 0.5rem' }}>
+          기본적으로 최근 7일 데이터를 보여주며, 달력으로 기간을 직접 선택하고 유형으로 필터링할 수 있습니다.
+        </p>
         <div className="table-wrapper">
           <table className="table">
             <thead>
@@ -573,7 +653,7 @@ type="number"
                 <th>앨범/버전</th>
                 <th>옵션</th>
                 <th>로케이션</th>
-                <th style={{ textAlign: 'right' }}>수량</th>
+                <th className="align-right">수량</th>
                 <th>담당</th>
                 <th>메모</th>
               </tr>
@@ -590,7 +670,7 @@ type="number"
                   <td>{h.album_version}</td>
                   <td>{h.option}</td>
                   <td>{h.location}</td>
-                  <td style={{ textAlign: 'right' }}>{h.quantity.toLocaleString()}</td>
+                  <td className="align-right">{h.quantity.toLocaleString()}</td>
                   <td>{h.created_by}</td>
                   <td>{h.memo || '-'}</td>
                 </tr>
