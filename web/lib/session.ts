@@ -1,17 +1,12 @@
 import type { IronSession } from 'iron-session';
 import { IronSessionOptions, getIronSession as getIronSessionNode } from 'iron-session';
-import { getIronSession as getIronSessionEdge } from 'iron-session/edge';
 import { cookies } from 'next/headers';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
 export type Role = 'admin' | 'operator' | 'viewer';
 
-export type SessionData = {
-  userId?: string;
-  email?: string;
-  role?: Role;
-};
+export type SessionData = IronSession;
 
 const sessionPassword = process.env.SESSION_PASSWORD;
 const cookieName = process.env.SESSION_COOKIE_NAME || 'inventory_session';
@@ -30,18 +25,22 @@ export const sessionOptions: IronSessionOptions = {
   }
 };
 
-export type TypedSession = IronSession & SessionData;
-
-export async function getSession(): Promise<TypedSession> {
+export async function getSession(): Promise<SessionData> {
   const cookieStore = cookies();
-  return getIronSessionNode<SessionData>(cookieStore, sessionOptions);
+  const req = new Request('http://localhost', {
+    headers: { cookie: cookieStore.toString() }
+  });
+  const res = new Response();
+  return getIronSessionNode(req, res, sessionOptions);
 }
 
-export async function getSessionFromRequest(req: NextRequest): Promise<{
-  session: TypedSession;
+export async function getSessionFromRequest(
+  req: NextRequest,
+  res: NextResponse = NextResponse.next()
+): Promise<{
+  session: SessionData;
   response: NextResponse;
 }> {
-  const res = NextResponse.next();
-  const session = await getIronSessionEdge<SessionData>(req, res, sessionOptions);
+  const session = await getIronSessionNode(req, res, sessionOptions);
   return { session, response: res };
 }
