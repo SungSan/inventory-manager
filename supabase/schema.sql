@@ -13,7 +13,18 @@ set search_path = public;
 -- drop table if exists public.idempotency_keys cascade;
 -- drop type if exists public.user_role cascade;
 
-create type if not exists public.user_role as enum ('admin','operator','viewer');
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'user_role'
+      and n.nspname = 'public'
+  ) then
+    create type public.user_role as enum ('admin','operator','viewer');
+  end if;
+end $$;
 
 create table if not exists public.users (
   id uuid primary key default gen_random_uuid(),
