@@ -1,16 +1,18 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { getSessionFromRequest } from './lib/session';
 
 const publicPaths = ['/api/auth/login', '/api/auth/logout', '/'];
+const cookieName = process.env.SESSION_COOKIE_NAME || 'inventory_session';
 
-export async function middleware(req: NextRequest) {
+export function middleware(req: NextRequest) {
   if (publicPaths.some((p) => req.nextUrl.pathname === p)) return NextResponse.next();
-  const { session, response } = await getSessionFromRequest(req);
-  if (!session.userId) {
+
+  const hasSession = Boolean(req.cookies.get(cookieName)?.value);
+  if (!hasSession) {
     return NextResponse.redirect(new URL('/', req.url));
   }
-  return response;
+
+  return NextResponse.next();
 }
 
 export const config = {
