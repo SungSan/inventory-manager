@@ -1,47 +1,55 @@
+-- Ensure we're working in public schema
 create extension if not exists pgcrypto;
+create extension if not exists "uuid-ossp";
+set search_path = public;
 
--- Roles
-create type user_role as enum ('admin','operator','viewer');
+-- =========================================
+-- RESET (DANGEROUS): uncomment to reset DB
+-- =========================================
+-- drop table if exists public.movements cascade;
+-- drop table if exists public.inventory cascade;
+-- drop table if exists public.items cascade;
+-- drop table if exists public.users cascade;
+-- drop table if exists public.idempotency_keys cascade;
+-- drop type if exists public.user_role cascade;
 
-drop table if exists users cascade;
-create table users (
+create type if not exists public.user_role as enum ('admin','operator','viewer');
+
+create table if not exists public.users (
   id uuid primary key default gen_random_uuid(),
   email text unique not null,
   password_hash text not null,
-  role user_role not null default 'operator',
+  role public.user_role not null default 'operator',
   active boolean not null default true,
   created_at timestamptz not null default now()
 );
 
-drop table if exists items cascade;
-create table items (
+create table if not exists public.items (
   id uuid primary key default gen_random_uuid(),
   artist text not null,
   category text not null,
   album_version text not null,
   option text not null default ''
 );
-create unique index items_unique ON items(artist, category, album_version, option);
+create unique index if not exists items_unique on public.items(artist, category, album_version, option);
 
-drop table if exists inventory cascade;
-create table inventory (
+create table if not exists public.inventory (
   id uuid primary key default gen_random_uuid(),
-  item_id uuid not null references items(id) on delete cascade,
+  item_id uuid not null references public.items(id) on delete cascade,
   location text not null,
   quantity integer not null default 0,
   updated_at timestamptz not null default now(),
   constraint inventory_unique unique (item_id, location)
 );
 
-drop table if exists movements cascade;
-create table movements (
+create table if not exists public.movements (
   id uuid primary key default gen_random_uuid(),
-  item_id uuid not null references items(id) on delete cascade,
+  item_id uuid not null references public.items(id) on delete cascade,
   location text not null,
   direction text not null check (direction in ('IN','OUT','ADJUST')),
   quantity integer not null,
   memo text default '',
-  created_by uuid references users(id),
+  created_by uuid references public.users(id),
   created_at timestamptz not null default now(),
   idempotency_key text unique,
   opening integer,
@@ -49,26 +57,26 @@ create table movements (
 );
 
 -- idempotency guard
-create table idempotency_keys (
+create table if not exists public.idempotency_keys (
   key text primary key,
-  created_by uuid references users(id),
+  created_by uuid references public.users(id),
   created_at timestamptz not null default now()
 );
 
 -- materialized views
-create or replace view inventory_view as
+create or replace view public.inventory_view as
 select i.artist, i.category, i.album_version, i.option, inv.location, inv.quantity
-from inventory inv
-join items i on inv.item_id = i.id;
+from public.inventory inv
+join public.items i on inv.item_id = i.id;
 
-create or replace view movements_view as
+create or replace view public.movements_view as
 select m.created_at, m.direction, i.artist, i.category, i.album_version, i.option, m.location, m.quantity, m.memo, m.created_by
-from movements m
-join items i on m.item_id = i.id
+from public.movements m
+join public.items i on m.item_id = i.id
 order by m.created_at desc;
 
 -- transactional movement function
-create or replace function record_movement(
+create or replace function public.record_movement(
   artist text,
   category text,
   album_version text,
@@ -90,7 +98,7 @@ begin
   end if;
 
   if idempotency_key is not null then
-    insert into idempotency_keys(key, created_by) values(idempotency_key, created_by)
+    insert into public.idempotency_keys(key, created_by) values(idempotency_key, created_by)
     on conflict do nothing;
     if not found then
       return json_build_object('ok', true, 'idempotent', true);
@@ -98,21 +106,21 @@ begin
   end if;
 
   -- ensure item
-  insert into items(artist, category, album_version, option)
-    values(record_movement.artist, category, album_version, option)
+  insert into public.items(artist, category, album_version, option)
+    values(public.record_movement.artist, category, album_version, option)
   on conflict (artist, category, album_version, option)
     do update set artist = excluded.artist
   returning id into v_item_id;
 
   -- lock inventory row
-  insert into inventory(item_id, location, quantity)
+  insert into public.inventory(item_id, location, quantity)
     values(v_item_id, location, 0)
   on conflict (item_id, location) do nothing;
 
   select quantity into v_existing
-    from inventory
+    from public.inventory
    where item_id = v_item_id
-     and location = record_movement.location
+     and location = public.record_movement.location
    for update;
 
   if direction = 'OUT' and v_existing < quantity then
@@ -127,14 +135,44 @@ begin
     v_new := quantity; -- for ADJUST quantity represents final desired count
   end if;
 
-  update inventory
+  update public.inventory
      set quantity = v_new,
          updated_at = now()
    where item_id = v_item_id
-     and location = record_movement.location;
-  insert into movements(item_id, location, direction, quantity, memo, created_by, idempotency_key, opening, closing)
+     and location = public.record_movement.location;
+  insert into public.movements(item_id, location, direction, quantity, memo, created_by, idempotency_key, opening, closing)
     values(v_item_id, location, direction, quantity, memo, created_by, idempotency_key, v_existing, v_new);
 
   return json_build_object('ok', true, 'opening', v_existing, 'closing', v_new);
 end;
 $$ language plpgsql security definer;
+
+-- credential verification via database-side crypt
+create extension if not exists pgcrypto;
+
+create or replace function public.verify_login(
+  p_email text,
+  p_password text
+) returns table(
+  id uuid,
+  email text,
+  role public.user_role
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select u.id, u.email, u.role
+  from public.users u
+  where lower(u.email) = lower(p_email)
+    and u.active = true
+    and u.password_hash = crypt(p_password, u.password_hash)
+  limit 1;
+$$;
+
+revoke all on function public.verify_login(text, text) from public;
+grant execute on function public.verify_login(text, text) to service_role;
+
+-- smoke test
+-- select * from public.inventory_view limit 1;
+-- select public.record_movement('A','album','v1','', 'loc1', 1, 'IN', 'test', null, 'k1');

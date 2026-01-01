@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
-    "bcryptjs": "^2.4.3",
     "iron-session": "^6.3.1",
     "next": "^14.2.5",
     "react": "^18.3.1",
@@ -18,7 +17,6 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.2",
     "@types/node": "^22.5.1",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
