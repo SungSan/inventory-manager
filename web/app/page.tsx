@@ -101,7 +101,8 @@ export default function Home() {
   const [stock, setStock] = useState<InventoryRow[]>([]);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [movement, setMovement] = useState<MovementPayload>(EMPTY_MOVEMENT);
-  const [selectedStockId, setSelectedStockId] = useState<string | null>(null);
+  const [selectedStockIds, setSelectedStockIds] = useState<string[]>([]);
+  const [focusedStockId, setFocusedStockId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<InventoryRow | null>(null);
   const [activePanel, setActivePanel] = useState<'stock' | 'history' | 'admin'>('stock');
   const [stockFilters, setStockFilters] = useState({ search: '', category: '', location: '', artist: '' });
@@ -283,7 +284,8 @@ export default function Home() {
     setHistory([]);
     setAdminLogs([]);
     setLocationPresets([]);
-    setSelectedStockId(null);
+    setSelectedStockIds([]);
+    setFocusedStockId(null);
     if (logoutTimeout.current) {
       clearTimeout(logoutTimeout.current);
       logoutTimeout.current = null;
@@ -312,7 +314,8 @@ export default function Home() {
       if (stockRes.ok) setStock(await stockRes.json());
       if (histRes.ok) setHistory(await histRes.json());
       setStatus('데이터 동기화 완료');
-      setSelectedStockId(null);
+      setSelectedStockIds([]);
+      setFocusedStockId(null);
       setEditDraft(null);
     } catch (err) {
       setStatus('데이터 불러오기 실패');
@@ -389,11 +392,22 @@ export default function Home() {
   }
 
   function handleStockClick(row: InventoryRow) {
-    setSelectedStockId((prev) => (prev === row.id ? null : row.id));
+    setSelectedStockIds((prev) => {
+      const exists = prev.includes(row.id);
+      const next = exists ? prev.filter((id) => id !== row.id) : [...prev, row.id];
+      if (exists && focusedStockId === row.id) {
+        setFocusedStockId(null);
+      } else if (!exists) {
+        setFocusedStockId(row.id);
+      }
+      return next;
+    });
   }
 
   function handleStockDoubleClick(row: InventoryRow) {
-    setSelectedStockId(row.id);
+    setSelectedStockIds((prev) => (prev.includes(row.id) ? prev : [...prev, row.id]));
+    setFocusedStockId(row.id);
+    setEditDraft(row);
     const hasMultipleLocations = stock.some(
       (r) =>
         r.artist === row.artist &&
@@ -447,7 +461,10 @@ export default function Home() {
     const res = await fetch(`/api/inventory/${row.id}`, { method: 'DELETE' });
     if (res.ok) {
       setInventoryActionStatus('삭제 완료');
-      setSelectedStockId(null);
+      setSelectedStockIds((prev) => prev.filter((id) => id !== row.id));
+      if (focusedStockId === row.id) {
+        setFocusedStockId(null);
+      }
       await refresh();
     } else {
       const text = await res.text();
@@ -560,17 +577,23 @@ export default function Home() {
   }, [activePanel, history.length, stock.length]);
 
   useEffect(() => {
-    if (!selectedStockId) {
+    if (!focusedStockId) {
       setEditDraft(null);
       return;
     }
-    const match = stock.find((row) => row.id === selectedStockId);
+    const match = stock.find((row) => row.id === focusedStockId);
     setEditDraft(match ?? null);
-  }, [selectedStockId, stock]);
+  }, [focusedStockId, stock]);
+
+  useEffect(() => {
+    if (focusedStockId && !selectedStockIds.includes(focusedStockId)) {
+      setFocusedStockId(null);
+    }
+  }, [selectedStockIds, focusedStockId]);
 
   useEffect(() => {
     setInventoryActionStatus('');
-  }, [selectedStockId]);
+  }, [selectedStockIds, focusedStockId]);
 
   useEffect(() => {
     fetchSessionInfo();
@@ -975,7 +998,7 @@ export default function Home() {
               {filteredStock.map((row) => (
                 <tr
                   key={row.id}
-                  className={selectedStockId === row.id ? 'selected-row' : ''}
+                  className={selectedStockIds.includes(row.id) ? 'selected-row' : ''}
                   onClick={() => handleStockClick(row)}
                   onDoubleClick={() => handleStockDoubleClick(row)}
                 >
@@ -994,7 +1017,10 @@ export default function Home() {
                           className="ghost small"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setSelectedStockId(row.id);
+                            setSelectedStockIds((prev) =>
+                              prev.includes(row.id) ? prev : [...prev, row.id]
+                            );
+                            setEditDraft(row);
                           }}
                         >
                           선택
@@ -1003,7 +1029,9 @@ export default function Home() {
                           className="ghost danger small"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setSelectedStockId(row.id);
+                            setSelectedStockIds((prev) =>
+                              prev.includes(row.id) ? prev : [...prev, row.id]
+                            );
                             setEditDraft(row);
                             deleteInventoryRow(row);
                           }}
