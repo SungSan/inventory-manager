@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import * as XLSX from 'xlsx';
 import { withAuth } from '../../../../lib/auth';
 import { supabaseAdmin } from '../../../../lib/supabase';
 import { recordAdminLog } from '../../../../lib/admin-log';
@@ -58,13 +59,62 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: '파일을 선택하세요' }, { status: 400 });
     }
 
-    const raw = await (file as Blob).text();
+    const fileObj = file as File;
+    const buffer = await fileObj.arrayBuffer();
     let payload: any;
 
+    const parseExcel = () => {
+      const workbook = XLSX.read(buffer, { type: 'array' });
+      const [stockSheetName, historySheetName] = workbook.SheetNames;
+      const stockSheet = stockSheetName ? workbook.Sheets[stockSheetName] : undefined;
+      const historySheet = historySheetName ? workbook.Sheets[historySheetName] : undefined;
+      if (!stockSheet) throw new Error('엑셀 시트가 비어 있습니다');
+
+      const stockRows = XLSX.utils.sheet_to_json(stockSheet, { defval: '' }) as any[];
+      const historyRows = historySheet ? (XLSX.utils.sheet_to_json(historySheet, { defval: '' }) as any[]) : [];
+
+      const normalize = (value: any) => (value === undefined || value === null ? '' : String(value).trim());
+
+      const normalizeStock = (row: any): StockRow => ({
+        artist: normalize(row.artist || row.아티스트),
+        category: normalize(row.category || row.카테고리) || 'album',
+        album_version: normalize(row.album_version || row['album/version'] || row.item || row.앨범 || row.버전),
+        option: normalize(row.option || row.옵션),
+        location: normalize(row.location || row.로케이션 || row.위치),
+        current_stock: Number(row.current_stock ?? row.quantity ?? row.수량 ?? 0),
+      });
+
+      const normalizeHistory = (row: any): HistoryRow => ({
+        artist: normalize(row.artist || row.아티스트),
+        category: normalize(row.category || row.카테고리) || 'album',
+        album_version: normalize(row.album_version || row['album/version'] || row.item || row.앨범 || row.버전),
+        option: normalize(row.option || row.옵션),
+        location: normalize(row.location || row.로케이션 || row.위치),
+        direction: normalize(row.direction || row.유형 || row.type) || 'IN',
+        quantity: Number(row.quantity ?? row.수량 ?? 0),
+        memo: normalize(row.description || row.memo || row.메모),
+        timestamp: normalize(row.timestamp || row.created_at || row.일시),
+      });
+
+      return {
+        stock: stockRows.map(normalizeStock),
+        history: historyRows.map(normalizeHistory),
+      };
+    };
+
     try {
-      payload = JSON.parse(raw);
+      const text = await fileObj.text();
+      payload = JSON.parse(text);
     } catch (err) {
-      return NextResponse.json({ error: 'JSON 파싱 실패' }, { status: 400 });
+      try {
+        payload = parseExcel();
+      } catch (excelErr: any) {
+        return NextResponse.json({ error: excelErr?.message || '파일 파싱 실패' }, { status: 400 });
+      }
+    }
+
+    if (!payload || typeof payload !== 'object') {
+      return NextResponse.json({ error: '업로드 형식을 인식할 수 없습니다' }, { status: 400 });
     }
 
     const stocks: StockRow[] = payload.stock || payload.stocks || [];

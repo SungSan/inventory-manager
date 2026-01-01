@@ -99,9 +99,20 @@ from public.inventory inv
 join public.items i on inv.item_id = i.id;
 
 create or replace view public.movements_view as
-select m.created_at, m.direction, i.artist, i.category, i.album_version, i.option, m.location, m.quantity, m.memo, m.created_by
+select
+  m.created_at,
+  m.direction,
+  i.artist,
+  i.category,
+  i.album_version,
+  i.option,
+  m.location,
+  m.quantity,
+  m.memo,
+  coalesce(u.email::text, m.created_by::text) as created_by
 from public.movements m
 join public.items i on m.item_id = i.id
+left join public.users u on u.id = m.created_by
 order by m.created_at desc;
 
 -- transactional movement function
