@@ -147,6 +147,32 @@ begin
 end;
 $$ language plpgsql security definer;
 
+-- credential verification via database-side crypt
+create extension if not exists pgcrypto;
+
+create or replace function public.verify_login(
+  p_email text,
+  p_password text
+) returns table(
+  id uuid,
+  email text,
+  role public.user_role
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select u.id, u.email, u.role
+  from public.users u
+  where lower(u.email) = lower(p_email)
+    and u.active = true
+    and u.password_hash = crypt(p_password, u.password_hash)
+  limit 1;
+$$;
+
+revoke all on function public.verify_login(text, text) from public;
+grant execute on function public.verify_login(text, text) to service_role;
+
 -- smoke test
 -- select * from public.inventory_view limit 1;
 -- select public.record_movement('A','album','v1','', 'loc1', 1, 'IN', 'test', null, 'k1');

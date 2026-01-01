@@ -1,20 +1,24 @@
-import bcrypt from 'bcryptjs';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from './supabase';
 import { getSession, getSessionFromRequest, Role, SessionData } from './session';
 import type { NextRequest } from 'next/server';
 
 export async function verifyLogin(email: string, password: string) {
-  const { data, error } = await supabaseAdmin
-    .from('users')
-    .select('id, email, password_hash, role, active')
-    .eq('email', email.toLowerCase())
-    .single();
+  const { data, error } = await supabaseAdmin.rpc('verify_login', {
+    p_email: email,
+    p_password: password,
+  });
 
-  if (error || !data || data.active === false) return null;
-  const ok = await bcrypt.compare(password, data.password_hash);
-  if (!ok) return null;
-  return { id: data.id as string, email: data.email as string, role: data.role as Role };
+  if (error || !data) return null;
+
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) return null;
+
+  return {
+    id: row.id as string,
+    email: row.email as string,
+    role: row.role as Role,
+  };
 }
 
 export async function requireRole(roles: Role[]) {
