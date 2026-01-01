@@ -21,7 +21,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     const current = await getInventoryRow(params.id);
     if (!current) return NextResponse.json({ error: 'not found' }, { status: 404 });
 
-    const baseItem = current.items ?? {};
+    const baseItem = Array.isArray(current.items) ? current.items[0] ?? {} : current.items ?? {};
     const nextItem = {
       artist: (artist ?? baseItem.artist ?? '').trim(),
       category: (category ?? baseItem.category ?? 'album').trim(),
