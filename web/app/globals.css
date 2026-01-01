@@ -24,7 +24,7 @@ input, select { padding: 0.55rem 0.65rem; border: 1px solid var(--border); borde
 label span { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.35rem; }
 
 .table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
-.table th, .table td { border: 1px solid var(--border); padding: 0.75rem; text-align: center; }
+.table th, .table td { border: 1px solid var(--border); padding: 0.75rem; text-align: center; vertical-align: middle; }
 .table .align-right { text-align: right; }
 .table th { background: #f8fafc; font-weight: 700; }
 .table-wrapper { width: 100%; overflow-x: auto; }
@@ -65,6 +65,12 @@ label span { display: block; font-size: 0.85rem; color: var(--muted); margin-bot
 
 .pill { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.35rem 0.6rem; background: #e0f2fe; color: #0f172a; border-radius: 999px; font-weight: 600; font-size: 0.85rem; }
 .pill-row { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.pill .chip-close { background: transparent; border: none; padding: 0; margin-left: 0.25rem; cursor: pointer; color: var(--muted); }
+.pill .chip-close:hover { color: var(--text); }
+.scrollable { max-height: 140px; overflow-y: auto; }
+
+.guide-card.full-span { grid-column: 1 / -1; }
+.compact-table th, .compact-table td { padding: 0.55rem; }
 
 .table tbody tr:nth-child(odd) { background: #fafbff; }
 

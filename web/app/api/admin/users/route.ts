@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
 import { withAuth } from '../../../../lib/auth';
 import { supabaseAdmin } from '../../../../lib/supabase';
+import { recordAdminLog } from '../../../../lib/admin-log';
 import type { Role } from '../../../../lib/session';
 
 export async function POST(req: Request) {
-  return withAuth(['admin'], async () => {
+  return withAuth(['admin'], async (session) => {
     const { email, password, role } = await req.json();
 
     if (!email || !password) {
@@ -25,6 +26,8 @@ export async function POST(req: Request) {
     }
 
     const row = Array.isArray(data) ? data[0] : data;
+
+    await recordAdminLog(session, 'create_user', `${normalizedEmail} (${row?.role ?? userRole})`);
 
     return NextResponse.json({ ok: true, role: row?.role ?? userRole });
   });

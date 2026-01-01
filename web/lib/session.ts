@@ -10,6 +10,7 @@ export type SessionData = IronSession;
 
 const sessionPassword = process.env.SESSION_PASSWORD;
 const cookieName = process.env.SESSION_COOKIE_NAME || 'inventory_session';
+const sessionTtlSeconds = 60 * 30; // 30 minutes
 
 if (!sessionPassword) {
   throw new Error('SESSION_PASSWORD must be set');
@@ -18,10 +19,12 @@ if (!sessionPassword) {
 export const sessionOptions: IronSessionOptions = {
   password: sessionPassword,
   cookieName,
+  ttl: sessionTtlSeconds,
   cookieOptions: {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax'
+    sameSite: 'lax',
+    maxAge: sessionTtlSeconds,
   }
 };
 
@@ -31,7 +34,13 @@ export async function getSession(): Promise<SessionData> {
     headers: { cookie: cookieStore.toString() }
   });
   const res = new Response();
-  return getIronSessionNode(req, res, sessionOptions);
+  const session = await getIronSessionNode(req, res, sessionOptions);
+
+  if (session.expiresAt && Date.now() > Number(session.expiresAt)) {
+    await session.destroy();
+  }
+
+  return session;
 }
 
 export async function getSessionFromRequest(
@@ -42,5 +51,10 @@ export async function getSessionFromRequest(
   response: NextResponse;
 }> {
   const session = await getIronSessionNode(req, res, sessionOptions);
+
+  if (session.expiresAt && Date.now() > Number(session.expiresAt)) {
+    await session.destroy();
+  }
+
   return { session, response: res };
 }
