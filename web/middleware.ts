@@ -1,16 +1,16 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { getSession } from './lib/session';
+import { getSessionFromRequest } from './lib/session';
 
 const publicPaths = ['/api/auth/login', '/api/auth/logout', '/'];
 
 export async function middleware(req: NextRequest) {
   if (publicPaths.some((p) => req.nextUrl.pathname === p)) return NextResponse.next();
-  const session = await getSession();
+  const { session, response } = await getSessionFromRequest(req);
   if (!session.userId) {
     return NextResponse.redirect(new URL('/', req.url));
   }
-  return NextResponse.next();
+  return response;
 }
 
 export const config = {

@@ -1,5 +1,8 @@
-import { IronSessionOptions, getIronSession } from 'iron-session';
+import { IronSessionOptions, getIronSession as getIronSessionNode } from 'iron-session';
+import { getIronSession as getIronSessionEdge } from 'iron-session/edge';
 import { cookies } from 'next/headers';
+import type { NextRequest } from 'next/server';
+import { NextResponse } from 'next/server';
 
 type Role = 'admin' | 'operator' | 'viewer';
 
@@ -21,12 +24,18 @@ export const sessionOptions: IronSessionOptions = {
   cookieName,
   cookieOptions: {
     httpOnly: true,
-    secure: true,
+    secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax'
   }
 };
 
 export async function getSession() {
   const cookieStore = cookies();
-  return getIronSession<SessionData>(cookieStore, sessionOptions);
+  return getIronSessionNode<SessionData>(cookieStore, sessionOptions);
+}
+
+export async function getSessionFromRequest(req: NextRequest) {
+  const res = NextResponse.next();
+  const session = await getIronSessionEdge<SessionData>(req, res, sessionOptions);
+  return { session, response: res };
 }
