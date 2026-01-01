@@ -1,7 +1,8 @@
 import bcrypt from 'bcryptjs';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from './supabase';
-import { getSession, Role, SessionData } from './session';
+import { getSession, getSessionFromRequest, Role, SessionData } from './session';
+import type { NextRequest } from 'next/server';
 
 export async function verifyLogin(email: string, password: string) {
   const { data, error } = await supabaseAdmin
@@ -24,17 +25,22 @@ export async function requireRole(roles: Role[]) {
   return null;
 }
 
-export async function setSession(user: { id: string; email: string; role: Role }) {
-  const session = await getSession();
+export async function setSession(req: NextRequest, user: { id: string; email: string; role: Role }) {
+  const { session, response } = await getSessionFromRequest(
+    req,
+    NextResponse.json({ ok: true, role: user.role })
+  );
   session.userId = user.id;
   session.email = user.email;
   session.role = user.role;
   await session.save();
+  return response;
 }
 
-export async function clearSession() {
-  const session = await getSession();
+export async function clearSession(req: NextRequest) {
+  const { session, response } = await getSessionFromRequest(req, NextResponse.json({ ok: true }));
   await session.destroy();
+  return response;
 }
 
 export async function withAuth(roles: Role[], handler: (session: SessionData) => Promise<NextResponse>) {
