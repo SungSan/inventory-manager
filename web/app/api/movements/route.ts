@@ -4,7 +4,7 @@ import { supabaseAdmin } from '../../../lib/supabase';
 import { ensureIdempotent } from '../../../lib/idempotency';
 
 export async function POST(req: Request) {
-  return withAuth(req as any, ['admin', 'operator'], async (session) => {
+  return withAuth(['admin', 'operator'], async (session) => {
     const body = await req.json();
     const { artist, category, album_version, option, location, quantity, direction, memo, idempotencyKey } = body;
     if (!artist || !category || !album_version || !location || !quantity || !direction) {

@@ -1,5 +1,5 @@
 import bcrypt from 'bcryptjs';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { supabaseAdmin } from './supabase';
 import { getSession, SessionData } from './session';
 
@@ -18,7 +18,7 @@ export async function verifyLogin(email: string, password: string) {
   return { id: data.id as string, email: data.email as string, role: data.role as Role };
 }
 
-export async function requireRole(req: NextRequest, roles: Role[]) {
+export async function requireRole(roles: Role[]) {
   const session = await getSession();
   if (!session.userId || !session.role || !roles.includes(session.role as Role)) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
@@ -39,11 +39,7 @@ export async function clearSession() {
   await session.destroy();
 }
 
-export async function withAuth(
-  req: NextRequest,
-  roles: Role[],
-  handler: (session: SessionData) => Promise<NextResponse>
-) {
+export async function withAuth(roles: Role[], handler: (session: SessionData) => Promise<NextResponse>) {
   const session = await getSession();
   if (!session.userId || !session.role || !roles.includes(session.role as Role)) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });

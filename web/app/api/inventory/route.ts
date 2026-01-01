@@ -3,7 +3,7 @@ import { supabaseAdmin } from '../../../lib/supabase';
 import { withAuth } from '../../../lib/auth';
 
 export async function GET(req: Request) {
-  return withAuth(req as any, ['admin', 'operator', 'viewer'], async () => {
+  return withAuth(['admin', 'operator', 'viewer'], async () => {
     const { data, error } = await supabaseAdmin
       .from('inventory_view')
       .select('artist, category, album_version, option, location, quantity');
