@@ -1,8 +1,12 @@
-import 'iron-session';
-
-declare module 'iron-session' {
+import "iron-session";
+import type { Role } from "../lib/session";
+declare module "iron-session" {
   interface IronSessionData {
     userId?: string;
-    role?: 'admin' | 'operator' | 'viewer';
+    role?: Role;
+  }
+  interface IronSession {
+    userId?: string;
+    role?: Role;
   }
 }
