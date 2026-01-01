@@ -30,13 +30,15 @@ export const sessionOptions: IronSessionOptions = {
   }
 };
 
-export async function getSession(): Promise<IronSession<SessionData>> {
+export type TypedSession = IronSession & SessionData;
+
+export async function getSession(): Promise<TypedSession> {
   const cookieStore = cookies();
   return getIronSessionNode<SessionData>(cookieStore, sessionOptions);
 }
 
 export async function getSessionFromRequest(req: NextRequest): Promise<{
-  session: IronSession<SessionData>;
+  session: TypedSession;
   response: NextResponse;
 }> {
   const res = NextResponse.next();
