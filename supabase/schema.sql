@@ -173,6 +173,43 @@ $$;
 revoke all on function public.verify_login(text, text) from public;
 grant execute on function public.verify_login(text, text) to service_role;
 
+-- admin user provisioning with database-side hashing
+create or replace function public.create_user(
+  p_email text,
+  p_password text,
+  p_role public.user_role default 'operator'
+) returns table(
+  id uuid,
+  email text,
+  role public.user_role
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  normalized_email text := lower(trim(p_email));
+  selected_role public.user_role := coalesce(p_role, 'operator');
+begin
+  if coalesce(p_email, '') = '' or coalesce(p_password, '') = '' then
+    raise exception 'email and password are required';
+  end if;
+
+  insert into public.users(email, password_hash, role, active)
+  values(normalized_email, crypt(p_password, gen_salt('bf')), selected_role, true)
+  on conflict (email) do update
+    set password_hash = excluded.password_hash,
+        role = excluded.role,
+        active = true
+  returning users.id, users.email, users.role into id, email, role;
+
+  return next;
+end;
+$$;
+
+revoke all on function public.create_user(text, text, public.user_role) from public;
+grant execute on function public.create_user(text, text, public.user_role) to service_role;
+
 -- smoke test
 -- select * from public.inventory_view limit 1;
 -- select public.record_movement('A','album','v1','', 'loc1', 1, 'IN', 'test', null, 'k1');

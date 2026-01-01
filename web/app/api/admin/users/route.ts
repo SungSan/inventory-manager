@@ -1,4 +1,3 @@
-import bcrypt from 'bcryptjs';
 import { NextResponse } from 'next/server';
 import { withAuth } from '../../../../lib/auth';
 import { supabaseAdmin } from '../../../../lib/supabase';
@@ -13,20 +12,20 @@ export async function POST(req: Request) {
     }
 
     const normalizedEmail = String(email).toLowerCase().trim();
-    const hashed = await bcrypt.hash(String(password), 10);
     const userRole: Role = (role as Role) || 'operator';
 
-    const { error } = await supabaseAdmin.from('users').insert({
-      email: normalizedEmail,
-      password_hash: hashed,
-      role: userRole,
-      active: true
+    const { data, error } = await supabaseAdmin.rpc('create_user', {
+      p_email: normalizedEmail,
+      p_password: String(password),
+      p_role: userRole
     });
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
 
-    return NextResponse.json({ ok: true, role: userRole });
+    const row = Array.isArray(data) ? data[0] : data;
+
+    return NextResponse.json({ ok: true, role: row?.role ?? userRole });
   });
 }
