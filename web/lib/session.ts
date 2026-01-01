@@ -1,10 +1,11 @@
+import type { IronSession } from 'iron-session';
 import { IronSessionOptions, getIronSession as getIronSessionNode } from 'iron-session';
 import { getIronSession as getIronSessionEdge } from 'iron-session/edge';
 import { cookies } from 'next/headers';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
-type Role = 'admin' | 'operator' | 'viewer';
+export type Role = 'admin' | 'operator' | 'viewer';
 
 export type SessionData = {
   userId?: string;
@@ -29,12 +30,15 @@ export const sessionOptions: IronSessionOptions = {
   }
 };
 
-export async function getSession() {
+export async function getSession(): Promise<IronSession<SessionData>> {
   const cookieStore = cookies();
   return getIronSessionNode<SessionData>(cookieStore, sessionOptions);
 }
 
-export async function getSessionFromRequest(req: NextRequest) {
+export async function getSessionFromRequest(req: NextRequest): Promise<{
+  session: IronSession<SessionData>;
+  response: NextResponse;
+}> {
   const res = NextResponse.next();
   const session = await getIronSessionEdge<SessionData>(req, res, sessionOptions);
   return { session, response: res };

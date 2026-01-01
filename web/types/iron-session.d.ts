@@ -1,5 +1,5 @@
 import "iron-session";
-type Role = "admin" | "operator" | "viewer";
+import type { Role } from "../lib/session";
 declare module "iron-session" {
   interface IronSessionData {
     userId?: string;

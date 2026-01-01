@@ -1,9 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from './supabase';
-import { getSession, SessionData } from './session';
-
-export type Role = 'admin' | 'operator' | 'viewer';
+import { getSession, Role, SessionData } from './session';
 
 export async function verifyLogin(email: string, password: string) {
   const { data, error } = await supabaseAdmin
