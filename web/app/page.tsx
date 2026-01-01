@@ -315,24 +315,51 @@ export default function Home() {
     }
   }
 
-  async function submitMovement(direction: MovementPayload['direction']) {
+  async function submitMovement(
+    event: React.FormEvent<HTMLFormElement> | React.MouseEvent<HTMLButtonElement>,
+    direction: MovementPayload['direction']
+  ) {
+    event.preventDefault();
     setIsSubmitting(true);
     setStatus('처리 중...');
-    const payload = { ...movement, quantity: Number(movement.quantity), direction };
-    const res = await fetch('/api/movements', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    if (res.ok) {
-      setStatus('기록 완료');
-      setMovement(EMPTY_MOVEMENT);
-      await refresh();
-    } else {
-      const text = await res.text();
-      setStatus(`기록 실패: ${text || res.status}`);
+
+    const payload = {
+      artist: movement.artist,
+      category: movement.category,
+      album_version: movement.album_version,
+      option: movement.option,
+      location: movement.location,
+      quantity: Number(movement.quantity),
+      direction,
+      memo: movement.memo,
+      idempotency_key: movement.idempotencyKey
+    };
+
+    try {
+      const res = await fetch('/api/movements', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (res.ok && (data?.ok ?? true)) {
+        setStatus('기록 완료');
+        setMovement(EMPTY_MOVEMENT);
+        await refresh();
+      } else {
+        const errorMessage = data?.error || res.statusText || '요청 실패';
+        setStatus(`기록 실패: ${errorMessage}`);
+        alert(errorMessage);
+      }
+    } catch (err: any) {
+      const message = err?.message || '요청 중 오류가 발생했습니다.';
+      setStatus(`기록 실패: ${message}`);
+      alert(message);
+    } finally {
+      setIsSubmitting(false);
     }
-    setIsSubmitting(false);
   }
 
   function generateKey() {
@@ -658,91 +685,102 @@ export default function Home() {
           </div>
         }
       >
-        <div className="form-row">
-          <label>
-            <span>아티스트</span>
-            <input
-              value={movement.artist}
-              onChange={(e) => setMovement({ ...movement, artist: e.target.value })}
-              placeholder="예: ARTIST"
-            />
-          </label>
-          <label className="compact">
-            <span>카테고리</span>
-            <select
-              value={movement.category}
-              onChange={(e) => setMovement({ ...movement, category: e.target.value as MovementPayload['category'] })}
+        <form onSubmit={(e) => submitMovement(e, movement.direction)}>
+          <div className="form-row">
+            <label>
+              <span>아티스트</span>
+              <input
+                value={movement.artist}
+                onChange={(e) => setMovement({ ...movement, artist: e.target.value })}
+                placeholder="예: ARTIST"
+              />
+            </label>
+            <label className="compact">
+              <span>카테고리</span>
+              <select
+                value={movement.category}
+                onChange={(e) => setMovement({ ...movement, category: e.target.value as MovementPayload['category'] })}
+              >
+                <option value="album">앨범</option>
+                <option value="md">MD</option>
+              </select>
+            </label>
+            <label>
+              <span>앨범/버전</span>
+              <input
+                value={movement.album_version}
+                onChange={(e) => setMovement({ ...movement, album_version: e.target.value })}
+                placeholder="앨범명/버전"
+              />
+            </label>
+            <label>
+              <span>옵션</span>
+              <input
+                value={movement.option}
+                onChange={(e) => setMovement({ ...movement, option: e.target.value })}
+                placeholder="포카/키트 등"
+              />
+            </label>
+            <label>
+              <span>로케이션</span>
+              <input
+                list="location-options"
+                value={movement.location}
+                onChange={(e) => setMovement({ ...movement, location: e.target.value })}
+                placeholder="창고/선반"
+              />
+              <datalist id="location-options">
+                {locationOptions.map((loc) => (
+                  <option key={loc} value={loc} />
+                ))}
+              </datalist>
+            </label>
+            <label className="compact">
+              <span>수량</span>
+              <input
+                type="number"
+                value={movement.quantity}
+                onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
+              />
+            </label>
+          </div>
+          <div className="form-row">
+            <label className="wide">
+              <span>메모</span>
+              <input
+                value={movement.memo}
+                onChange={(e) => setMovement({ ...movement, memo: e.target.value })}
+                placeholder="작업 사유/비고"
+              />
+            </label>
+            <label className="wide">
+              <span>Idempotency Key</span>
+              <input
+                value={movement.idempotencyKey}
+                onChange={(e) => setMovement({ ...movement, idempotencyKey: e.target.value })}
+                placeholder="중복 방지 키"
+              />
+            </label>
+          </div>
+          <div className="actions-row">
+            <button
+              type="button"
+              disabled={isSubmitting}
+              onClick={(e) => submitMovement(e, 'IN')}
             >
-              <option value="album">앨범</option>
-              <option value="md">MD</option>
-            </select>
-          </label>
-          <label>
-            <span>앨범/버전</span>
-            <input
-              value={movement.album_version}
-              onChange={(e) => setMovement({ ...movement, album_version: e.target.value })}
-              placeholder="앨범명/버전"
-            />
-          </label>
-          <label>
-            <span>옵션</span>
-            <input
-              value={movement.option}
-              onChange={(e) => setMovement({ ...movement, option: e.target.value })}
-              placeholder="포카/키트 등"
-            />
-          </label>
-          <label>
-            <span>로케이션</span>
-            <input
-              list="location-options"
-              value={movement.location}
-              onChange={(e) => setMovement({ ...movement, location: e.target.value })}
-              placeholder="창고/선반"
-            />
-            <datalist id="location-options">
-              {locationOptions.map((loc) => (
-                <option key={loc} value={loc} />
-              ))}
-            </datalist>
-          </label>
-          <label className="compact">
-            <span>수량</span>
-            <input
-              type="number"
-              value={movement.quantity}
-              onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
-            />
-          </label>
-        </div>
-        <div className="form-row">
-          <label className="wide">
-            <span>메모</span>
-            <input
-              value={movement.memo}
-              onChange={(e) => setMovement({ ...movement, memo: e.target.value })}
-              placeholder="작업 사유/비고"
-            />
-          </label>
-          <label className="wide">
-            <span>Idempotency Key</span>
-            <input
-              value={movement.idempotencyKey}
-              onChange={(e) => setMovement({ ...movement, idempotencyKey: e.target.value })}
-              placeholder="중복 방지 키"
-            />
-          </label>
-        </div>
-        <div className="actions-row">
-          <button disabled={isSubmitting} onClick={() => submitMovement('IN')}>
-            {isSubmitting ? '처리 중...' : '입고'}
-          </button>
-          <button disabled={isSubmitting} className="secondary" onClick={() => submitMovement('OUT')}>
-            {isSubmitting ? '처리 중...' : '출고'}
-          </button>
-          <p className="muted">입고/출고를 버튼으로 나눠 Python GUI와 동일한 동선을 제공합니다.</p>
-        </div>
+              {isSubmitting ? '처리 중...' : '입고'}
+            </button>
+            <button
+              type="button"
+              disabled={isSubmitting}
+              className="secondary"
+              onClick={(e) => submitMovement(e, 'OUT')}
+            >
+              {isSubmitting ? '처리 중...' : '출고'}
+            </button>
+            <p className="muted">입고/출고를 버튼으로 나눠 Python GUI와 동일한 동선을 제공합니다.</p>
+          </div>
+        </form>
       </Section>
 
       <Section
