@@ -72,6 +72,11 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? process.env.SUPABASE_ANON_KEY;
 const supabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
 
+function deriveStockKey(target?: InventoryRow | InventoryEditDraft | null) {
+  if (!target) return null;
+  return 'key' in target ? target.key : target.id;
+}
+
 function Section({ title, children, actions }: { title: string; children: React.ReactNode; actions?: React.ReactNode }) {
   return (
     <section className="card">
@@ -529,7 +534,7 @@ export default function Home() {
     const res = await fetch(`/api/inventory/${row.id}`, { method: 'DELETE' });
     if (res.ok) {
       setInventoryActionStatus('삭제 완료');
-      const removalKey = target && 'key' in target ? target.key : 'key' in row ? row.key : row.id;
+      const removalKey = deriveStockKey('locations' in (target || {}) ? (target as InventoryRow) : row) ?? row.id;
       setSelectedStockKeys((prev) => prev.filter((id) => id !== removalKey));
       if (focusedStockKey === removalKey) {
         setFocusedStockKey(null);
