@@ -2859,9 +2859,11 @@ class InventoryApp:
     ) -> Tuple[List[Dict], List[int]]:
         start = datetime.fromisoformat(start_day).date() if start_day else None
         end = datetime.fromisoformat(end_day).date() if end_day else None
+        # Preserve insertion order exactly as stored on disk
+        history_entries = self.data.get("history", [])
         results: List[Dict] = []
         indices: List[int] = []
-        for idx, entry in enumerate(self.data.get("history", [])):
+        for idx, entry in enumerate(history_entries):
             if entry.get("type") != tx_type:
                 continue
             if event_only and not entry.get("event"):
@@ -3466,6 +3468,7 @@ class InventoryApp:
                 for location, qty in sorted(locations.items()):
                     target_rows.append([artist, item, option or "", str(qty), location])
 
+        default_actor = self._current_actor()
         history_values = [
             [
                 "Type",
@@ -3501,7 +3504,7 @@ class InventoryApp:
                     entry.get("period", ""),
                     entry.get("year", ""),
                     entry.get("description", ""),
-                    entry.get("actor", ""),
+                    entry.get("actor") or default_actor,
                     str(entry.get("event", False)),
                     entry.get("event_id", ""),
                     str(entry.get("event_open", False)),
