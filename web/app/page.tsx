@@ -654,7 +654,7 @@ export default function Home() {
       <header className="page-header">
         <div>
           <p className="eyebrow">재고 관리 대시보드</p>
-          <p className="muted">Python 데스크톱에서 쓰던 순서를 그대로: 로그인 → 입/출고 입력 → 재고/이력 확인 → CSV 다운로드.</p>
+          <p className="muted">Python 데스크톱에서 쓰던 순서를 그대로: 로그인 → 입/출고 입력 → 재고/이력 확인 → 엑셀 다운로드.</p>
           <p className="muted">상단 탭에서 현재 재고 · 입출고 이력 · 관리자 페이지를 전환하세요.</p>
         </div>
         <div className="status-panel">
@@ -773,7 +773,7 @@ export default function Home() {
               <ol className="muted">
                 <li>관리자 계정으로 로그인 후 세션 확인</li>
                 <li>필요시 위에서 신규 계정 발급</li>
-                <li>입/출고 기록 → 재고/이력/CSV로 검증</li>
+                <li>입/출고 기록 → 재고/이력/엑셀로 검증</li>
               </ol>
             </div>
             <div className="guide-card">
@@ -1005,7 +1005,7 @@ export default function Home() {
                   <option value="album">앨범</option>
                   <option value="md">MD</option>
                 </select>
-                <a className="ghost button-link" href="/api/export?type=inventory">CSV 내보내기</a>
+                <a className="ghost button-link" href="/api/export?type=inventory">엑셀 다운로드</a>
               </div>
             }
           >
@@ -1199,7 +1199,7 @@ export default function Home() {
                 onChange={(e) => setHistoryFilters({ ...historyFilters, to: e.target.value })}
               />
             </label>
-            <a className="ghost button-link" href="/api/export?type=history">CSV 내보내기</a>
+            <a className="ghost button-link" href="/api/export?type=history">엑셀 다운로드</a>
           </div>
         }
       >

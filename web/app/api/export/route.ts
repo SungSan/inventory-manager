@@ -1,12 +1,14 @@
 import { NextResponse } from 'next/server';
+import XLSX from 'xlsx';
 import { supabaseAdmin } from '../../../lib/supabase';
 import { withAuth } from '../../../lib/auth';
 
-function toCsv(rows: any[]) {
-  if (!rows.length) return '';
-  const header = Object.keys(rows[0]);
-  const escape = (val: any) => `"${String(val ?? '').replace(/"/g, '""')}"`;
-  return [header.join(','), ...rows.map((r) => header.map((h) => escape(r[h])).join(','))].join('\n');
+function toExcelBuffer(rows: any[], sheetName: string) {
+  const workbook = XLSX.utils.book_new();
+  const safeRows = rows && rows.length ? rows : [{}];
+  const sheet = XLSX.utils.json_to_sheet(safeRows);
+  XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
+  return XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' });
 }
 
 export async function GET(req: Request) {
@@ -20,14 +22,20 @@ export async function GET(req: Request) {
         .order('created_at', { ascending: false })
         .limit(1000);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-      return new NextResponse(toCsv(data || []), {
-        headers: { 'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename=history.csv' }
+      return new NextResponse(toExcelBuffer(data || [], 'History'), {
+        headers: {
+          'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'Content-Disposition': 'attachment; filename=history.xlsx'
+        }
       });
     }
     const { data, error } = await supabaseAdmin.from('inventory_view').select('*');
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    return new NextResponse(toCsv(data || []), {
-      headers: { 'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename=inventory.csv' }
+    return new NextResponse(toExcelBuffer(data || [], 'Inventory'), {
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': 'attachment; filename=inventory.xlsx'
+      }
     });
   });
 }
