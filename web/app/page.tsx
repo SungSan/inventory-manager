@@ -1,4 +1,5 @@
 'use client';
+import { createClient } from '@supabase/supabase-js';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 type InventoryLocation = {
@@ -66,6 +67,10 @@ const EMPTY_MOVEMENT: MovementPayload = {
   direction: 'IN',
   memo: ''
 };
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? process.env.SUPABASE_ANON_KEY;
+const supabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
 
 function Section({ title, children, actions }: { title: string; children: React.ReactNode; actions?: React.ReactNode }) {
   return (
@@ -332,12 +337,24 @@ export default function Home() {
     alert('30분 이상 사용 기록이 없어 자동 로그아웃되었습니다. 다시 로그인하세요.');
   }
 
+  async function reloadInventory() {
+    const stockRes = await fetch('/api/inventory');
+    if (stockRes.ok) {
+      setStock(await stockRes.json());
+    }
+  }
+
+  async function reloadHistory() {
+    const histRes = await fetch('/api/history');
+    if (histRes.ok) {
+      setHistory(await histRes.json());
+    }
+  }
+
   async function refresh() {
     setIsLoading(true);
     try {
-      const [stockRes, histRes] = await Promise.all([fetch('/api/inventory'), fetch('/api/history')]);
-      if (stockRes.ok) setStock(await stockRes.json());
-      if (histRes.ok) setHistory(await histRes.json());
+      await Promise.all([reloadInventory(), reloadHistory()]);
       setStatus('데이터 동기화 완료');
       setSelectedStockKeys([]);
       setFocusedStockKey(null);
@@ -350,29 +367,32 @@ export default function Home() {
     }
   }
 
-  async function submitMovement(
-    event: React.FormEvent<HTMLFormElement> | React.MouseEvent<HTMLButtonElement>,
-    direction: MovementPayload['direction']
-  ) {
-    event.preventDefault();
-    const artist = movement.artist.trim();
+  async function submitMovement(direction: 'IN' | 'OUT') {
+    const artistValue = movement.artist.trim();
     const albumVersion = movement.album_version.trim();
-    const location = movement.location.trim();
-    const quantity = Number(movement.quantity);
-    const memo = movement.memo.trim();
+    const locationValue = movement.location.trim();
+    const quantityValue = Number(movement.quantity);
+    const memoValue = movement.memo.trim();
+    const optionValue = movement.option;
+    const categoryValue = movement.category;
 
-    if (!artist || !albumVersion || !location || !quantity) {
+    if (!artistValue || !albumVersion || !locationValue || !quantityValue) {
       alert('아티스트, 앨범/버전, 로케이션, 수량(1 이상)을 모두 입력해야 합니다.');
       return;
     }
 
-    if (!Number.isFinite(quantity) || quantity <= 0) {
+    if (!Number.isFinite(quantityValue) || quantityValue <= 0) {
       alert('수량은 1 이상의 양수만 입력 가능합니다.');
       return;
     }
 
-    if (direction === 'OUT' && !memo) {
+    if (direction === 'OUT' && !memoValue) {
       alert('출고 시 메모를 입력해야 합니다.');
+      return;
+    }
+
+    if (!supabase) {
+      alert('Supabase 환경 변수가 설정되지 않았습니다.');
       return;
     }
 
@@ -380,40 +400,35 @@ export default function Home() {
     setStatus('처리 중...');
     markActivity();
 
-    const idempotencyKey = typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? `web-${(crypto as any).randomUUID()}`
-      : `web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    const payload = {
-      artist,
-      category: movement.category,
-      album_version: albumVersion,
-      option: movement.option,
-      location,
-      quantity,
-      direction,
-      memo,
-      idempotency_key: idempotencyKey
-    };
-
     try {
-      const res = await fetch('/api/movements', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+      const { data: { user } } = await supabase.auth.getUser();
+      const created_by = user?.id ?? null;
+
+      const idempotency_key = `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+      const { data, error } = await supabase.rpc('record_movement', {
+        album_version: albumVersion,
+        artist: artistValue,
+        category: categoryValue,
+        created_by,
+        direction,
+        idempotency_key,
+        location: locationValue,
+        memo: memoValue ?? '',
+        option: optionValue ?? '',
+        quantity: Number(quantityValue),
       });
 
-      const data = await res.json().catch(() => null);
-
-      if (res.ok && (data?.ok ?? true)) {
-        setStatus('기록 완료');
-        setMovement((prev) => ({ ...EMPTY_MOVEMENT, direction: prev.direction }));
-        await refresh();
-      } else {
-        const errorMessage = data?.error || res.statusText || '요청 실패';
-        setStatus(`기록 실패: ${errorMessage}`);
-        alert(errorMessage);
+      if (error) {
+        console.error('record_movement rpc error:', error);
+        alert(error.message);
+        return;
       }
+
+      console.log('record_movement ok:', data);
+      await Promise.all([reloadInventory(), reloadHistory()]);
+      setStatus('기록 완료');
+      setMovement((prev) => ({ ...EMPTY_MOVEMENT, direction: prev.direction }));
     } catch (err: any) {
       const message = err?.message || '요청 중 오류가 발생했습니다.';
       setStatus(`기록 실패: ${message}`);
@@ -902,7 +917,12 @@ export default function Home() {
               </div>
             }
           >
-            <form onSubmit={(e) => submitMovement(e, movement.direction)}>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                submitMovement(movement.direction);
+              }}
+            >
               <div className="form-row">
                 <label>
                   <span>아티스트</span>
@@ -976,7 +996,7 @@ export default function Home() {
                 <button
                   type="button"
                   disabled={isSubmitting}
-                  onClick={(e) => submitMovement(e, 'IN')}
+                  onClick={() => submitMovement('IN')}
                 >
                   {isSubmitting ? '처리 중...' : '입고'}
                 </button>
@@ -984,7 +1004,7 @@ export default function Home() {
                   type="button"
                   disabled={isSubmitting}
                   className="secondary"
-                  onClick={(e) => submitMovement(e, 'OUT')}
+                  onClick={() => submitMovement('OUT')}
                 >
                   {isSubmitting ? '처리 중...' : '출고'}
                 </button>
