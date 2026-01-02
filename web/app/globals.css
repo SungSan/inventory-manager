@@ -83,6 +83,8 @@ label span { display: block; font-size: 0.85rem; color: var(--muted); margin-bot
 .guide-card ul { margin: 0.5rem 0; padding-left: 1.1rem; color: var(--muted); }
 .guide-card ol { margin: 0.5rem 0; padding-left: 1.1rem; }
 .inline-editor { margin-top: 1rem; padding: 1rem; border: 1px dashed var(--border); border-radius: 12px; background: #f8fafc; }
+.inline-editor-row td { padding: 0; background: #f1f5f9; border-top: 2px solid var(--border); }
+.inline-editor-row .inline-editor { margin: 0; border-left: none; border-right: none; border-bottom: none; border-radius: 0; }
 .tab-row { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
 .tab { background: #e5e7eb; color: #111827; border: 1px solid var(--border); }
 .tab.active { background: #1e40af; color: white; border-color: #1e3a8a; }

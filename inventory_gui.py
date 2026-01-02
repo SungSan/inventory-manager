@@ -1281,7 +1281,6 @@ class InventoryApp:
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
 
         self._build_stock_section(left)
-        self._build_graph_section(right)
         self._build_history_section(right)
 
         self.status_label = ttk.Label(main, textvariable=self.status_var, foreground="#1c6b1c")
@@ -1529,32 +1528,9 @@ class InventoryApp:
         ttk.Button(action_row, text="백업 불러오기", command=self.restore_from_backup_file).pack(side=tk.RIGHT)
         ttk.Button(action_row, text="데이터 백업", command=self.backup_now).pack(side=tk.RIGHT, padx=(0, 8))
 
-    def _build_graph_section(self, parent: ttk.Frame) -> None:
-        box = ttk.LabelFrame(parent, text="최근 입출고 그래프", padding=12)
-        box.pack(fill=tk.BOTH, expand=False)
-
-        canvas_wrap = ttk.Frame(box)
-        canvas_wrap.pack(fill=tk.BOTH, expand=True)
-
-        self.graph_canvas = tk.Canvas(
-            canvas_wrap, height=260, background="white", highlightthickness=1, highlightbackground="#ddd"
-        )
-        self.graph_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
-        graph_xscroll = ttk.Scrollbar(canvas_wrap, orient=tk.HORIZONTAL, command=self.graph_canvas.xview)
-        graph_xscroll.pack(side=tk.BOTTOM, fill=tk.X)
-        self.graph_canvas.configure(xscrollcommand=graph_xscroll.set)
-
-        legend = ttk.Frame(box)
-        legend.pack(anchor="e", pady=(4, 0))
-        ttk.Label(legend, text="입고", foreground="#2563eb").pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Label(legend, text="출고", foreground="#b91c1c").pack(side=tk.LEFT)
-        self.graph_range_var = tk.StringVar()
-        ttk.Label(box, textvariable=self.graph_range_var, anchor="center").pack(fill=tk.X, pady=(6, 0))
-
     def _build_history_section(self, parent: ttk.Frame) -> None:
         box = ttk.LabelFrame(parent, text="입출고 검색", padding=12)
-        box.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        box.pack(fill=tk.BOTH, expand=True)
 
         form = ttk.Frame(box)
         form.pack(fill=tk.X)
@@ -2221,143 +2197,6 @@ class InventoryApp:
             return end_day, start_day
         return start_day or "", end_day or ""
 
-    def _draw_graph(self, start_day: str, end_day: str, artist: Optional[str]) -> None:
-        if not hasattr(self, "graph_canvas"):
-            return
-        canvas: tk.Canvas = self.graph_canvas
-        canvas.delete("all")
-        if hasattr(self, "graph_range_var"):
-            self.graph_range_var.set("")
-        try:
-            start = datetime.fromisoformat(start_day).date()
-            end = datetime.fromisoformat(end_day).date()
-        except ValueError:
-            canvas.create_text(10, 20, anchor="w", text="날짜 범위를 해석하지 못했습니다.", fill="#b91c1c")
-            return
-
-        if start > end:
-            start, end = end, start
-
-        total_days = (end - start).days + 1
-        aggregate_monthly = total_days > 30
-
-        buckets: List[date] = []
-        if aggregate_monthly:
-            cursor = date(start.year, start.month, 1)
-            end_month = date(end.year, end.month, 1)
-            while cursor <= end_month:
-                buckets.append(cursor)
-                # advance one month
-                next_month = cursor.replace(day=28) + timedelta(days=4)
-                cursor = next_month.replace(day=1)
-        else:
-            current = start
-            while current <= end:
-                buckets.append(current)
-                current += timedelta(days=1)
-        if not buckets:
-            canvas.create_text(10, 20, anchor="w", text="표시할 날짜가 없습니다.")
-            return
-
-        inbound = {bucket: 0 for bucket in buckets}
-        outbound = {bucket: 0 for bucket in buckets}
-        for entry in self.data.get("history", []):
-            entry_day_str = entry.get("day")
-            if not entry_day_str:
-                continue
-            if artist and entry.get("artist") != artist:
-                continue
-            try:
-                entry_day = datetime.fromisoformat(entry_day_str).date()
-            except ValueError:
-                continue
-            if entry_day < start or entry_day > end:
-                continue
-            bucket_key = (
-                date(entry_day.year, entry_day.month, 1)
-                if aggregate_monthly
-                else entry_day
-            )
-            if entry.get("type") == "in":
-                inbound[bucket_key] = inbound.get(bucket_key, 0) + int(entry.get("quantity", 0))
-            elif entry.get("type") == "out":
-                outbound[bucket_key] = outbound.get(bucket_key, 0) + int(entry.get("quantity", 0))
-
-        max_value = max(max(inbound.values()), max(outbound.values()))
-        if max_value == 0:
-            canvas.create_text(10, 20, anchor="w", text="최근 범위에 입출고 데이터가 없습니다.")
-            return
-
-        canvas.update_idletasks()
-        visible_width = max(canvas.winfo_width(), int(canvas.cget("width")), 320)
-        height = max(canvas.winfo_height(), int(canvas.cget("height")), 260)
-        margin = 36
-        # widen spacing so each bar pair is easier to read, especially for dense day ranges
-        min_step = 48 if not aggregate_monthly else 64
-        content_width = max(visible_width, int(margin * 2 + max(len(buckets), 1) * min_step))
-        usable_width = content_width - margin * 2
-        usable_height = height - margin * 2
-        x_step = usable_width / max(len(buckets), 1)
-        bar_width = max(6, x_step * 0.3)
-        scale = usable_height / max_value
-        base_y = height - margin
-
-        for idx, bucket in enumerate(buckets):
-            x_center = margin + x_step * idx + x_step / 2
-            in_value = inbound.get(bucket, 0)
-            out_value = outbound.get(bucket, 0)
-            if in_value:
-                in_height = in_value * scale
-                canvas.create_rectangle(
-                    x_center - bar_width,
-                    base_y - in_height,
-                    x_center - 2,
-                    base_y,
-                    fill="#2563eb",
-                    outline="",
-                )
-                canvas.create_text(
-                    x_center - (bar_width / 2 + 1),
-                    base_y - in_height - 4,
-                    text=str(in_value),
-                    fill="#1d4ed8",
-                    font=("Arial", 9),
-                    anchor="s",
-                )
-            if out_value:
-                out_height = out_value * scale
-                canvas.create_rectangle(
-                    x_center + 2,
-                    base_y - out_height,
-                    x_center + bar_width,
-                    base_y,
-                    fill="#b91c1c",
-                    outline="",
-                )
-                canvas.create_text(
-                    x_center + (bar_width / 2 + 1),
-                    base_y - out_height - 4,
-                    text=str(out_value),
-                    fill="#b91c1c",
-                    font=("Arial", 9),
-                    anchor="s",
-                )
-            label_text = bucket.strftime("%m/%d") if not aggregate_monthly else bucket.strftime("%y/%m")
-            canvas.create_text(
-                x_center,
-                base_y + 12,
-                text=label_text,
-                fill="#374151",
-                font=("Arial", 9),
-                anchor="n",
-            )
-
-        canvas.configure(scrollregion=(0, 0, content_width, height))
-
-        if hasattr(self, "graph_range_var"):
-            mode_label = "일간" if not aggregate_monthly else "월별"
-            self.graph_range_var.set(f"그래프 범위: {start_day} ~ {end_day} ({mode_label} {len(buckets)}개)")
-
     def _parse_day_input(self, raw: str) -> date:
         cleaned = raw.strip()
         if not cleaned:
@@ -2998,7 +2837,6 @@ class InventoryApp:
         self._update_history_tree(filtered)
         if not triggered_by_calendar:
             self.set_status(f"{('입고' if tx_type == 'in' else '출고')} 검색 결과 {len(filtered)}건")
-        self._draw_graph(start_day, end_day, artist)
 
     def _refresh_current_history(self) -> None:
         if self.current_history_type == "out" and self.history_event_filter:

@@ -505,6 +505,19 @@ export default function Home() {
         ? '복수 로케이션 보유: 위치를 직접 선택하세요'
         : '선택한 재고를 입/출고 입력에 불러왔습니다'
     );
+
+    if (row.locations[0]) {
+      setFocusedStockKey(row.key);
+      setEditDraft({
+        id: row.locations[0].id,
+        artist: row.artist,
+        category: row.category,
+        album_version: row.album_version,
+        option: row.option,
+        location: row.locations[0].location,
+        quantity: row.locations[0].quantity,
+      });
+    }
   }
 
   async function saveInventoryEdit() {
@@ -1102,59 +1115,28 @@ export default function Home() {
             </thead>
             <tbody>
               {filteredStock.map((row) => (
-                <tr
-                  key={row.key}
-                  className={selectedStockKeys.includes(row.key) ? 'selected-row' : ''}
-                  onClick={() => handleStockClick(row)}
-                  onDoubleClick={() => handleStockDoubleClick(row)}
-                >
-                  <td>{row.artist}</td>
-                  <td>{row.category}</td>
-                  <td>{row.album_version}</td>
-                  <td>{row.option}</td>
-                  <td>
-                    <div className="pill-row wrap">
-                      {row.locations.map((loc) => (
-                        <button
-                          key={`${row.key}-${loc.id}`}
-                          className="ghost small"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedStockKeys((prev) =>
-                              prev.includes(row.key) ? prev : [...prev, row.key]
-                            );
-                            setFocusedStockKey(row.key);
-                            setEditDraft({
-                              id: loc.id,
-                              artist: row.artist,
-                              category: row.category,
-                              album_version: row.album_version,
-                              option: row.option,
-                              location: loc.location,
-                              quantity: loc.quantity,
-                            });
-                          }}
-                        >
-                          {loc.location}: {loc.quantity.toLocaleString()}
-                        </button>
-                      ))}
-                    </div>
-                  </td>
-                  <td className="align-right">{row.total_quantity.toLocaleString()}</td>
-                  <td>
-                    {sessionRole === 'viewer' ? (
-                      <span className="muted">읽기 전용</span>
-                    ) : (
-                      <div className="row-actions">
-                        <button
-                          className="ghost small"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedStockKeys((prev) =>
-                              prev.includes(row.key) ? prev : [...prev, row.key]
-                            );
-                            const loc = row.locations[0];
-                            if (loc) {
+                <React.Fragment key={row.key}>
+                  <tr
+                    className={selectedStockKeys.includes(row.key) ? 'selected-row' : ''}
+                    onClick={() => handleStockClick(row)}
+                    onDoubleClick={() => handleStockDoubleClick(row)}
+                  >
+                    <td>{row.artist}</td>
+                    <td>{row.category}</td>
+                    <td>{row.album_version}</td>
+                    <td>{row.option}</td>
+                    <td>
+                      <div className="pill-row wrap">
+                        {row.locations.map((loc) => (
+                          <button
+                            key={`${row.key}-${loc.id}`}
+                            className="ghost small"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedStockKeys((prev) =>
+                                prev.includes(row.key) ? prev : [...prev, row.key]
+                              );
+                              setFocusedStockKey(row.key);
                               setEditDraft({
                                 id: loc.id,
                                 artist: row.artist,
@@ -1164,94 +1146,133 @@ export default function Home() {
                                 location: loc.location,
                                 quantity: loc.quantity,
                               });
-                            }
-                          }}
-                        >
-                          선택
-                        </button>
-                        <button
-                          className="ghost danger small"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedStockKeys((prev) =>
-                              prev.includes(row.key) ? prev : [...prev, row.key]
-                            );
-                            setFocusedStockKey(row.key);
-                            deleteInventoryRow(row);
-                          }}
-                        >
-                          삭제
-                        </button>
+                            }}
+                          >
+                            {loc.location}: {loc.quantity.toLocaleString()}
+                          </button>
+                        ))}
                       </div>
-                    )}
-                  </td>
-                </tr>
+                    </td>
+                    <td className="align-right">{row.total_quantity.toLocaleString()}</td>
+                    <td>
+                      {sessionRole === 'viewer' ? (
+                        <span className="muted">읽기 전용</span>
+                      ) : (
+                        <div className="row-actions">
+                          <button
+                            className="ghost small"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedStockKeys((prev) =>
+                                prev.includes(row.key) ? prev : [...prev, row.key]
+                              );
+                              const loc = row.locations[0];
+                              if (loc) {
+                                setFocusedStockKey(row.key);
+                                setEditDraft({
+                                  id: loc.id,
+                                  artist: row.artist,
+                                  category: row.category,
+                                  album_version: row.album_version,
+                                  option: row.option,
+                                  location: loc.location,
+                                  quantity: loc.quantity,
+                                });
+                              }
+                            }}
+                          >
+                            선택
+                          </button>
+                          <button
+                            className="ghost danger small"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedStockKeys((prev) =>
+                                prev.includes(row.key) ? prev : [...prev, row.key]
+                              );
+                              setFocusedStockKey(row.key);
+                              deleteInventoryRow(row);
+                            }}
+                          >
+                            삭제
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                  {sessionRole !== 'viewer' && editDraft && focusedStockKey === row.key && (
+                    <tr className="inline-editor-row">
+                      <td colSpan={7}>
+                        <div className="inline-editor">
+                          <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
+                            <h3>선택 재고 편집</h3>
+                            <span className="muted">더블클릭으로 입력창 자동 채우기 · 저장 후 새로고침</span>
+                          </div>
+                          <div className="form-row">
+                            <label>
+                              <span>아티스트</span>
+                              <input
+                                value={editDraft.artist}
+                                onChange={(e) => setEditDraft({ ...editDraft, artist: e.target.value })}
+                              />
+                            </label>
+                            <label className="compact">
+                              <span>카테고리</span>
+                              <select
+                                value={editDraft.category}
+                                onChange={(e) => setEditDraft({ ...editDraft, category: e.target.value })}
+                              >
+                                <option value="album">앨범</option>
+                                <option value="md">MD</option>
+                              </select>
+                            </label>
+                            <label>
+                              <span>앨범/버전</span>
+                              <input
+                                value={editDraft.album_version}
+                                onChange={(e) => setEditDraft({ ...editDraft, album_version: e.target.value })}
+                              />
+                            </label>
+                            <label>
+                              <span>옵션</span>
+                              <input
+                                value={editDraft.option}
+                                onChange={(e) => setEditDraft({ ...editDraft, option: e.target.value })}
+                              />
+                            </label>
+                            <label>
+                              <span>로케이션</span>
+                              <input
+                                value={editDraft.location}
+                                onChange={(e) => setEditDraft({ ...editDraft, location: e.target.value })}
+                              />
+                            </label>
+                            <label className="compact">
+                              <span>수량</span>
+                              <input
+                                type="number"
+                                value={editDraft.quantity}
+                                min={0}
+                                onChange={(e) => setEditDraft({ ...editDraft, quantity: Number(e.target.value) })}
+                              />
+                            </label>
+                          </div>
+                          <div className="actions-row">
+                            <button onClick={saveInventoryEdit}>수정 저장</button>
+                            <button className="ghost danger" onClick={() => deleteInventoryRow(editDraft)}>
+                              삭제
+                            </button>
+                            <span className="muted">{inventoryActionStatus || '선택 행만 operator/admin 수정 가능'}</span>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
         </div>
-        {sessionRole !== 'viewer' && editDraft && (
-          <div className="inline-editor">
-            <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
-              <h3>선택 재고 편집</h3>
-              <span className="muted">더블클릭으로 입력창 자동 채우기 · 저장 후 새로고침</span>
-            </div>
-            <div className="form-row">
-              <label>
-                <span>아티스트</span>
-                <input
-                  value={editDraft.artist}
-                  onChange={(e) => setEditDraft({ ...editDraft, artist: e.target.value })}
-                />
-              </label>
-              <label className="compact">
-                <span>카테고리</span>
-                <select
-                  value={editDraft.category}
-                  onChange={(e) => setEditDraft({ ...editDraft, category: e.target.value })}
-                >
-                  <option value="album">앨범</option>
-                  <option value="md">MD</option>
-                </select>
-              </label>
-              <label>
-                <span>앨범/버전</span>
-                <input
-                  value={editDraft.album_version}
-                  onChange={(e) => setEditDraft({ ...editDraft, album_version: e.target.value })}
-                />
-              </label>
-              <label>
-                <span>옵션</span>
-                <input
-                  value={editDraft.option}
-                  onChange={(e) => setEditDraft({ ...editDraft, option: e.target.value })}
-                />
-              </label>
-              <label>
-                <span>로케이션</span>
-                <input
-                  value={editDraft.location}
-                  onChange={(e) => setEditDraft({ ...editDraft, location: e.target.value })}
-                />
-              </label>
-              <label className="compact">
-                <span>수량</span>
-                <input
-                  type="number"
-                  value={editDraft.quantity}
-                  min={0}
-                  onChange={(e) => setEditDraft({ ...editDraft, quantity: Number(e.target.value) })}
-                />
-              </label>
-            </div>
-            <div className="actions-row">
-              <button onClick={saveInventoryEdit}>수정 저장</button>
-              <button className="ghost danger" onClick={() => deleteInventoryRow(editDraft)}>삭제</button>
-              <span className="muted">{inventoryActionStatus || '선택 행만 operator/admin 수정 가능'}</span>
-            </div>
-          </div>
-        )}
       </Section>
         </>
       )}
