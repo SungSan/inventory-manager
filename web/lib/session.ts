@@ -10,7 +10,8 @@ export type SessionData = IronSession;
 
 const sessionPassword = process.env.SESSION_PASSWORD;
 const cookieName = process.env.SESSION_COOKIE_NAME || 'inventory_session';
-const sessionTtlSeconds = 60 * 30; // 30 minutes
+export const sessionMaxAgeMs = 1000 * 60 * 60 * 24 * 7; // 7 days for active sessions
+const sessionTtlSeconds = Math.floor(sessionMaxAgeMs / 1000);
 
 if (!sessionPassword) {
   throw new Error('SESSION_PASSWORD must be set');
