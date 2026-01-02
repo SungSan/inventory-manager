@@ -1,15 +1,23 @@
 'use client';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-type InventoryRow = {
+type InventoryLocation = {
   id: string;
+  location: string;
+  quantity: number;
+};
+
+type InventoryRow = {
+  key: string;
   artist: string;
   category: string;
   album_version: string;
   option: string;
-  location: string;
-  quantity: number;
+  total_quantity: number;
+  locations: InventoryLocation[];
 };
+
+type InventoryEditDraft = InventoryLocation & Omit<InventoryRow, 'locations' | 'total_quantity' | 'key'>;
 
 type HistoryRow = {
   created_at: string;
@@ -89,7 +97,9 @@ function formatDate(value: string) {
 function aggregateLocations(rows: InventoryRow[]) {
   const byLocation: Record<string, number> = {};
   rows.forEach((row) => {
-    byLocation[row.location] = (byLocation[row.location] ?? 0) + row.quantity;
+    row.locations.forEach((loc) => {
+      byLocation[loc.location] = (byLocation[loc.location] ?? 0) + loc.quantity;
+    });
   });
   return Object.entries(byLocation).sort((a, b) => b[1] - a[1]);
 }
@@ -103,9 +113,9 @@ export default function Home() {
   const [stock, setStock] = useState<InventoryRow[]>([]);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [movement, setMovement] = useState<MovementPayload>(EMPTY_MOVEMENT);
-  const [selectedStockIds, setSelectedStockIds] = useState<string[]>([]);
-  const [focusedStockId, setFocusedStockId] = useState<string | null>(null);
-  const [editDraft, setEditDraft] = useState<InventoryRow | null>(null);
+  const [selectedStockKeys, setSelectedStockKeys] = useState<string[]>([]);
+  const [focusedStockKey, setFocusedStockKey] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<InventoryEditDraft | null>(null);
   const [activePanel, setActivePanel] = useState<'stock' | 'history' | 'admin'>('stock');
   const [stockFilters, setStockFilters] = useState({ search: '', category: '', location: '', artist: '' });
   const [locationPresets, setLocationPresets] = useState<string[]>([]);
@@ -299,8 +309,8 @@ export default function Home() {
     setHistory([]);
     setAdminLogs([]);
     setLocationPresets([]);
-    setSelectedStockIds([]);
-    setFocusedStockId(null);
+    setSelectedStockKeys([]);
+    setFocusedStockKey(null);
     if (logoutTimeout.current) {
       clearTimeout(logoutTimeout.current);
       logoutTimeout.current = null;
@@ -329,8 +339,8 @@ export default function Home() {
       if (stockRes.ok) setStock(await stockRes.json());
       if (histRes.ok) setHistory(await histRes.json());
       setStatus('데이터 동기화 완료');
-      setSelectedStockIds([]);
-      setFocusedStockId(null);
+      setSelectedStockKeys([]);
+      setFocusedStockKey(null);
       setEditDraft(null);
       markActivity();
     } catch (err) {
@@ -430,30 +440,35 @@ export default function Home() {
   }
 
   function handleStockClick(row: InventoryRow) {
-    setSelectedStockIds((prev) => {
-      const exists = prev.includes(row.id);
-      const next = exists ? prev.filter((id) => id !== row.id) : [...prev, row.id];
-      if (exists && focusedStockId === row.id) {
-        setFocusedStockId(null);
+    setSelectedStockKeys((prev) => {
+      const exists = prev.includes(row.key);
+      const next = exists ? prev.filter((id) => id !== row.key) : [...prev, row.key];
+      if (exists && focusedStockKey === row.key) {
+        setFocusedStockKey(null);
       } else if (!exists) {
-        setFocusedStockId(row.id);
+        setFocusedStockKey(row.key);
       }
       return next;
     });
   }
 
   function handleStockDoubleClick(row: InventoryRow) {
-    setSelectedStockIds((prev) => (prev.includes(row.id) ? prev : [...prev, row.id]));
-    setFocusedStockId(row.id);
-    setEditDraft(row);
-    const hasMultipleLocations = stock.some(
-      (r) =>
-        r.artist === row.artist &&
-        r.category === row.category &&
-        r.album_version === row.album_version &&
-        r.option === row.option &&
-        r.location !== row.location
-    );
+    setSelectedStockKeys((prev) => (prev.includes(row.key) ? prev : [...prev, row.key]));
+    setFocusedStockKey(row.key);
+    const hasMultipleLocations = row.locations.length > 1;
+    const defaultLocation = hasMultipleLocations ? '' : row.locations[0]?.location ?? '';
+
+    if (row.locations[0]) {
+      setEditDraft({
+        id: row.locations[0].id,
+        artist: row.artist,
+        category: row.category,
+        album_version: row.album_version,
+        option: row.option,
+        location: row.locations[0].location,
+        quantity: row.locations[0].quantity,
+      });
+    }
 
     setMovement((prev) => ({
       ...prev,
@@ -461,7 +476,7 @@ export default function Home() {
       category: row.category as MovementPayload['category'],
       album_version: row.album_version,
       option: row.option,
-      location: hasMultipleLocations ? '' : row.location,
+      location: defaultLocation,
       quantity: 0,
     }));
 
@@ -491,17 +506,17 @@ export default function Home() {
     }
   }
 
-  async function deleteInventoryRow(target?: InventoryRow) {
-    const row = target ?? editDraft;
+  async function deleteInventoryRow(target?: InventoryRow | InventoryEditDraft) {
+    const row = target && 'locations' in target ? { ...target, ...target.locations[0] } : target ?? editDraft;
     if (!row) return;
     if (!confirm('선택한 재고를 삭제하시겠습니까?')) return;
     setInventoryActionStatus('삭제 중...');
     const res = await fetch(`/api/inventory/${row.id}`, { method: 'DELETE' });
     if (res.ok) {
       setInventoryActionStatus('삭제 완료');
-      setSelectedStockIds((prev) => prev.filter((id) => id !== row.id));
-      if (focusedStockId === row.id) {
-        setFocusedStockId(null);
+      setSelectedStockKeys((prev) => prev.filter((id) => id !== (target?.key ?? row.id)));
+      if (focusedStockKey === (target?.key ?? row.id)) {
+        setFocusedStockKey(null);
       }
       await refresh();
     } else {
@@ -513,19 +528,21 @@ export default function Home() {
 
   const filteredStock = useMemo(() => {
     return stock.filter((row) => {
-      const matchesSearch = [row.artist, row.album_version, row.option, row.location]
+      const locationText = row.locations.map((loc) => `${loc.location} ${loc.quantity}`).join(' ');
+      const matchesSearch = [row.artist, row.album_version, row.option, locationText]
         .join(' ')
         .toLowerCase()
         .includes(stockFilters.search.toLowerCase());
       const matchesCategory = !stockFilters.category || row.category === stockFilters.category;
-      const matchesLocation = !stockFilters.location || row.location === stockFilters.location;
+      const matchesLocation =
+        !stockFilters.location || row.locations.some((loc) => loc.location === stockFilters.location);
       const matchesArtist = !stockFilters.artist || row.artist === stockFilters.artist;
       return matchesSearch && matchesCategory && matchesLocation && matchesArtist;
     });
   }, [stock, stockFilters]);
 
   const stockLocations = useMemo(
-    () => Array.from(new Set(stock.map((row) => row.location))).filter(Boolean).sort(),
+    () => Array.from(new Set(stock.flatMap((row) => row.locations.map((loc) => loc.location)))).filter(Boolean).sort(),
     [stock]
   );
 
@@ -565,7 +582,7 @@ export default function Home() {
   }, [history, historyFilters]);
 
   const totalQuantity = useMemo(
-    () => filteredStock.reduce((sum, row) => sum + row.quantity, 0),
+    () => filteredStock.reduce((sum, row) => sum + row.total_quantity, 0),
     [filteredStock]
   );
   const distinctItems = useMemo(
@@ -626,23 +643,36 @@ export default function Home() {
   }, [activePanel, history.length, stock.length]);
 
   useEffect(() => {
-    if (!focusedStockId) {
+    if (!focusedStockKey) {
       setEditDraft(null);
       return;
     }
-    const match = stock.find((row) => row.id === focusedStockId);
-    setEditDraft(match ?? null);
-  }, [focusedStockId, stock]);
+    const match = stock.find((row) => row.key === focusedStockKey);
+    const defaultLocation = match?.locations?.[0];
+    if (match && defaultLocation) {
+      setEditDraft({
+        id: defaultLocation.id,
+        artist: match.artist,
+        category: match.category,
+        album_version: match.album_version,
+        option: match.option,
+        location: defaultLocation.location,
+        quantity: defaultLocation.quantity,
+      });
+    } else {
+      setEditDraft(null);
+    }
+  }, [focusedStockKey, stock]);
 
   useEffect(() => {
-    if (focusedStockId && !selectedStockIds.includes(focusedStockId)) {
-      setFocusedStockId(null);
+    if (focusedStockKey && !selectedStockKeys.includes(focusedStockKey)) {
+      setFocusedStockKey(null);
     }
-  }, [selectedStockIds, focusedStockId]);
+  }, [selectedStockKeys, focusedStockKey]);
 
   useEffect(() => {
     setInventoryActionStatus('');
-  }, [selectedStockIds, focusedStockId]);
+  }, [selectedStockKeys, focusedStockKey]);
 
   useEffect(() => {
     fetchSessionInfo();
@@ -1047,8 +1077,8 @@ export default function Home() {
             <tbody>
               {filteredStock.map((row) => (
                 <tr
-                  key={row.id}
-                  className={selectedStockIds.includes(row.id) ? 'selected-row' : ''}
+                  key={row.key}
+                  className={selectedStockKeys.includes(row.key) ? 'selected-row' : ''}
                   onClick={() => handleStockClick(row)}
                   onDoubleClick={() => handleStockDoubleClick(row)}
                 >
@@ -1056,8 +1086,35 @@ export default function Home() {
                   <td>{row.category}</td>
                   <td>{row.album_version}</td>
                   <td>{row.option}</td>
-                  <td>{row.location}</td>
-                  <td className="align-right">{row.quantity.toLocaleString()}</td>
+                  <td>
+                    <div className="pill-row wrap">
+                      {row.locations.map((loc) => (
+                        <button
+                          key={`${row.key}-${loc.id}`}
+                          className="ghost small"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedStockKeys((prev) =>
+                              prev.includes(row.key) ? prev : [...prev, row.key]
+                            );
+                            setFocusedStockKey(row.key);
+                            setEditDraft({
+                              id: loc.id,
+                              artist: row.artist,
+                              category: row.category,
+                              album_version: row.album_version,
+                              option: row.option,
+                              location: loc.location,
+                              quantity: loc.quantity,
+                            });
+                          }}
+                        >
+                          {loc.location}: {loc.quantity.toLocaleString()}
+                        </button>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="align-right">{row.total_quantity.toLocaleString()}</td>
                   <td>
                     {sessionRole === 'viewer' ? (
                       <span className="muted">읽기 전용</span>
@@ -1067,10 +1124,21 @@ export default function Home() {
                           className="ghost small"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setSelectedStockIds((prev) =>
-                              prev.includes(row.id) ? prev : [...prev, row.id]
+                            setSelectedStockKeys((prev) =>
+                              prev.includes(row.key) ? prev : [...prev, row.key]
                             );
-                            setEditDraft(row);
+                            const loc = row.locations[0];
+                            if (loc) {
+                              setEditDraft({
+                                id: loc.id,
+                                artist: row.artist,
+                                category: row.category,
+                                album_version: row.album_version,
+                                option: row.option,
+                                location: loc.location,
+                                quantity: loc.quantity,
+                              });
+                            }
                           }}
                         >
                           선택
@@ -1079,10 +1147,10 @@ export default function Home() {
                           className="ghost danger small"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setSelectedStockIds((prev) =>
-                              prev.includes(row.id) ? prev : [...prev, row.id]
+                            setSelectedStockKeys((prev) =>
+                              prev.includes(row.key) ? prev : [...prev, row.key]
                             );
-                            setEditDraft(row);
+                            setFocusedStockKey(row.key);
                             deleteInventoryRow(row);
                           }}
                         >
