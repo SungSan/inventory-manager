@@ -2,14 +2,20 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../lib/supabase';
 import { withAuth } from '../../../lib/auth';
 
-type InventoryRow = {
+type InventoryLocation = {
   id: string;
+  location: string;
+  quantity: number;
+};
+
+type InventoryRow = {
+  key: string;
   artist: string;
   category: string;
   album_version: string;
   option: string;
-  location: string;
-  quantity: number;
+  total_quantity: number;
+  locations: InventoryLocation[];
 };
 
 export async function GET() {
@@ -23,14 +29,41 @@ export async function GET() {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const rows: InventoryRow[] = (data || []).map((row: any) => ({
-      id: row.id,
-      artist: row.items?.artist ?? '',
-      category: row.items?.category ?? '',
-      album_version: row.items?.album_version ?? '',
-      option: row.items?.option ?? '',
-      location: row.location,
-      quantity: row.quantity,
+    const grouped = new Map<string, InventoryRow>();
+    const order: string[] = [];
+
+    (data || []).forEach((row: any) => {
+      const artist = row.items?.artist ?? '';
+      const category = row.items?.category ?? '';
+      const album_version = row.items?.album_version ?? '';
+      const option = row.items?.option ?? '';
+      const key = `${artist}|${category}|${album_version}|${option}`;
+
+      if (!grouped.has(key)) {
+        order.push(key);
+        grouped.set(key, {
+          key,
+          artist,
+          category,
+          album_version,
+          option,
+          total_quantity: 0,
+          locations: [],
+        });
+      }
+
+      const entry = grouped.get(key)!;
+      entry.total_quantity += row.quantity ?? 0;
+      entry.locations.push({
+        id: row.id,
+        location: row.location,
+        quantity: row.quantity,
+      });
+    });
+
+    const rows: InventoryRow[] = order.map((key) => grouped.get(key)!).map((row) => ({
+      ...row,
+      locations: row.locations.sort((a, b) => a.location.localeCompare(b.location)),
     }));
 
     return NextResponse.json(rows);
