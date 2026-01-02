@@ -514,8 +514,9 @@ export default function Home() {
     const res = await fetch(`/api/inventory/${row.id}`, { method: 'DELETE' });
     if (res.ok) {
       setInventoryActionStatus('삭제 완료');
-      setSelectedStockKeys((prev) => prev.filter((id) => id !== (target?.key ?? row.id)));
-      if (focusedStockKey === (target?.key ?? row.id)) {
+      const removalKey = target && 'key' in target ? target.key : 'key' in row ? row.key : row.id;
+      setSelectedStockKeys((prev) => prev.filter((id) => id !== removalKey));
+      if (focusedStockKey === removalKey) {
         setFocusedStockKey(null);
       }
       await refresh();

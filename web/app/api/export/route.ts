@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import XLSX from 'xlsx';
+import * as XLSX from 'xlsx';
 import { supabaseAdmin } from '../../../lib/supabase';
 import { withAuth } from '../../../lib/auth';
 
