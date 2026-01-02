@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from './supabase';
-import { getSession, getSessionFromRequest, Role, SessionData } from './session';
+import { getSession, getSessionFromRequest, Role, SessionData, sessionMaxAgeMs } from './session';
 import type { NextRequest } from 'next/server';
 
 export async function verifyLogin(email: string, password: string) {
@@ -37,7 +37,7 @@ export async function setSession(req: NextRequest, user: { id: string; email: st
   session.userId = user.id;
   session.email = user.email;
   session.role = user.role;
-  session.expiresAt = Date.now() + 30 * 60 * 1000;
+  session.expiresAt = Date.now() + sessionMaxAgeMs;
   await session.save();
   return response;
 }

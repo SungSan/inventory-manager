@@ -46,6 +46,8 @@ type MovementPayload = {
 
 type Role = 'admin' | 'operator' | 'viewer';
 
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes of inactivity triggers logout
+
 const EMPTY_MOVEMENT: MovementPayload = {
   artist: '',
   category: 'album',
@@ -128,7 +130,7 @@ export default function Home() {
   const [sessionRole, setSessionRole] = useState<Role | null>(null);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [showAdmin, setShowAdmin] = useState(false);
-  const [sessionExpiry, setSessionExpiry] = useState<number | null>(null);
+  const [idleDeadline, setIdleDeadline] = useState<number | null>(null);
   const [importStatus, setImportStatus] = useState('');
   const [logStatus, setLogStatus] = useState('');
   const [adminLogs, setAdminLogs] = useState<AdminLog[]>([]);
@@ -138,13 +140,18 @@ export default function Home() {
   const logoutTimeout = useRef<NodeJS.Timeout | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const markActivity = () => {
+    const next = Date.now() + IDLE_TIMEOUT_MS;
+    setIdleDeadline(next);
+  };
+
   async function fetchSessionInfo() {
     const res = await fetch('/api/auth/me');
     if (!res.ok) {
       setSessionRole(null);
       setSessionEmail(null);
       setShowAdmin(false);
-      setSessionExpiry(null);
+      setIdleDeadline(null);
       return null;
     }
     const data = await res.json();
@@ -152,12 +159,12 @@ export default function Home() {
       setSessionRole(null);
       setSessionEmail(null);
       setShowAdmin(false);
-      setSessionExpiry(null);
+      setIdleDeadline(null);
       return null;
     }
     setSessionRole(data.role ?? null);
     setSessionEmail(data.email ?? null);
-    setSessionExpiry(data.expiresAt ?? null);
+    markActivity();
     await fetchLocations();
     return data;
   }
@@ -168,9 +175,14 @@ export default function Home() {
       if (res.ok) {
         const data = await res.json();
         setLocationPresets(data || []);
+        if (data) {
+          markActivity();
+        }
+      } else {
+        setAdminStatus('로케이션 불러오기 실패');
       }
     } catch (err) {
-      // ignore silently
+      setAdminStatus('로케이션 불러오기 실패');
     }
   }
 
@@ -230,6 +242,7 @@ export default function Home() {
       setLocationPresets(await res.json());
       setNewLocation('');
       setAdminStatus('로케이션 저장 완료');
+      markActivity();
     } else {
       const text = await res.text();
       setAdminStatus(`저장 실패: ${text || res.status}`);
@@ -247,6 +260,7 @@ export default function Home() {
     if (res.ok) {
       setLocationPresets(await res.json());
       setAdminStatus('삭제 완료');
+      markActivity();
     } else {
       const text = await res.text();
       setAdminStatus(`삭제 실패: ${text || res.status}`);
@@ -262,6 +276,7 @@ export default function Home() {
     });
     if (res.ok) {
       setStatus('로그인 완료');
+      markActivity();
       const sessionInfo = await fetchSessionInfo();
       if (sessionInfo?.role === 'admin') {
         await loadAdminLogs();
@@ -278,7 +293,7 @@ export default function Home() {
     setStatus(reason === 'expired' ? '세션 만료' : '로그아웃됨');
     setSessionRole(null);
     setSessionEmail(null);
-    setSessionExpiry(null);
+    setIdleDeadline(null);
     setShowAdmin(false);
     setStock([]);
     setHistory([]);
@@ -304,7 +319,7 @@ export default function Home() {
 
   async function handleAutoLogout() {
     await logout('expired');
-    alert('로그인 후 30분이 지나 자동 로그아웃되었습니다. 다시 로그인하세요.');
+    alert('30분 이상 사용 기록이 없어 자동 로그아웃되었습니다. 다시 로그인하세요.');
   }
 
   async function refresh() {
@@ -317,6 +332,7 @@ export default function Home() {
       setSelectedStockIds([]);
       setFocusedStockId(null);
       setEditDraft(null);
+      markActivity();
     } catch (err) {
       setStatus('데이터 불러오기 실패');
     } finally {
@@ -329,22 +345,44 @@ export default function Home() {
     direction: MovementPayload['direction']
   ) {
     event.preventDefault();
+    const artist = movement.artist.trim();
+    const albumVersion = movement.album_version.trim();
+    const location = movement.location.trim();
+    const quantity = Number(movement.quantity);
+    const memo = movement.memo.trim();
+
+    if (!artist || !albumVersion || !location || !quantity) {
+      alert('아티스트, 앨범/버전, 로케이션, 수량(1 이상)을 모두 입력해야 합니다.');
+      return;
+    }
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      alert('수량은 1 이상의 양수만 입력 가능합니다.');
+      return;
+    }
+
+    if (direction === 'OUT' && !memo) {
+      alert('출고 시 메모를 입력해야 합니다.');
+      return;
+    }
+
     setIsSubmitting(true);
     setStatus('처리 중...');
+    markActivity();
 
     const idempotencyKey = typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? `web-${(crypto as any).randomUUID()}`
       : `web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     const payload = {
-      artist: movement.artist,
+      artist,
       category: movement.category,
-      album_version: movement.album_version,
+      album_version: albumVersion,
       option: movement.option,
-      location: movement.location,
-      quantity: Number(movement.quantity),
+      location,
+      quantity,
       direction,
-      memo: movement.memo,
+      memo,
       idempotency_key: idempotencyKey
     };
 
@@ -542,9 +580,9 @@ export default function Home() {
       logoutTimeout.current = null;
     }
 
-    if (!sessionExpiry || !isLoggedIn) return;
+    if (!idleDeadline || !isLoggedIn) return;
 
-    const remaining = sessionExpiry - Date.now();
+    const remaining = idleDeadline - Date.now();
     if (remaining <= 0) {
       handleAutoLogout();
       return;
@@ -558,13 +596,24 @@ export default function Home() {
         logoutTimeout.current = null;
       }
     };
-  }, [sessionExpiry, isLoggedIn]);
+  }, [idleDeadline, isLoggedIn]);
 
   useEffect(() => {
     if (showAdmin && sessionRole === 'admin') {
       loadAdminLogs();
     }
   }, [showAdmin, sessionRole]);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    markActivity();
+    const handler = () => markActivity();
+    const events: (keyof WindowEventMap)[] = ['click', 'keydown', 'mousemove', 'scroll', 'touchstart'];
+    events.forEach((evt) => window.addEventListener(evt, handler));
+    return () => {
+      events.forEach((evt) => window.removeEventListener(evt, handler));
+    };
+  }, [isLoggedIn]);
 
   useEffect(() => {
     setShowAdmin(activePanel === 'admin' && sessionRole === 'admin');
@@ -877,6 +926,7 @@ export default function Home() {
                   <input
                     type="number"
                     value={movement.quantity}
+                    min={1}
                     onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
                   />
                 </label>
@@ -1096,6 +1146,7 @@ export default function Home() {
                 <input
                   type="number"
                   value={editDraft.quantity}
+                  min={0}
                   onChange={(e) => setEditDraft({ ...editDraft, quantity: Number(e.target.value) })}
                 />
               </label>
