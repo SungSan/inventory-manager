@@ -2563,6 +2563,7 @@ class InventoryApp:
                 location=location_for_tx,
                 quantity=abs(delta),
                 timestamp=datetime.now(),
+                actor=self._current_actor(),
                 description=desc,
             )
             try:
@@ -2669,6 +2670,7 @@ class InventoryApp:
                 location=new_location,
                 quantity=abs(delta),
                 timestamp=datetime.now(),
+                actor=self._current_actor(),
                 description="자체수정",
             )
             try:
@@ -2775,6 +2777,7 @@ class InventoryApp:
                 location=location,
                 quantity=quantity,
                 timestamp=timestamp,
+                actor=self._current_actor(),
                 description=description,
                 event=event_mode,
                 event_id=event_id,
@@ -3032,6 +3035,7 @@ class InventoryApp:
                 location=dialog.result["location"],
                 quantity=int(dialog.result["quantity"]),
                 timestamp=datetime.combine(date.fromisoformat(dialog.result["day"]), datetime.min.time()),
+                actor=self._current_actor(),
                 description=dialog.result.get("description", ""),
                 event=entry.get("event", False),
                 event_id=entry.get("event_id", ""),
@@ -3404,6 +3408,7 @@ class InventoryApp:
                 period = values.get("period") or values.get("월") or ""
                 year = values.get("year") or values.get("연") or ""
                 description = values.get("description") or values.get("상세내용") or ""
+                actor = values.get("actor") or values.get("작성자") or ""
                 category_value = normalize_category(values.get("category") or values.get("구분") or "album")
                 event_raw = values.get("event") or values.get("이벤트") or ""
                 event_id = values.get("event_id") or values.get("이벤트id") or ""
@@ -3428,6 +3433,7 @@ class InventoryApp:
                         "period": period,
                         "year": year,
                         "description": description,
+                        "actor": actor,
                         "event": str(event_raw).lower() in {"true", "1", "y", "yes"},
                         "event_id": event_id,
                         "event_open": str(event_open_raw).lower() in {"true", "1", "y", "yes"},
@@ -3474,6 +3480,7 @@ class InventoryApp:
                 "Period",
                 "Year",
                 "Description",
+                "Actor",
                 "Event",
                 "EventId",
                 "EventOpen",
@@ -3494,6 +3501,7 @@ class InventoryApp:
                     entry.get("period", ""),
                     entry.get("year", ""),
                     entry.get("description", ""),
+                    entry.get("actor", ""),
                     str(entry.get("event", False)),
                     entry.get("event_id", ""),
                     str(entry.get("event_open", False)),
@@ -3640,6 +3648,7 @@ class InventoryApp:
                 location=location,
                 quantity=abs(diff),
                 timestamp=now,
+                actor=self._current_actor(),
                 description="Google Drive 수정",
             )
             try:
