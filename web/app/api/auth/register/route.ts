@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabaseAdmin } from '../../../../lib/supabase';
+import { createUserWithProfile } from '../../../../lib/create-user';
 
 function isStrongPassword(value: string) {
   if (!value || value.length < 8) return false;
@@ -30,19 +30,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '비밀번호는 영문/숫자를 포함해 8자 이상이어야 합니다.' }, { status: 400 });
   }
 
-  const { error } = await supabaseAdmin.rpc('create_user', {
-    p_email: loginId,
-    p_password: pwd,
-    p_role: 'viewer',
-    p_full_name: fullName,
-    p_department: dept,
-    p_contact: contactInfo,
-    p_purpose: userPurpose,
-  });
+  try {
+    await createUserWithProfile({
+      id: loginId,
+      password: pwd,
+      role: 'viewer',
+      full_name: fullName,
+      department: dept,
+      contact: contactInfo,
+      purpose: userPurpose,
+    });
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
+    return NextResponse.json({ ok: true });
+  } catch (err: any) {
+    return NextResponse.json({ error: err?.message || '계정 생성 실패' }, { status: 400 });
   }
-
-  return NextResponse.json({ ok: true });
 }

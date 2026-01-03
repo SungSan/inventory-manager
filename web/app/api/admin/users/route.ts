@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { withAuth } from '../../../../lib/auth';
 import { supabaseAdmin } from '../../../../lib/supabase';
 import { recordAdminLog } from '../../../../lib/admin-log';
+import { createUserWithProfile } from '../../../../lib/create-user';
 import type { Role } from '../../../../lib/session';
 
 export async function GET() {
@@ -27,32 +28,29 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: '계정/비밀번호/성함/부서를 모두 입력하세요.' }, { status: 400 });
     }
 
-    const normalizedEmail = String(email).toLowerCase().trim();
     const userRole: Role = (role as Role) || 'operator';
 
-    const { data, error } = await supabaseAdmin.rpc('create_user', {
-      p_email: normalizedEmail,
-      p_password: String(password),
-      p_role: userRole,
-      p_full_name: String(full_name ?? ''),
-      p_department: String(department ?? ''),
-      p_contact: String(contact ?? ''),
-      p_purpose: String(purpose ?? ''),
-    });
+    try {
+      const result = await createUserWithProfile({
+        id: String(email).toLowerCase().trim(),
+        password: String(password),
+        role: userRole,
+        full_name: String(full_name ?? ''),
+        department: String(department ?? ''),
+        contact: String(contact ?? ''),
+        purpose: String(purpose ?? ''),
+      });
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+      await recordAdminLog(
+        session,
+        'create_user',
+        `${email} (${result.role}) / ${full_name ?? ''}`
+      );
+
+      return NextResponse.json({ ok: true, role: result.role, user_id: result.userId });
+    } catch (err: any) {
+      return NextResponse.json({ error: err?.message || '계정 생성 실패' }, { status: 400 });
     }
-
-    const row = Array.isArray(data) ? data[0] : data;
-
-    await recordAdminLog(
-      session,
-      'create_user',
-      `${normalizedEmail} (${row?.role ?? userRole}) / ${row?.full_name ?? full_name ?? ''}`
-    );
-
-    return NextResponse.json({ ok: true, role: row?.role ?? userRole });
   });
 }
 

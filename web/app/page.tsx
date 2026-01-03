@@ -500,10 +500,18 @@ export default function Home() {
       setCreateUserStatus('비밀번호는 영문/숫자를 포함해 8자 이상이어야 합니다.');
       return;
     }
-    const res = await fetch('/api/admin/users', {
+    const res = await fetch('/api/admin/create-user', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newUser)
+      body: JSON.stringify({
+        id: newUser.email,
+        password: newUser.password,
+        role: newUser.role,
+        full_name: newUser.full_name,
+        department: newUser.department,
+        contact: newUser.contact,
+        purpose: newUser.purpose,
+      })
     });
     if (res.ok) {
       setCreateUserStatus('새 계정 생성 완료');
