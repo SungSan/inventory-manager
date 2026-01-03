@@ -9,9 +9,9 @@ export async function GET() {
   }
 
   const { data: profile } = await supabaseAdmin
-    .from('user_profiles')
-    .select('approved, role, username')
-    .eq('user_id', session.userId)
+    .from('admin_users_view')
+    .select('approved, username')
+    .eq('id', session.userId)
     .single();
 
   const specialAdmin = session.email?.toLowerCase() === 'tksdlvkxl@gmail.com';

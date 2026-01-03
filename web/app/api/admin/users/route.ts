@@ -20,7 +20,7 @@ export async function GET() {
       id: row.id,
       username: (row.email ?? '').split('@')[0] || row.email || '',
       approved: Boolean(row.approved),
-      role: (row.role as Role | undefined) ?? 'pending',
+      role: (row.role as Role | undefined) ?? 'viewer',
       email: row.email ?? '',
       full_name: row.full_name ?? '',
       department: row.department ?? '',
@@ -80,26 +80,20 @@ export async function PATCH(req: Request) {
     const updates: Record<string, any> = {};
     const profileUpdates: Record<string, any> = {};
 
-    if (role) {
-      updates.role = role as Role;
-      profileUpdates.role = role as Role;
-    }
     if (typeof approved === 'boolean') {
-      const resolvedRole: Role = approved
-        ? (profileUpdates.role && profileUpdates.role !== 'pending'
-            ? (profileUpdates.role as Role)
-            : ((role as Role) && role !== 'pending'
-              ? (role as Role)
-              : 'viewer'))
-        : 'pending';
-
+      updates.approved = approved;
       profileUpdates.approved = approved;
       profileUpdates.approved_at = approved ? new Date().toISOString() : null;
       profileUpdates.approved_by = approved ? session.userId : null;
-      profileUpdates.role = resolvedRole;
+    }
 
-      updates.active = approved;
-      updates.role = resolvedRole;
+    if (role) {
+      const allowed: Role[] = ['admin', 'operator', 'viewer'];
+      if (!allowed.includes(role as Role)) {
+        return NextResponse.json({ error: 'invalid role' }, { status: 400 });
+      }
+      updates.role = role as Role;
+      profileUpdates.role = role as Role;
     }
 
     if (Object.keys(updates).length === 0 && Object.keys(profileUpdates).length === 0) {

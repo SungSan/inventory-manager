@@ -70,7 +70,7 @@ type MovementPayload = {
   memo: string;
 };
 
-type Role = 'admin' | 'operator' | 'viewer' | 'pending';
+type Role = 'admin' | 'operator' | 'viewer';
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes of inactivity triggers logout
 const CORPORATE_DOMAIN = 'sound-wave.co.kr';
@@ -693,12 +693,29 @@ export default function Home() {
     }
   }
 
-  async function updateAccount(id: string, nextRole: Role, nextApproved?: boolean) {
-    setAccountsStatus('저장 중...');
+  async function updateAccountApproval(id: string, approved: boolean) {
+    setAccountsStatus('승인 상태 저장 중...');
     const res = await fetch('/api/admin/users', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, role: nextRole, approved: nextApproved })
+      body: JSON.stringify({ id, approved })
+    });
+
+    if (res.ok) {
+      await loadAccounts();
+      setAccountsStatus('저장 완료');
+    } else {
+      const text = await res.text();
+      setAccountsStatus(`저장 실패: ${text || res.status}`);
+    }
+  }
+
+  async function updateAccountRole(id: string, nextRole: Role) {
+    setAccountsStatus('권한 저장 중...');
+    const res = await fetch('/api/admin/users', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, role: nextRole })
     });
 
     if (res.ok) {
@@ -1934,12 +1951,11 @@ export default function Home() {
                       <td>
                         <select
                           value={acc.role}
-                          onChange={(e) => updateAccount(acc.id, e.target.value as Role, acc.approved)}
+                          onChange={(e) => updateAccountRole(acc.id, e.target.value as Role)}
                         >
                           <option value="admin">admin</option>
                           <option value="operator">operator</option>
                           <option value="viewer">viewer</option>
-                          <option value="pending">pending</option>
                         </select>
                       </td>
                       <td>
@@ -1947,7 +1963,7 @@ export default function Home() {
                           <input
                             type="checkbox"
                             checked={acc.approved}
-                            onChange={(e) => updateAccount(acc.id, acc.role, e.target.checked)}
+                            onChange={(e) => updateAccountApproval(acc.id, e.target.checked)}
                           />
                           승인 여부
                         </label>

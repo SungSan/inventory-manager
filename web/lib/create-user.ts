@@ -43,7 +43,7 @@ export async function createUserWithProfile(payload: CreateUserPayload): Promise
   const department = (payload.department ?? '').toString().trim();
   const contact = (payload.contact ?? '').toString().trim();
   const purpose = (payload.purpose ?? '').toString().trim();
-  const role: Role = (payload.role as Role) ?? 'pending';
+  const role: Role = (payload.role as Role) ?? 'viewer';
   const activeFlag = payload.active === true;
   const approvedFlag = payload.approved === true;
   const email = deriveEmail(username);
@@ -73,14 +73,13 @@ export async function createUserWithProfile(payload: CreateUserPayload): Promise
     throw new Error('auth user id 생성에 실패했습니다.');
   }
 
-  const nextRole: Role = approvedFlag ? (role === 'pending' ? 'viewer' : role) : 'pending';
-
   const { error: userError } = await supabaseAdmin
     .from('users')
     .upsert({
       id: authId,
       email,
-      role: nextRole,
+      role,
+      approved: approvedFlag,
       active: approvedFlag && activeFlag,
       full_name: fullName || email,
       department,
@@ -99,7 +98,7 @@ export async function createUserWithProfile(payload: CreateUserPayload): Promise
       user_id: authId,
       username,
       approved: approvedFlag,
-      role: nextRole,
+      role,
       requested_at: new Date().toISOString(),
       approved_at: approvedFlag ? new Date().toISOString() : null,
       approved_by: approvedFlag ? payload.approved_by ?? null : null,
@@ -109,5 +108,5 @@ export async function createUserWithProfile(payload: CreateUserPayload): Promise
     throw new Error(profileError.message);
   }
 
-  return { userId: authId, role: nextRole };
+  return { userId: authId, role };
 }

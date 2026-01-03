@@ -51,7 +51,8 @@ export async function POST(req: Request) {
     await supabaseAdmin.from('users').upsert({
       id: authId,
       email,
-      role: 'pending',
+      role: 'viewer',
+      approved: false,
       active: false,
       full_name: fullName || email,
       department: dept,
@@ -64,7 +65,7 @@ export async function POST(req: Request) {
       user_id: authId,
       username: normalizedUsername,
       approved: false,
-      role: 'pending',
+      role: 'viewer',
       requested_at: new Date().toISOString(),
       approved_at: null,
       approved_by: null,

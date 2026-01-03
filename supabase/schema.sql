@@ -26,17 +26,16 @@ begin
     where t.typname = 'user_role'
       and n.nspname = 'public'
   ) then
-    create type public.user_role as enum ('admin','operator','viewer','pending');
+    create type public.user_role as enum ('admin','operator','viewer');
   end if;
 end $$;
-
-alter type public.user_role add value if not exists 'pending';
 
 create table if not exists public.users (
   id uuid primary key default gen_random_uuid(),
   email text unique not null,
   password_hash text,
-  role public.user_role not null default 'pending',
+  role public.user_role not null default 'viewer',
+  approved boolean not null default false,
   active boolean not null default true,
   created_at timestamptz not null default now()
 );
@@ -52,14 +51,15 @@ update public.users set contact = coalesce(contact, '');
 update public.users set purpose = coalesce(purpose, '');
 alter table public.users alter column full_name set not null;
 alter table public.users alter column department set not null;
-alter table public.users alter column role set default 'pending';
+alter table public.users alter column role set default 'viewer';
 alter table public.users alter column password_hash drop not null;
+alter table public.users add column if not exists approved boolean not null default false;
 
 create table if not exists public.user_profiles (
   user_id uuid primary key references public.users(id) on delete cascade,
   username text not null unique,
   approved boolean not null default false,
-  role public.user_role not null default 'pending',
+  role public.user_role not null default 'viewer',
   requested_at timestamptz not null default now(),
   approved_at timestamptz,
   approved_by uuid references public.users(id)
@@ -133,7 +133,7 @@ select
   coalesce(p.contact, '') as contact,
   coalesce(p.purpose, '') as purpose,
   p.username,
-  p.approved,
+  coalesce(u.approved, p.approved, false) as approved,
   p.role as profile_role,
   p.requested_at,
   p.approved_at,

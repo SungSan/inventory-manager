@@ -47,62 +47,20 @@ export async function loginWithUsername(rawUsername: string, password: string) {
   const username = special ? SPECIAL_USERNAME : normalizeUsername(rawUsername);
   const email = special ? SPECIAL_EMAIL : deriveEmail(username);
 
-  if (!special) {
-    const { data: profile, error: profileError } = await supabaseAdmin
-      .from('user_profiles')
-      .select('user_id, approved, role')
-      .eq('username', username)
-      .single();
+  const { data: userRow, error: userError } = await supabaseAdmin
+    .from('users')
+    .select('id, email, role, active, approved, full_name, department, contact, purpose')
+    .eq('email', email)
+    .single();
 
-    if (profileError) {
-      throw new Error(profileError.message || '사용자 정보를 찾을 수 없습니다.');
-    }
+  if (userError && userError.code !== 'PGRST116') {
+    throw new Error(userError.message);
+  }
 
-    if (!profile || profile.approved === false || profile.role === 'pending') {
-      return { pending: true, email };
-    }
+  const approvedFlag = special ? true : userRow?.approved ?? false;
 
-    const verified = await verifyPassword(email, password);
-
-    if (!verified) {
-      throw new Error('ID 또는 비밀번호가 올바르지 않습니다.');
-    }
-
-    const userId = profile.user_id;
-    const { data: userRow, error: userError } = await supabaseAdmin
-      .from('users')
-      .select('id, email, role, active, full_name, department, contact, purpose')
-      .eq('id', userId)
-      .single();
-
-    if (userError && userError.code !== 'PGRST116') {
-      throw new Error(userError.message);
-    }
-
-    const role: Role = (userRow?.role as Role) ?? (profile.role as Role) ?? 'viewer';
-
-    if (userRow && userRow.active === false) {
-      throw new Error('비활성화된 계정입니다. 관리자에게 문의하세요.');
-    }
-
-    await supabaseAdmin
-      .from('users')
-      .upsert({
-        id: userId,
-        email,
-        role,
-        active: true,
-        full_name: userRow?.full_name || email,
-        department: userRow?.department || '',
-        contact: userRow?.contact || '',
-        purpose: userRow?.purpose || '',
-      });
-
-    return {
-      id: userId,
-      email,
-      role,
-    };
+  if (!approvedFlag) {
+    return { pending: true, email };
   }
 
   const verified = await verifyPassword(email, password);
@@ -111,10 +69,30 @@ export async function loginWithUsername(rawUsername: string, password: string) {
     throw new Error('ID 또는 비밀번호가 올바르지 않습니다.');
   }
 
+  if (userRow && userRow.active === false) {
+    throw new Error('비활성화된 계정입니다. 관리자에게 문의하세요.');
+  }
+
+  const role: Role = (userRow?.role as Role) ?? (special ? 'admin' : 'viewer');
+
+  await supabaseAdmin
+    .from('users')
+    .upsert({
+      id: userRow?.id ?? verified.id,
+      email,
+      role,
+      approved: approvedFlag,
+      active: userRow?.active ?? true,
+      full_name: userRow?.full_name || email,
+      department: userRow?.department || '',
+      contact: userRow?.contact || '',
+      purpose: userRow?.purpose || '',
+    });
+
   return {
-    id: verified.id,
-    email: verified.email,
-    role: (verified.role as Role) ?? 'admin',
+    id: userRow?.id ?? verified.id,
+    email,
+    role,
   };
 }
 
@@ -139,23 +117,24 @@ export async function loginWithAccessToken(
     throw new Error('ID와 이메일이 일치하지 않습니다. @ 문자를 포함하지 않는 사내 ID만 입력하세요.');
   }
 
-  const { data: profile, error: profileError } = await supabaseAdmin
-    .from('user_profiles')
-    .select('approved, role, username')
-    .eq('user_id', authUser.user.id)
+  const { data: userRow, error: userError } = await supabaseAdmin
+    .from('users')
+    .select('id, email, role, active, approved, full_name, department, contact, purpose')
+    .eq('id', authUser.user.id)
     .single();
 
-  if (profileError && profileError.code !== 'PGRST116') {
-    throw new Error(profileError.message);
+  if (userError && userError.code !== 'PGRST116') {
+    throw new Error(userError.message);
   }
 
   const bypassApproval = authUser.user.email?.toLowerCase() === SPECIAL_EMAIL || special;
+  const approvedFlag = bypassApproval ? true : userRow?.approved ?? false;
 
-  if (!bypassApproval && (!profile || profile.approved === false || profile.role === 'pending')) {
+  if (!approvedFlag) {
     return { pending: true, email };
   }
 
-  const nextRole: Role = (profile?.role as Role) ?? (bypassApproval ? 'admin' : 'viewer');
+  const nextRole: Role = (userRow?.role as Role) ?? (bypassApproval ? 'admin' : 'viewer');
 
   const metadata = authUser.user.user_metadata || {};
 
@@ -165,11 +144,12 @@ export async function loginWithAccessToken(
       id: authUser.user.id,
       email,
       role: nextRole,
-      active: true,
-      full_name: metadata.full_name || email,
-      department: metadata.department || '',
-      contact: metadata.contact || '',
-      purpose: metadata.purpose || '',
+      approved: approvedFlag,
+      active: userRow?.active ?? true,
+      full_name: metadata.full_name || userRow?.full_name || email,
+      department: metadata.department || userRow?.department || '',
+      contact: metadata.contact || userRow?.contact || '',
+      purpose: metadata.purpose || userRow?.purpose || '',
     });
 
   return {
