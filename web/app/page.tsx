@@ -1,6 +1,6 @@
 'use client';
-import { createClient } from '@supabase/supabase-js';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { getSupabaseClient } from '../lib/supabaseClient';
 
 type InventoryLocation = {
   id: string;
@@ -86,10 +86,6 @@ const EMPTY_MOVEMENT: MovementPayload = {
   direction: 'IN',
   memo: ''
 };
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? process.env.SUPABASE_ANON_KEY;
-const supabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
 
 function deriveStockKey(target?: InventoryRow | InventoryEditDraft | null) {
   if (!target) return null;
@@ -211,6 +207,21 @@ export default function Home() {
   const stockRef = useRef<HTMLDivElement | null>(null);
   const historyRef = useRef<HTMLDivElement | null>(null);
   const adminRef = useRef<HTMLDivElement | null>(null);
+
+  const notifyMissingSupabase = () => {
+    const message = 'Supabase 환경 변수가 설정되지 않았습니다.';
+    setStatus(message);
+    alert(message);
+  };
+
+  const requireSupabase = () => {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      notifyMissingSupabase();
+      return null;
+    }
+    return supabase;
+  };
 
   const markActivity = () => {
     const next = Date.now() + IDLE_TIMEOUT_MS;
@@ -369,6 +380,7 @@ export default function Home() {
       }
       const payload = await res.json();
       setRegisterOtpStatus(`OTP 전송 완료. 메일함과 아래 코드를 확인하세요: ${payload.otp || '이메일 확인'}`);
+      const supabase = requireSupabase();
       if (!supabase) {
         return;
       }
@@ -393,7 +405,10 @@ export default function Home() {
       if (res.status === 403) {
         setPendingBlock('관리자 승인 대기 중입니다. 관리자에게 승인 요청하세요.');
         setStatus('승인 대기 중');
-        await supabase.auth.signOut();
+        const supabase = requireSupabase();
+        if (supabase) {
+          await supabase.auth.signOut();
+        }
         return;
       }
 
@@ -435,7 +450,10 @@ export default function Home() {
       clearTimeout(logoutTimeout.current);
       logoutTimeout.current = null;
     }
-    await supabase?.auth.signOut();
+    const supabase = requireSupabase();
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
   }
 
   const isLoggedIn = Boolean(sessionEmail);
@@ -511,16 +529,15 @@ export default function Home() {
       return;
     }
 
-    if (!supabase) {
-      alert('Supabase 환경 변수가 설정되지 않았습니다.');
-      return;
-    }
-
     setIsSubmitting(true);
     setStatus('처리 중...');
     markActivity();
 
     try {
+      const supabase = requireSupabase();
+      if (!supabase) {
+        return;
+      }
       const { data: { user } } = await supabase.auth.getUser();
       const created_by = sessionUserId ?? user?.id ?? null;
 
@@ -598,8 +615,9 @@ export default function Home() {
         setRegisterStatus('성함과 부서를 입력하세요.');
         return;
       }
+      const supabase = requireSupabase();
       if (!supabase) {
-        throw new Error('Supabase 환경 변수를 확인하세요.');
+        return;
       }
       const email = deriveEmail(normalized);
       const { data, error } = await supabase.auth.verifyOtp({ email, token: registerForm.otp.trim(), type: 'signup' });
