@@ -30,7 +30,21 @@ type HistoryRow = {
   location: string;
   quantity: number;
   created_by: string;
+  created_by_name?: string;
+  created_by_department?: string;
   memo?: string;
+};
+
+type AccountRow = {
+  id: string;
+  email: string;
+  full_name: string;
+  department: string;
+  contact?: string;
+  purpose?: string;
+  role: Role;
+  active: boolean;
+  created_at: string;
 };
 
 type AdminLog = {
@@ -114,8 +128,15 @@ function aggregateLocations(rows: InventoryRow[]) {
   return Object.entries(byLocation).sort((a, b) => b[1] - a[1]);
 }
 
+function isStrongPassword(value: string) {
+  if (!value || value.length < 8) return false;
+  const hasLetter = /[A-Za-z]/.test(value);
+  const hasNumber = /\d/.test(value);
+  return hasLetter && hasNumber;
+}
+
 export default function Home() {
-  const [email, setEmail] = useState('');
+  const [loginId, setLoginId] = useState('');
   const [password, setPassword] = useState('');
   const [status, setStatus] = useState<string>('로그인 필요');
   const [isLoading, setIsLoading] = useState(false);
@@ -129,6 +150,15 @@ export default function Home() {
   const [activePanel, setActivePanel] = useState<'stock' | 'history' | 'admin'>('stock');
   const [stockFilters, setStockFilters] = useState({ search: '', category: '', location: '', artist: '' });
   const [locationPresets, setLocationPresets] = useState<string[]>([]);
+  const [registerForm, setRegisterForm] = useState({
+    id: '',
+    password: '',
+    confirm: '',
+    name: '',
+    department: '',
+    contact: '',
+    purpose: '',
+  });
   const today = useMemo(() => new Date(), []);
   const sevenDaysAgo = useMemo(() => {
     const d = new Date();
@@ -141,11 +171,21 @@ export default function Home() {
     from: sevenDaysAgo.toISOString().slice(0, 10),
     to: today.toISOString().slice(0, 10)
   });
-  const [newUser, setNewUser] = useState<{ email: string; password: string; role: Role }>({
-    email: '',
-    password: '',
-    role: 'operator'
-  });
+  const [newUser, setNewUser] = useState<{ email: string; password: string; role: Role; full_name: string; department: string; contact: string; purpose: string }>(
+    {
+      email: '',
+      password: '',
+      role: 'operator',
+      full_name: '',
+      department: '',
+      contact: '',
+      purpose: ''
+    }
+  );
+  const [accountManagerOpen, setAccountManagerOpen] = useState(false);
+  const [accounts, setAccounts] = useState<AccountRow[]>([]);
+  const [accountsStatus, setAccountsStatus] = useState('');
+  const [registerStatus, setRegisterStatus] = useState('');
   const [adminStatus, setAdminStatus] = useState('');
   const [sessionRole, setSessionRole] = useState<Role | null>(null);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
@@ -292,7 +332,7 @@ export default function Home() {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify({ identifier: loginId, password })
     });
     if (res.ok) {
       setStatus('로그인 완료');
@@ -321,6 +361,9 @@ export default function Home() {
     setLocationPresets([]);
     setSelectedStockKeys([]);
     setFocusedStockKey(null);
+    setAccountManagerOpen(false);
+    setAccounts([]);
+    setAccountsStatus('');
     if (logoutTimeout.current) {
       clearTimeout(logoutTimeout.current);
       logoutTimeout.current = null;
@@ -445,6 +488,14 @@ export default function Home() {
 
   async function createUser() {
     setCreateUserStatus('계정 생성 중...');
+    if (!newUser.email || !newUser.full_name || !newUser.department) {
+      setCreateUserStatus('ID, 성함, 부서를 모두 입력하세요.');
+      return;
+    }
+    if (!isStrongPassword(newUser.password)) {
+      setCreateUserStatus('비밀번호는 영문/숫자를 포함해 8자 이상이어야 합니다.');
+      return;
+    }
     const res = await fetch('/api/admin/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -452,11 +503,82 @@ export default function Home() {
     });
     if (res.ok) {
       setCreateUserStatus('새 계정 생성 완료');
-      setNewUser({ email: '', password: '', role: 'operator' });
+      setNewUser({ email: '', password: '', role: 'operator', full_name: '', department: '', contact: '', purpose: '' });
     } else {
       const text = await res.text();
       setCreateUserStatus(`생성 실패: ${text || res.status}`);
     }
+  }
+
+  async function registerAccount() {
+    setRegisterStatus('계정 생성 중...');
+    if (!registerForm.id || !registerForm.password || !registerForm.confirm || !registerForm.name || !registerForm.department) {
+      setRegisterStatus('ID/비밀번호/성함/부서를 모두 입력하세요.');
+      return;
+    }
+
+    if (registerForm.password !== registerForm.confirm) {
+      setRegisterStatus('비밀번호가 일치하지 않습니다.');
+      return;
+    }
+
+    if (!isStrongPassword(registerForm.password)) {
+      setRegisterStatus('비밀번호는 영문/숫자를 포함해 8자 이상이어야 합니다.');
+      return;
+    }
+    const res = await fetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...registerForm })
+    });
+
+    if (res.ok) {
+      setRegisterStatus('계정 생성 완료! 로그인하세요.');
+      setRegisterForm({ id: '', password: '', confirm: '', name: '', department: '', contact: '', purpose: '' });
+    } else {
+      const text = await res.text();
+      setRegisterStatus(`생성 실패: ${text || res.status}`);
+    }
+  }
+
+  async function loadAccounts() {
+    setAccountsStatus('목록 불러오는 중...');
+    const res = await fetch('/api/admin/users');
+    if (res.ok) {
+      const data = await res.json();
+      setAccounts(data || []);
+      setAccountsStatus('불러오기 완료');
+      markActivity();
+    } else {
+      const text = await res.text();
+      setAccountsStatus(`불러오기 실패: ${text || res.status}`);
+    }
+  }
+
+  async function updateAccount(id: string, nextRole: Role, nextActive?: boolean) {
+    setAccountsStatus('저장 중...');
+    const res = await fetch('/api/admin/users', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, role: nextRole, active: nextActive })
+    });
+
+    if (res.ok) {
+      await loadAccounts();
+      setAccountsStatus('저장 완료');
+    } else {
+      const text = await res.text();
+      setAccountsStatus(`저장 실패: ${text || res.status}`);
+    }
+  }
+
+  function openAccountManager() {
+    setAccountManagerOpen(true);
+    void loadAccounts();
+  }
+
+  function closeAccountManager() {
+    setAccountManagerOpen(false);
   }
 
   function handleStockClick(row: InventoryRow) {
@@ -603,6 +725,8 @@ export default function Home() {
         row.option,
         row.location,
         row.created_by,
+        row.created_by_name ?? '',
+        row.created_by_department ?? '',
         row.memo ?? ''
       ]
         .join(' ')
@@ -759,22 +883,92 @@ export default function Home() {
 
       <Section title="로그인">
         <div className="form-grid two">
-          <label>
-            <span>이메일</span>
-            <input placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          </label>
-          <label>
-            <span>비밀번호</span>
-            <input
-              type="password"
-              placeholder="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </label>
-          <div className="actions-row">
-            <button onClick={handleAuthToggle}>{isLoggedIn ? '로그아웃' : '로그인'}</button>
-            <button className="ghost" onClick={refresh}>세션 확인</button>
+          <div>
+            <label>
+              <span>아이디</span>
+              <input placeholder="로그인 ID" value={loginId} onChange={(e) => setLoginId(e.target.value)} />
+            </label>
+            <label>
+              <span>비밀번호</span>
+              <input
+                type="password"
+                placeholder="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
+            <div className="actions-row">
+              <button onClick={handleAuthToggle}>{isLoggedIn ? '로그아웃' : '로그인'}</button>
+              <button className="ghost" onClick={refresh}>세션 확인</button>
+              <span className="muted">{status}</span>
+            </div>
+          </div>
+          <div className="card-subpanel">
+            <p className="mini-label">새 계정 만들기 (self-service)</p>
+            <div className="form-grid two">
+              <label>
+                <span>ID</span>
+                <input
+                  value={registerForm.id}
+                  onChange={(e) => setRegisterForm({ ...registerForm, id: e.target.value })}
+                  placeholder="사번/닉네임 등"
+                />
+              </label>
+              <label>
+                <span>비밀번호</span>
+                <input
+                  type="password"
+                  value={registerForm.password}
+                  onChange={(e) => setRegisterForm({ ...registerForm, password: e.target.value })}
+                  placeholder="영문/숫자 포함 8자 이상"
+                />
+              </label>
+              <label>
+                <span>비밀번호 확인</span>
+                <input
+                  type="password"
+                  value={registerForm.confirm}
+                  onChange={(e) => setRegisterForm({ ...registerForm, confirm: e.target.value })}
+                  placeholder="동일하게 입력"
+                />
+              </label>
+              <label>
+                <span>성함</span>
+                <input
+                  value={registerForm.name}
+                  onChange={(e) => setRegisterForm({ ...registerForm, name: e.target.value })}
+                  placeholder="홍길동"
+                />
+              </label>
+              <label>
+                <span>부서</span>
+                <input
+                  value={registerForm.department}
+                  onChange={(e) => setRegisterForm({ ...registerForm, department: e.target.value })}
+                  placeholder="물류팀"
+                />
+              </label>
+              <label>
+                <span>연락처</span>
+                <input
+                  value={registerForm.contact}
+                  onChange={(e) => setRegisterForm({ ...registerForm, contact: e.target.value })}
+                  placeholder="010-0000-0000"
+                />
+              </label>
+              <label className="wide">
+                <span>사용 목적</span>
+                <input
+                  value={registerForm.purpose}
+                  onChange={(e) => setRegisterForm({ ...registerForm, purpose: e.target.value })}
+                  placeholder="예: 매장 재고 확인"
+                />
+              </label>
+            </div>
+            <div className="actions-row">
+              <button onClick={registerAccount}>계정 생성</button>
+              <span className="muted">{registerStatus || '기본 viewer 권한으로 생성됩니다.'}</span>
+            </div>
           </div>
         </div>
       </Section>
@@ -782,7 +976,12 @@ export default function Home() {
       {activePanel === 'admin' && showAdmin && (
         <Section
           title="관리자 도구"
-          actions={<Pill>admin 전용</Pill>}
+          actions={
+            <div className="section-actions">
+              <button className="ghost" onClick={openAccountManager}>계정 관리</button>
+              <Pill>admin 전용</Pill>
+            </div>
+          }
         >
           <div className="guide-grid">
             <div className="guide-card">
@@ -796,14 +995,14 @@ export default function Home() {
             </div>
             <div className="guide-card">
               <p className="mini-label">신규 계정 발급</p>
-              <p className="muted">관리자가 직접 이메일/비밀번호/권한을 생성합니다.</p>
+              <p className="muted">관리자가 직접 ID/비밀번호/권한을 생성합니다. 이름과 부서를 함께 기록해 이력에 표시합니다.</p>
               <div className="form-grid two">
                 <label>
-                  <span>이메일</span>
+                  <span>계정 ID</span>
                   <input
                     value={newUser.email}
                     onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-                    placeholder="user@example.com"
+                    placeholder="ID 또는 사번"
                   />
                 </label>
                 <label>
@@ -812,7 +1011,39 @@ export default function Home() {
                     type="password"
                     value={newUser.password}
                     onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-                    placeholder="8자 이상"
+                    placeholder="영문/숫자 포함 8자 이상"
+                  />
+                </label>
+                <label>
+                  <span>성함</span>
+                  <input
+                    value={newUser.full_name}
+                    onChange={(e) => setNewUser({ ...newUser, full_name: e.target.value })}
+                    placeholder="홍길동"
+                  />
+                </label>
+                <label>
+                  <span>부서</span>
+                  <input
+                    value={newUser.department}
+                    onChange={(e) => setNewUser({ ...newUser, department: e.target.value })}
+                    placeholder="물류팀"
+                  />
+                </label>
+                <label>
+                  <span>연락처</span>
+                  <input
+                    value={newUser.contact}
+                    onChange={(e) => setNewUser({ ...newUser, contact: e.target.value })}
+                    placeholder="010-0000-0000"
+                  />
+                </label>
+                <label>
+                  <span>사용 목적</span>
+                  <input
+                    value={newUser.purpose}
+                    onChange={(e) => setNewUser({ ...newUser, purpose: e.target.value })}
+                    placeholder="예: 물류 창고 운영"
                   />
                 </label>
                 <label>
@@ -1334,7 +1565,7 @@ export default function Home() {
                 <th>옵션</th>
                 <th>로케이션</th>
                 <th className="align-right">수량</th>
-                <th>담당</th>
+                <th className="align-center">담당</th>
                 <th>메모</th>
               </tr>
             </thead>
@@ -1348,17 +1579,93 @@ export default function Home() {
                   <td>{h.artist}</td>
                   <td>{h.category}</td>
                   <td>{h.album_version}</td>
-                  <td>{h.option}</td>
-                  <td>{h.location}</td>
-                  <td className="align-right">{h.quantity.toLocaleString()}</td>
-                  <td>{h.created_by}</td>
-                  <td>{h.memo || '-'}</td>
-                </tr>
-              ))}
+                <td>{h.option}</td>
+                <td>{h.location}</td>
+                <td className="align-right">{h.quantity.toLocaleString()}</td>
+                <td className="align-center">
+                  <div className="stacked-label">
+                    <strong>{h.created_by_name || h.created_by || '-'}</strong>
+                    <span className="muted small-text">{h.created_by_department || '부서 정보 없음'}</span>
+                  </div>
+                </td>
+                <td>{h.memo || '-'}</td>
+              </tr>
+            ))}
             </tbody>
           </table>
         </div>
       </Section>
+      )}
+
+      {accountManagerOpen && (
+        <div className="modal-backdrop">
+          <div className="modal-card">
+            <div className="section-heading">
+              <h3>계정 관리</h3>
+              <div className="section-actions">
+                <button className="ghost" onClick={loadAccounts}>새로고침</button>
+                <button className="ghost" onClick={closeAccountManager}>닫기</button>
+              </div>
+            </div>
+            <p className="muted" style={{ marginTop: 0 }}>
+              ID, 실명, 부서를 확인하고 권한과 활성화 여부를 바로 수정할 수 있습니다.
+            </p>
+            <div className="table-wrapper">
+              <table className="table compact-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>성함</th>
+                    <th>부서</th>
+                    <th>연락처</th>
+                    <th>사용 목적</th>
+                    <th>권한</th>
+                    <th>활성</th>
+                    <th>생성일</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {accounts.length === 0 && (
+                    <tr>
+                      <td colSpan={8}>계정 정보가 없습니다.</td>
+                    </tr>
+                  )}
+                  {accounts.map((acc) => (
+                    <tr key={acc.id}>
+                      <td>{acc.email}</td>
+                      <td>{acc.full_name}</td>
+                      <td>{acc.department || '-'}</td>
+                      <td>{acc.contact || '-'}</td>
+                      <td>{acc.purpose || '-'}</td>
+                      <td>
+                        <select
+                          value={acc.role}
+                          onChange={(e) => updateAccount(acc.id, e.target.value as Role, acc.active)}
+                        >
+                          <option value="admin">admin</option>
+                          <option value="operator">operator</option>
+                          <option value="viewer">viewer</option>
+                        </select>
+                      </td>
+                      <td>
+                        <label className="muted small-text" style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}>
+                          <input
+                            type="checkbox"
+                            checked={acc.active}
+                            onChange={(e) => updateAccount(acc.id, acc.role, e.target.checked)}
+                          />
+                          활성화
+                        </label>
+                      </td>
+                      <td>{formatDate(acc.created_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="muted">{accountsStatus}</div>
+          </div>
+        </div>
       )}
     </main>
   );

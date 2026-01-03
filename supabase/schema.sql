@@ -37,6 +37,18 @@ create table if not exists public.users (
   created_at timestamptz not null default now()
 );
 
+-- user profile extensions (idempotent)
+alter table public.users add column if not exists full_name text default '';
+alter table public.users add column if not exists department text default '';
+alter table public.users add column if not exists contact text default '';
+alter table public.users add column if not exists purpose text default '';
+update public.users set full_name = coalesce(nullif(full_name, ''), email) where full_name is null or full_name = '';
+update public.users set department = coalesce(department, '');
+update public.users set contact = coalesce(contact, '');
+update public.users set purpose = coalesce(purpose, '');
+alter table public.users alter column full_name set not null;
+alter table public.users alter column department set not null;
+
 create table if not exists public.items (
   id uuid primary key default gen_random_uuid(),
   artist text not null,
@@ -109,7 +121,9 @@ select
   m.location,
   m.quantity,
   m.memo,
-  coalesce(u.email::text, m.created_by::text) as created_by
+  coalesce(u.email::text, m.created_by::text) as created_by,
+  coalesce(nullif(u.full_name, ''), coalesce(u.email::text, m.created_by::text)) as created_by_name,
+  coalesce(nullif(u.department, ''), '') as created_by_department
 from public.movements m
 join public.items i on m.item_id = i.id
 left join public.users u on u.id = m.created_by
@@ -217,12 +231,18 @@ grant execute on function public.verify_login(text, text) to service_role;
 create or replace function public.create_user(
   p_email text,
   p_password text,
-  p_role public.user_role default 'operator'
+  p_role public.user_role default 'operator',
+  p_full_name text default '',
+  p_department text default '',
+  p_contact text default '',
+  p_purpose text default ''
 ) returns table(
   id uuid,
   email text,
-  role public.user_role
-)
+  role public.user_role,
+  full_name text,
+  department text
+) 
 language plpgsql
 security definer
 set search_path = public
@@ -230,18 +250,36 @@ as $$
 declare
   normalized_email text := lower(trim(p_email));
   selected_role public.user_role := coalesce(p_role, 'operator');
+  normalized_name text := coalesce(nullif(trim(p_full_name), ''), normalized_email);
+  normalized_department text := coalesce(nullif(trim(p_department), ''), '');
+  normalized_contact text := coalesce(nullif(trim(p_contact), ''), '');
+  normalized_purpose text := coalesce(nullif(trim(p_purpose), ''), '');
 begin
   if coalesce(p_email, '') = '' or coalesce(p_password, '') = '' then
-    raise exception 'email and password are required';
+    raise exception 'login id and password are required';
   end if;
 
-  insert into public.users(email, password_hash, role, active)
-  values(normalized_email, crypt(p_password, gen_salt('bf')), selected_role, true)
+  insert into public.users(email, password_hash, role, active, full_name, department, contact, purpose)
+  values(
+    normalized_email,
+    crypt(p_password, gen_salt('bf')),
+    selected_role,
+    true,
+    normalized_name,
+    normalized_department,
+    normalized_contact,
+    normalized_purpose
+  )
   on conflict (email) do update
     set password_hash = excluded.password_hash,
         role = excluded.role,
-        active = true
-  returning users.id, users.email, users.role into id, email, role;
+        active = true,
+        full_name = excluded.full_name,
+        department = excluded.department,
+        contact = excluded.contact,
+        purpose = excluded.purpose
+  returning users.id, users.email, users.role, users.full_name, users.department
+  into id, email, role, full_name, department;
 
   return next;
 end;
