@@ -99,9 +99,10 @@ export async function POST(req: Request) {
       }
 
       const result = (data as any) || {};
+      const idempotent = result.idempotent === true;
+      const hasFlags = 'movement_inserted' in result || 'inventory_updated' in result;
       const movementInserted = result.movement_inserted === true;
       const inventoryUpdated = result.inventory_updated === true;
-      const idempotent = result.idempotent === true;
 
       if (idempotent) {
         return NextResponse.json({
@@ -109,34 +110,40 @@ export async function POST(req: Request) {
           idempotent: true,
           movement_inserted: false,
           inventory_updated: false,
+          message: result.message ?? 'idempotent'
         });
       }
 
-      if (!movementInserted || !inventoryUpdated) {
-        const message = result.message || '입출고 처리 결과가 반영되지 않았습니다.';
-        console.error({ step: 'movement_result_incomplete', payload, result });
-        return NextResponse.json(
-          {
-            ok: false,
-            idempotent,
-            movement_inserted: movementInserted,
-            inventory_updated: inventoryUpdated,
-            error: message
-          },
-          { status: 400 }
-        );
+      if (result.ok === true && !hasFlags) {
+        return NextResponse.json({ ok: true, idempotent: false, message: result.message ?? 'ok' });
       }
 
-      return NextResponse.json({
-        ok: true,
-        idempotent: false,
-        movement_inserted: true,
-        inventory_updated: true,
-        opening: result.opening,
-        closing: result.closing,
-        item_id: result.item_id,
-        movement_id: result.movement_id
-      });
+      if (movementInserted && inventoryUpdated) {
+        return NextResponse.json({
+          ok: true,
+          idempotent: false,
+          movement_inserted: true,
+          inventory_updated: true,
+          opening: result.opening,
+          closing: result.closing,
+          item_id: result.item_id,
+          movement_id: result.movement_id,
+          message: result.message ?? 'ok'
+        });
+      }
+
+      const message = result.message || '입출고 처리 결과가 반영되지 않았습니다.';
+      console.error({ step: 'movement_result_incomplete', payload, result });
+      return NextResponse.json(
+        {
+          ok: false,
+          idempotent,
+          movement_inserted: movementInserted,
+          inventory_updated: inventoryUpdated,
+          error: message
+        },
+        { status: 400 }
+      );
     } catch (error: any) {
       console.error({ step: 'record_movement_unexpected', payload, error });
       const message = error?.message || '입출고 처리 중 오류가 발생했습니다.';

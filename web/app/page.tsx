@@ -554,10 +554,12 @@ export default function Home() {
 
       const payload = await res.json().catch(() => null);
       const idempotent = payload?.idempotent === true;
+      const hasFlags = payload ? 'movement_inserted' in payload || 'inventory_updated' in payload : false;
       const movementInserted = payload?.movement_inserted === true;
       const inventoryUpdated = payload?.inventory_updated === true;
+      const legacyOk = payload?.ok === true && !hasFlags;
 
-      if (!res.ok || (!movementInserted && !idempotent) || (!inventoryUpdated && !idempotent)) {
+      if (!res.ok || (!idempotent && !legacyOk && !(movementInserted && inventoryUpdated))) {
         const message = payload?.error || payload?.message || `입출고 실패 (${res.status})`;
         console.error('movement submit error:', { message, payload });
         alert(message);

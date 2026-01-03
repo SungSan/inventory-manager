@@ -174,20 +174,29 @@ create or replace function public.record_movement(
   created_by uuid default null,
   idempotency_key text default null
 ) returns json as $$
+#variable_conflict use_variable
 declare
   v_item_id uuid;
   v_existing int;
   v_new int;
   v_movement_id uuid;
   v_rowcount int;
+  v_idem text := nullif(btrim(idempotency_key), '');
+  v_location text := btrim(location);
+  v_direction text := upper(direction);
+  v_artist text := btrim(artist);
+  v_album text := btrim(album_version);
+  v_option text := coalesce(option, '');
+  v_memo text := nullif(btrim(memo), '');
+  v_qty int := quantity;
 begin
-  if direction not in ('IN','OUT','ADJUST') then
+  if v_direction not in ('IN','OUT','ADJUST') then
     raise exception 'invalid direction';
   end if;
 
-  if idempotency_key is not null then
+  if v_idem is not null then
     insert into public.idempotency_keys(key, created_by)
-    values(idempotency_key, created_by)
+    values (v_idem, created_by)
     on conflict do nothing;
 
     if not found then
@@ -195,47 +204,46 @@ begin
         'ok', true,
         'idempotent', true,
         'movement_inserted', false,
-        'inventory_updated', false
+        'inventory_updated', false,
+        'message', 'idempotent hit'
       );
     end if;
   end if;
 
-  -- ensure item exists
-  insert into public.items(artist, category, album_version, option)
-    values(public.record_movement.artist, category, album_version, option)
+  insert into public.items as i (artist, category, album_version, option)
+  values (v_artist, category, v_album, v_option)
   on conflict (artist, category, album_version, option)
-    do update set artist = excluded.artist
-  returning id into v_item_id;
+  do update set artist = excluded.artist
+  returning i.id into v_item_id;
 
-  -- ensure inventory row and lock it
   insert into public.inventory(item_id, location, quantity)
-    values(v_item_id, location, 0)
+  values (v_item_id, v_location, 0)
   on conflict (item_id, location) do nothing;
 
   select quantity
     into v_existing
     from public.inventory
    where item_id = v_item_id
-     and location = public.record_movement.location
+     and location = v_location
    for update;
 
-  if direction = 'OUT' and v_existing < quantity then
+  if v_direction = 'OUT' and v_existing < v_qty then
     raise exception 'insufficient stock';
   end if;
 
-  if direction = 'IN' then
-    v_new := v_existing + quantity;
-  elsif direction = 'OUT' then
-    v_new := v_existing - quantity;
+  if v_direction = 'IN' then
+    v_new := v_existing + v_qty;
+  elsif v_direction = 'OUT' then
+    v_new := v_existing - v_qty;
   else
-    v_new := quantity; -- ADJUST sets absolute quantity
+    v_new := v_qty;
   end if;
 
   update public.inventory
      set quantity = v_new,
          updated_at = now()
    where item_id = v_item_id
-     and location = public.record_movement.location;
+     and location = v_location;
 
   get diagnostics v_rowcount = row_count;
   if v_rowcount <= 0 then
@@ -255,12 +263,12 @@ begin
     created_at
   ) values (
     v_item_id,
-    location,
-    direction,
-    quantity,
-    memo,
+    v_location,
+    v_direction,
+    v_qty,
+    v_memo,
     created_by,
-    idempotency_key,
+    v_idem,
     v_existing,
     v_new,
     now()
@@ -274,8 +282,12 @@ begin
     'opening', v_existing,
     'closing', v_new,
     'item_id', v_item_id,
-    'movement_id', v_movement_id
+    'movement_id', v_movement_id,
+    'message', 'ok'
   );
+exception
+  when others then
+    raise;
 end;
 $$ language plpgsql security definer;
 
