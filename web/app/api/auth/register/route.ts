@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../../../../lib/supabase';
 
 const CORPORATE_DOMAIN = 'sound-wave.co.kr';
@@ -12,7 +13,7 @@ function normalizeUsername(raw: string) {
 }
 
 export async function POST(req: Request) {
-  const { username, name, department, contact, purpose, access_token } = await req.json();
+  const { username, name, department, contact, purpose, password, access_token } = await req.json();
   const normalizedUsername = normalizeUsername((username ?? '').toString());
   const fullName = (name ?? '').toString().trim();
   const dept = (department ?? '').toString().trim();
@@ -25,6 +26,10 @@ export async function POST(req: Request) {
 
   if (!fullName || !dept) {
     return NextResponse.json({ error: '성함과 부서를 입력하세요.' }, { status: 400 });
+  }
+
+  if (!password || password.toString().length < 8) {
+    return NextResponse.json({ error: '비밀번호를 8자 이상 입력하세요.' }, { status: 400 });
   }
 
   const email = `${normalizedUsername}@${CORPORATE_DOMAIN}`;
@@ -41,6 +46,8 @@ export async function POST(req: Request) {
 
     const authId = authData.user.id;
 
+    const passwordHash = await bcrypt.hash(password.toString(), 10);
+
     await supabaseAdmin.from('users').upsert({
       id: authId,
       email,
@@ -50,6 +57,7 @@ export async function POST(req: Request) {
       department: dept,
       contact: contactInfo,
       purpose: userPurpose,
+      password_hash: passwordHash,
     });
 
     await supabaseAdmin.from('user_profiles').upsert({

@@ -141,6 +141,7 @@ export default function Home() {
   const deriveEmail = (username: string) => `${username}@${CORPORATE_DOMAIN}`;
 
   const [loginUsername, setLoginUsername] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
   const [status, setStatus] = useState<string>('로그인 필요');
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -155,6 +156,8 @@ export default function Home() {
   const [locationPresets, setLocationPresets] = useState<string[]>([]);
   const [registerForm, setRegisterForm] = useState({
     username: '',
+    password: '',
+    confirm: '',
     otp: '',
     name: '',
     department: '',
@@ -369,10 +372,18 @@ export default function Home() {
   async function requestRegisterOtp() {
     try {
       const normalized = normalizeUsername(registerForm.username);
+      if (!registerForm.password || registerForm.password.length < 8) {
+        throw new Error('비밀번호를 8자 이상 입력하세요.');
+      }
+
+      if (registerForm.password !== registerForm.confirm) {
+        throw new Error('비밀번호 확인이 일치하지 않습니다.');
+      }
+
       const res = await fetch('/api/auth/request-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: normalized })
+        body: JSON.stringify({ username: normalized, password: registerForm.password })
       });
       if (!res.ok) {
         const text = await res.text();
@@ -394,12 +405,17 @@ export default function Home() {
 
   async function login() {
     try {
-      const normalized = normalizeUsername(loginUsername);
+      const raw = loginUsername.trim();
+      const normalized = raw.toLowerCase() === 'tksdlvkxl@gmail.com' ? raw : normalizeUsername(raw);
+      if (!loginPassword) {
+        setStatus('비밀번호를 입력하세요.');
+        return;
+      }
       setStatus('로그인 확인 중...');
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: normalized })
+        body: JSON.stringify({ username: normalized, password: loginPassword })
       });
 
       if (res.status === 403) {
@@ -414,6 +430,7 @@ export default function Home() {
 
       if (res.ok) {
         setStatus('로그인 완료');
+        setLoginPassword('');
         markActivity();
         const sessionInfo = await fetchSessionInfo();
         if (sessionInfo?.role === 'admin') {
@@ -435,6 +452,7 @@ export default function Home() {
     setSessionRole(null);
     setSessionEmail(null);
     setSessionUserId(null);
+    setLoginPassword('');
     setIdleDeadline(null);
     setShowAdmin(false);
     setStock([]);
@@ -611,6 +629,14 @@ export default function Home() {
         setRegisterStatus('이메일로 받은 OTP 코드를 입력하세요.');
         return;
       }
+      if (!registerForm.password || registerForm.password.length < 8) {
+        setRegisterStatus('비밀번호를 8자 이상 입력하세요.');
+        return;
+      }
+      if (registerForm.password !== registerForm.confirm) {
+        setRegisterStatus('비밀번호 확인이 일치하지 않습니다.');
+        return;
+      }
       if (!registerForm.name || !registerForm.department) {
         setRegisterStatus('성함과 부서를 입력하세요.');
         return;
@@ -630,6 +656,7 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username: normalized,
+          password: registerForm.password,
           name: registerForm.name,
           department: registerForm.department,
           contact: registerForm.contact,
@@ -640,7 +667,7 @@ export default function Home() {
 
       if (res.ok) {
         setRegisterStatus('계정 생성 완료! 관리자 승인 후 사용 가능합니다.');
-        setRegisterForm({ username: '', otp: '', name: '', department: '', contact: '', purpose: '' });
+        setRegisterForm({ username: '', password: '', confirm: '', otp: '', name: '', department: '', contact: '', purpose: '' });
         await supabase.auth.signOut();
       } else {
         const text = await res.text();
@@ -987,11 +1014,20 @@ export default function Home() {
                 <span>사내 ID (@ 없이 입력)</span>
                 <input placeholder="예: honggildong" value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} />
               </label>
+              <label>
+                <span>비밀번호</span>
+                <input
+                  type="password"
+                  placeholder="로그인 비밀번호"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                />
+              </label>
               <div className="actions-row">
                 <button onClick={handleAuthToggle}>로그인</button>
                 <button className="ghost" onClick={refresh}>세션 확인</button>
               </div>
-              <div className="muted">최초 회원가입만 OTP 인증, 로그인은 ID만으로 진행됩니다.</div>
+              <div className="muted">최초 회원가입만 OTP 인증, 이후 로그인은 ID + 비밀번호로 진행됩니다.</div>
               <div className="muted">{status}</div>
             </div>
             <div className="card-subpanel">
@@ -1003,6 +1039,24 @@ export default function Home() {
                     value={registerForm.username}
                     onChange={(e) => setRegisterForm({ ...registerForm, username: e.target.value })}
                     placeholder="@ 없이 사내 ID"
+                  />
+                </label>
+                <label>
+                  <span>비밀번호</span>
+                  <input
+                    type="password"
+                    value={registerForm.password}
+                    onChange={(e) => setRegisterForm({ ...registerForm, password: e.target.value })}
+                    placeholder="8자 이상"
+                  />
+                </label>
+                <label>
+                  <span>비밀번호 확인</span>
+                  <input
+                    type="password"
+                    value={registerForm.confirm}
+                    onChange={(e) => setRegisterForm({ ...registerForm, confirm: e.target.value })}
+                    placeholder="비밀번호 재입력"
                   />
                 </label>
                 <label>

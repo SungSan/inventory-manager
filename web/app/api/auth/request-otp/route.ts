@@ -3,17 +3,20 @@ import { supabaseAdmin } from '../../../../lib/supabase';
 import { normalizeUsername, deriveEmail } from '../../../../lib/auth';
 
 export async function POST(req: Request) {
-  const { username } = await req.json();
+  const { username, password } = await req.json();
 
   try {
     const normalized = normalizeUsername((username ?? '').toString());
     const email = deriveEmail(normalized);
-    const tempPassword = `Tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    if (!password || password.toString().length < 8) {
+      throw new Error('비밀번호를 8자 이상 입력하세요.');
+    }
 
     const { data, error } = await supabaseAdmin.auth.admin.generateLink({
       type: 'signup',
       email,
-      password: tempPassword,
+      password: password.toString(),
     });
 
     if (error || !data) {

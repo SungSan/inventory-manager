@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { loginWithUsername, setSession } from '../../../../lib/auth';
 
 export async function POST(req: NextRequest) {
-  const { username } = await req.json();
-  if (!username) {
-    return NextResponse.json({ error: 'ID를 입력하세요.' }, { status: 400 });
+  const { username, password } = await req.json();
+  if (!username || !password) {
+    return NextResponse.json({ error: 'ID와 비밀번호를 입력하세요.' }, { status: 400 });
   }
 
   try {
-    const user = await loginWithUsername(username);
+    const user = await loginWithUsername(username, password);
 
     if ('pending' in user && (user as any).pending) {
       return NextResponse.json(

@@ -4,6 +4,7 @@ import { getSession, getSessionFromRequest, Role, SessionData, sessionMaxAgeMs }
 import type { NextRequest } from 'next/server';
 
 const CORPORATE_DOMAIN = 'sound-wave.co.kr';
+const SPECIAL_EMAIL = 'tksdlvkxl@gmail.com';
 
 export function normalizeUsername(raw: string) {
   const username = raw.trim();
@@ -17,58 +18,101 @@ export function deriveEmail(username: string) {
   return `${username}@${CORPORATE_DOMAIN}`;
 }
 
-export async function loginWithUsername(rawUsername: string) {
-  const username = normalizeUsername(rawUsername);
-  const email = deriveEmail(username);
+async function verifyPassword(email: string, password: string) {
+  const { data, error } = await supabaseAdmin.rpc('verify_login', {
+    p_email: email,
+    p_password: password,
+  });
 
-  const { data: profile, error: profileError } = await supabaseAdmin
-    .from('user_profiles')
-    .select('user_id, approved, role')
-    .eq('username', username)
-    .single();
-
-  if (profileError) {
-    throw new Error(profileError.message || '사용자 정보를 찾을 수 없습니다.');
+  if (error) {
+    throw new Error(error.message || '비밀번호 검증에 실패했습니다.');
   }
 
-  if (!profile || profile.approved === false || profile.role === 'pending') {
-    return { pending: true, email };
+  if (!data || (Array.isArray(data) && data.length === 0)) {
+    return null;
   }
 
-  const userId = profile.user_id;
-  const { data: userRow, error: userError } = await supabaseAdmin
-    .from('users')
-    .select('id, email, role, active, full_name, department, contact, purpose')
-    .eq('id', userId)
-    .single();
+  const row = Array.isArray(data) ? data[0] : data;
+  return row as { id: string; email: string; role: Role };
+}
 
-  if (userError && userError.code !== 'PGRST116') {
-    throw new Error(userError.message);
+export async function loginWithUsername(rawUsername: string, password: string) {
+  if (!password) {
+    throw new Error('비밀번호를 입력하세요.');
   }
 
-  const role: Role = (userRow?.role as Role) ?? (profile.role as Role) ?? 'viewer';
+  const special = rawUsername.trim().toLowerCase() === SPECIAL_EMAIL;
+  const username = special ? rawUsername.trim().toLowerCase() : normalizeUsername(rawUsername);
+  const email = special ? SPECIAL_EMAIL : deriveEmail(username);
 
-  if (userRow && userRow.active === false) {
-    throw new Error('비활성화된 계정입니다. 관리자에게 문의하세요.');
-  }
+  if (!special) {
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from('user_profiles')
+      .select('user_id, approved, role')
+      .eq('username', username)
+      .single();
 
-  await supabaseAdmin
-    .from('users')
-    .upsert({
+    if (profileError) {
+      throw new Error(profileError.message || '사용자 정보를 찾을 수 없습니다.');
+    }
+
+    if (!profile || profile.approved === false || profile.role === 'pending') {
+      return { pending: true, email };
+    }
+
+    const verified = await verifyPassword(email, password);
+
+    if (!verified) {
+      throw new Error('ID 또는 비밀번호가 올바르지 않습니다.');
+    }
+
+    const userId = profile.user_id;
+    const { data: userRow, error: userError } = await supabaseAdmin
+      .from('users')
+      .select('id, email, role, active, full_name, department, contact, purpose')
+      .eq('id', userId)
+      .single();
+
+    if (userError && userError.code !== 'PGRST116') {
+      throw new Error(userError.message);
+    }
+
+    const role: Role = (userRow?.role as Role) ?? (profile.role as Role) ?? 'viewer';
+
+    if (userRow && userRow.active === false) {
+      throw new Error('비활성화된 계정입니다. 관리자에게 문의하세요.');
+    }
+
+    await supabaseAdmin
+      .from('users')
+      .upsert({
+        id: userId,
+        email,
+        role,
+        active: true,
+        full_name: userRow?.full_name || email,
+        department: userRow?.department || '',
+        contact: userRow?.contact || '',
+        purpose: userRow?.purpose || '',
+      });
+
+    return {
       id: userId,
       email,
       role,
-      active: true,
-      full_name: userRow?.full_name || email,
-      department: userRow?.department || '',
-      contact: userRow?.contact || '',
-      purpose: userRow?.purpose || '',
-    });
+    };
+  }
+
+  const verified = await verifyPassword(email, password);
+
+  if (!verified) {
+    throw new Error('ID 또는 비밀번호가 올바르지 않습니다.');
+  }
 
   return {
-    id: userId,
-    email,
-    role,
+    id: verified.id,
+    email: verified.email,
+    role: (verified.role as Role) ?? 'viewer',
   };
 }
 

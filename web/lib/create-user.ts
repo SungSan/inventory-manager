@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from './supabase';
 import type { Role } from './session';
 
@@ -46,6 +47,7 @@ export async function createUserWithProfile(payload: CreateUserPayload): Promise
   const activeFlag = payload.active === true;
   const approvedFlag = payload.approved === true;
   const email = deriveEmail(username);
+  const passwordHash = await bcrypt.hash(password, 10);
 
   const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
     email,
@@ -84,6 +86,7 @@ export async function createUserWithProfile(payload: CreateUserPayload): Promise
       department,
       contact,
       purpose,
+      password_hash: passwordHash,
     });
 
   if (userError) {
