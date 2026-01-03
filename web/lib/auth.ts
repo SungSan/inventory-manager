@@ -50,7 +50,7 @@ export async function loginWithUsername(rawUsername: string, password: string) {
 
   const { data: userRow, error: userError } = await supabaseAdmin
     .from('users')
-    .select('id, email, role, active, approved, full_name, department, contact, purpose')
+    .select('id, email, role, active, approved')
     .eq('email', email)
     .single();
 
@@ -86,10 +86,6 @@ export async function loginWithUsername(rawUsername: string, password: string) {
       role,
       approved: approvedFlag,
       active: userRow?.active ?? true,
-      full_name: userRow?.full_name || email,
-      department: userRow?.department || '',
-      contact: userRow?.contact || '',
-      purpose: userRow?.purpose || '',
     });
 
   return {
@@ -122,7 +118,7 @@ export async function loginWithAccessToken(
 
   const { data: userRow, error: userError } = await supabaseAdmin
     .from('users')
-    .select('id, email, role, active, approved, full_name, department, contact, purpose')
+    .select('id, email, role, active, approved')
     .eq('id', authUser.user.id)
     .single();
 
@@ -141,8 +137,6 @@ export async function loginWithAccessToken(
 
   const nextRole: Role = (userRow?.role as Role) ?? (bypassApproval ? 'admin' : 'viewer');
 
-  const metadata = authUser.user.user_metadata || {};
-
   await supabaseAdmin
     .from('users')
     .upsert({
@@ -151,10 +145,6 @@ export async function loginWithAccessToken(
       role: nextRole,
       approved: approvedFlag,
       active: userRow?.active ?? true,
-      full_name: metadata.full_name || userRow?.full_name || email,
-      department: metadata.department || userRow?.department || '',
-      contact: metadata.contact || userRow?.contact || '',
-      purpose: metadata.purpose || userRow?.purpose || '',
     });
 
   return {
