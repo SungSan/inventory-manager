@@ -26,7 +26,7 @@ type HistoryRow = {
   artist: string;
   category: string;
   album_version: string;
-  option: string;
+  option?: string;
   location: string;
   quantity: number;
   created_by: string;
@@ -473,9 +473,19 @@ export default function Home() {
   async function reloadHistory() {
     const histRes = await fetch('/api/history');
     if (histRes.ok) {
-      setHistory(await histRes.json());
+      const payload = await histRes.json();
+      const rows = Array.isArray(payload)
+        ? payload.map((row: any) => ({
+            ...row,
+            option: row.option ?? '',
+            created_by_name: row.created_by_name ?? '',
+          }))
+        : [];
+      setHistory(rows);
     } else {
-      setStatus('입출고 이력 불러오기 실패');
+      const payload = await histRes.json().catch(() => null);
+      const message = payload?.error || payload?.message || '입출고 이력 불러오기 실패';
+      setStatus(message);
     }
   }
 
@@ -524,35 +534,33 @@ export default function Home() {
     markActivity();
 
     try {
-      const supabase = requireSupabase();
-      if (!supabase) {
-        return;
-      }
-      const { data: { user } } = await supabase.auth.getUser();
-      const created_by = sessionUserId ?? user?.id ?? null;
-
       const idempotency_key = `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-      const { data, error } = await supabase.rpc('record_movement', {
-        album_version: albumVersion,
-        artist: artistValue,
-        category: categoryValue,
-        created_by,
-        direction,
-        idempotency_key,
-        location: locationValue,
-        memo: memoValue ?? '',
-        option: optionValue ?? '',
-        quantity: Number(quantityValue),
+      const res = await fetch('/api/movements', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          artist: artistValue,
+          category: categoryValue,
+          album_version: albumVersion,
+          option: optionValue ?? '',
+          location: locationValue,
+          quantity: Number(quantityValue),
+          direction,
+          memo: memoValue ?? '',
+          idempotency_key,
+        })
       });
 
-      if (error) {
-        console.error('record_movement rpc error:', error);
-        alert(error.message);
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        const message = payload?.error || payload?.message || `입출고 실패 (${res.status})`;
+        console.error('movement submit error:', message);
+        alert(message);
+        setStatus(message);
         return;
       }
 
-      console.log('record_movement ok:', data);
       await Promise.all([reloadInventory(), reloadHistory()]);
       setStatus('기록 완료');
       setMovement((prev) => ({ ...EMPTY_MOVEMENT, direction: prev.direction }));
