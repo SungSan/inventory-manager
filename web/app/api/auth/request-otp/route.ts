@@ -8,10 +8,12 @@ export async function POST(req: Request) {
   try {
     const normalized = normalizeUsername((username ?? '').toString());
     const email = deriveEmail(normalized);
+    const tempPassword = `Tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
     const { data, error } = await supabaseAdmin.auth.admin.generateLink({
       type: 'signup',
       email,
+      password: tempPassword,
     });
 
     if (error || !data) {
