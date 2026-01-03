@@ -9,6 +9,7 @@ export interface CreateUserPayload {
   contact?: string;
   purpose?: string;
   role?: Role;
+  active?: boolean;
 }
 
 export interface CreateUserResult {
@@ -24,6 +25,7 @@ export async function createUserWithProfile(payload: CreateUserPayload): Promise
   const contact = (payload.contact ?? '').toString().trim();
   const purpose = (payload.purpose ?? '').toString().trim();
   const role: Role = (payload.role as Role) ?? 'operator';
+  const activeFlag = payload.active !== false;
 
   const authEmail = loginId.includes('@') ? loginId : `${loginId}@local`;
 
@@ -61,6 +63,10 @@ export async function createUserWithProfile(payload: CreateUserPayload): Promise
 
   const profileRow = Array.isArray(profileData) ? profileData[0] : profileData;
   const userId = authData?.user?.id ?? profileRow?.id ?? null;
+
+  if (userId && !activeFlag) {
+    await supabaseAdmin.from('users').update({ active: false }).eq('id', userId);
+  }
 
   return { userId, role: profileRow?.role ?? role };
 }

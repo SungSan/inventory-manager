@@ -35,6 +35,7 @@ export async function POST(req: Request) {
       id: loginId,
       password: pwd,
       role: 'viewer',
+      active: false,
       full_name: fullName,
       department: dept,
       contact: contactInfo,

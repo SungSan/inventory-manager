@@ -152,26 +152,29 @@ begin
   end if;
 
   if idempotency_key is not null then
-    insert into public.idempotency_keys(key, created_by) values(idempotency_key, created_by)
+    insert into public.idempotency_keys(key, created_by)
+    values(idempotency_key, created_by)
     on conflict do nothing;
+
     if not found then
       return json_build_object('ok', true, 'idempotent', true);
     end if;
   end if;
 
-  -- ensure item
+  -- ensure item exists
   insert into public.items(artist, category, album_version, option)
     values(public.record_movement.artist, category, album_version, option)
   on conflict (artist, category, album_version, option)
     do update set artist = excluded.artist
   returning id into v_item_id;
 
-  -- lock inventory row
+  -- ensure inventory row and lock it
   insert into public.inventory(item_id, location, quantity)
     values(v_item_id, location, 0)
   on conflict (item_id, location) do nothing;
 
-  select quantity into v_existing
+  select quantity
+    into v_existing
     from public.inventory
    where item_id = v_item_id
      and location = public.record_movement.location
@@ -186,7 +189,7 @@ begin
   elsif direction = 'OUT' then
     v_new := v_existing - quantity;
   else
-    v_new := quantity; -- for ADJUST quantity represents final desired count
+    v_new := quantity; -- ADJUST sets absolute quantity
   end if;
 
   update public.inventory
@@ -194,8 +197,30 @@ begin
          updated_at = now()
    where item_id = v_item_id
      and location = public.record_movement.location;
-  insert into public.movements(item_id, location, direction, quantity, memo, created_by, idempotency_key, opening, closing)
-    values(v_item_id, location, direction, quantity, memo, created_by, idempotency_key, v_existing, v_new);
+
+  insert into public.movements(
+    item_id,
+    location,
+    direction,
+    quantity,
+    memo,
+    created_by,
+    idempotency_key,
+    opening,
+    closing,
+    created_at
+  ) values (
+    v_item_id,
+    location,
+    direction,
+    quantity,
+    memo,
+    created_by,
+    idempotency_key,
+    v_existing,
+    v_new,
+    now()
+  );
 
   return json_build_object('ok', true, 'opening', v_existing, 'closing', v_new);
 end;
