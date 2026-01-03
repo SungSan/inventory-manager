@@ -8,32 +8,48 @@ import type { Role } from '../../../../lib/session';
 export async function GET() {
   return withAuth(['admin'], async () => {
     const { data, error } = await supabaseAdmin
-      .from('admin_users_view')
+      .from('users')
       .select(
-        'id, email, role, active, created_at, full_name, department, contact, purpose, username, approved, profile_role, requested_at, approved_at, approved_by'
+        `id, email, role, active, created_at,
+        user_profiles!left(
+          username,
+          approved,
+          role,
+          requested_at,
+          approved_at,
+          approved_by,
+          full_name,
+          department,
+          contact,
+          purpose
+        )`
       )
-      .order('requested_at', { ascending: true });
+      .order('created_at', { ascending: true });
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const mapped = (data || []).map((row: any) => ({
-      id: row.id,
-      username: row.username ?? row.email,
-      approved: row.approved ?? false,
-      role: (row.profile_role as Role | undefined) ?? (row.role as Role | undefined) ?? 'pending',
-      requested_at: row.requested_at ?? row.created_at,
-      approved_at: row.approved_at,
-      approved_by: row.approved_by,
-      email: row.email ?? '',
-      full_name: row.full_name ?? '',
-      department: row.department ?? '',
-      contact: row.contact ?? '',
-      purpose: row.purpose ?? '',
-      active: row.active ?? false,
-      created_at: row.created_at ?? row.requested_at,
-    }));
+    const mapped = (data || []).map((row: any) => {
+      const profile = Array.isArray(row.user_profiles) ? row.user_profiles[0] : row.user_profiles;
+
+      return {
+        id: row.id,
+        username: profile?.username ?? row.email,
+        approved: profile?.approved ?? false,
+        role: (profile?.role as Role | undefined) ?? (row.role as Role | undefined) ?? 'pending',
+        requested_at: profile?.requested_at ?? row.created_at,
+        approved_at: profile?.approved_at,
+        approved_by: profile?.approved_by,
+        email: row.email ?? '',
+        full_name: profile?.full_name ?? '',
+        department: profile?.department ?? '',
+        contact: profile?.contact ?? '',
+        purpose: profile?.purpose ?? '',
+        active: row.active ?? false,
+        created_at: row.created_at ?? profile?.requested_at,
+      };
+    });
 
     return NextResponse.json(mapped);
   });

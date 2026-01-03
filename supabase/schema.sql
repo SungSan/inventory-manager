@@ -115,7 +115,7 @@ create table if not exists public.admin_logs (
   actor_id uuid references public.users(id),
   actor_email text,
   action text not null,
-  detail text,
+  detail jsonb default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
 create index if not exists admin_logs_created_at_idx on public.admin_logs(created_at desc);
@@ -128,10 +128,10 @@ select
   u.role,
   u.active,
   u.created_at,
-  u.full_name,
-  u.department,
-  u.contact,
-  u.purpose,
+  coalesce(p.full_name, u.email, '') as full_name,
+  coalesce(p.department, '') as department,
+  coalesce(p.contact, '') as contact,
+  coalesce(p.purpose, '') as purpose,
   p.username,
   p.approved,
   p.role as profile_role,

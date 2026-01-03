@@ -14,6 +14,11 @@ export async function GET() {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
 
-    return NextResponse.json(data ?? []);
+    const normalized = (data || []).map((row: any) => ({
+      ...row,
+      detail: typeof row.detail === 'string' ? row.detail : JSON.stringify(row.detail ?? {}),
+    }));
+
+    return NextResponse.json(normalized);
   });
 }

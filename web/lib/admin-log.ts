@@ -6,7 +6,7 @@ export async function recordAdminLog(session: SessionData, action: string, detai
     actor_id: session.userId ?? null,
     actor_email: session.email ?? null,
     action,
-    detail: detail ?? null,
+    detail: detail ? { message: detail } : {},
   };
 
   await supabaseAdmin.from('admin_logs').insert(payload);
