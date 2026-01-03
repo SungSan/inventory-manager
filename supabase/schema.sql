@@ -176,6 +176,8 @@ declare
   v_item_id uuid;
   v_existing int;
   v_new int;
+  v_movement_id uuid;
+  v_rowcount int;
 begin
   if direction not in ('IN','OUT','ADJUST') then
     raise exception 'invalid direction';
@@ -187,7 +189,12 @@ begin
     on conflict do nothing;
 
     if not found then
-      return json_build_object('ok', true, 'idempotent', true);
+      return json_build_object(
+        'ok', true,
+        'idempotent', true,
+        'movement_inserted', false,
+        'inventory_updated', false
+      );
     end if;
   end if;
 
@@ -228,6 +235,11 @@ begin
    where item_id = v_item_id
      and location = public.record_movement.location;
 
+  get diagnostics v_rowcount = row_count;
+  if v_rowcount <= 0 then
+    raise exception 'inventory update failed';
+  end if;
+
   insert into public.movements(
     item_id,
     location,
@@ -250,9 +262,18 @@ begin
     v_existing,
     v_new,
     now()
-  );
+  ) returning id into v_movement_id;
 
-  return json_build_object('ok', true, 'opening', v_existing, 'closing', v_new);
+  return json_build_object(
+    'ok', true,
+    'idempotent', false,
+    'movement_inserted', true,
+    'inventory_updated', true,
+    'opening', v_existing,
+    'closing', v_new,
+    'item_id', v_item_id,
+    'movement_id', v_movement_id
+  );
 end;
 $$ language plpgsql security definer;
 

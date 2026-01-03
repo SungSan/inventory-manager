@@ -552,10 +552,10 @@ export default function Home() {
         })
       });
 
-      if (!res.ok) {
-        const payload = await res.json().catch(() => null);
+      const payload = await res.json().catch(() => null);
+      if (!res.ok || !payload?.movement_inserted || !payload?.inventory_updated) {
         const message = payload?.error || payload?.message || `입출고 실패 (${res.status})`;
-        console.error('movement submit error:', message);
+        console.error('movement submit error:', { message, payload });
         alert(message);
         setStatus(message);
         return;
