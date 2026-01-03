@@ -41,6 +41,7 @@ label span { display: block; font-size: 0.85rem; color: var(--muted); margin-bot
 .section-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 
 .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1.5rem; }
+.compact-header { justify-content: flex-start; }
 .page-header h1 { margin: 0.15rem 0; font-size: 1.75rem; }
 .eyebrow { letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-size: 0.75rem; margin: 0; }
 .muted { color: var(--muted); margin: 0.25rem 0 0; }
@@ -92,6 +93,13 @@ label span { display: block; font-size: 0.85rem; color: var(--muted); margin-bot
 .inline-editor { margin-top: 1rem; padding: 1rem; border: 1px dashed var(--border); border-radius: 12px; background: #f8fafc; }
 .inline-editor-row td { padding: 0; background: #f1f5f9; border-top: 2px solid var(--border); }
 .inline-editor-row .inline-editor { margin: 0; border-left: none; border-right: none; border-bottom: none; border-radius: 0; }
+
+.split-panels { display: grid; grid-template-columns: 360px 1fr; gap: 1rem; align-items: start; }
+.left-sticky { position: sticky; top: 1rem; align-self: flex-start; height: fit-content; }
+.right-panel { display: flex; flex-direction: column; gap: 1rem; }
+.floating-nav { position: fixed; right: 1rem; bottom: 1rem; display: flex; gap: 0.5rem; background: #fff; border: 1px solid #e5e7eb; box-shadow: 0 10px 30px rgba(0,0,0,0.08); padding: 0.5rem; border-radius: 999px; z-index: 20; }
+.floating-nav .tab { padding: 0.5rem 0.9rem; }
+.panel-anchor { scroll-margin-top: 80px; }
 .tab-row { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
 .tab { background: #e5e7eb; color: #111827; border: 1px solid var(--border); }
 .tab.active { background: #1e40af; color: white; border-color: #1e3a8a; }

@@ -145,7 +145,6 @@ export default function Home() {
   const deriveEmail = (username: string) => `${username}@${CORPORATE_DOMAIN}`;
 
   const [loginUsername, setLoginUsername] = useState('');
-  const [loginOtp, setLoginOtp] = useState('');
   const [status, setStatus] = useState<string>('로그인 필요');
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -193,11 +192,11 @@ export default function Home() {
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [accountsStatus, setAccountsStatus] = useState('');
   const [registerStatus, setRegisterStatus] = useState('');
-  const [loginOtpStatus, setLoginOtpStatus] = useState('');
   const [registerOtpStatus, setRegisterOtpStatus] = useState('');
   const [adminStatus, setAdminStatus] = useState('');
   const [sessionRole, setSessionRole] = useState<Role | null>(null);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
+  const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [showAdmin, setShowAdmin] = useState(false);
   const [idleDeadline, setIdleDeadline] = useState<number | null>(null);
   const [pendingBlock, setPendingBlock] = useState<string | null>(null);
@@ -209,10 +208,21 @@ export default function Home() {
   const [inventoryActionStatus, setInventoryActionStatus] = useState('');
   const logoutTimeout = useRef<NodeJS.Timeout | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const stockRef = useRef<HTMLDivElement | null>(null);
+  const historyRef = useRef<HTMLDivElement | null>(null);
+  const adminRef = useRef<HTMLDivElement | null>(null);
 
   const markActivity = () => {
     const next = Date.now() + IDLE_TIMEOUT_MS;
     setIdleDeadline(next);
+  };
+
+  const scrollToPanel = (panel: 'stock' | 'history' | 'admin') => {
+    setActivePanel(panel);
+    const target = panel === 'stock' ? stockRef.current : panel === 'history' ? historyRef.current : adminRef.current;
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
   };
 
   async function fetchSessionInfo() {
@@ -220,6 +230,7 @@ export default function Home() {
     if (!res.ok) {
       setSessionRole(null);
       setSessionEmail(null);
+      setSessionUserId(null);
       setShowAdmin(false);
       setIdleDeadline(null);
       return null;
@@ -228,6 +239,7 @@ export default function Home() {
     if (!data.authenticated) {
       setSessionRole(null);
       setSessionEmail(null);
+      setSessionUserId(null);
       setShowAdmin(false);
       setIdleDeadline(null);
       return null;
@@ -239,6 +251,7 @@ export default function Home() {
     }
     setSessionRole(data.role ?? null);
     setSessionEmail(data.email ?? null);
+    setSessionUserId(data.userId ?? null);
     markActivity();
     await fetchLocations();
     return data;
@@ -342,56 +355,39 @@ export default function Home() {
     }
   }
 
-  async function requestOtp(target: 'login' | 'register') {
+  async function requestRegisterOtp() {
     try {
-      const username = target === 'login' ? loginUsername : registerForm.username;
-      const normalized = normalizeUsername(username);
-      if (!supabase) {
-        throw new Error('Supabase 환경 변수를 확인하세요.');
-      }
-      const email = deriveEmail(normalized);
-      const shouldCreateUser = target === 'register';
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: { shouldCreateUser },
+      const normalized = normalizeUsername(registerForm.username);
+      const res = await fetch('/api/auth/request-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: normalized })
       });
-      if (error) throw error;
-      if (target === 'login') {
-        setLoginOtpStatus('OTP 전송 완료. 이메일을 확인하세요.');
-      } else {
-        setRegisterOtpStatus('OTP 전송 완료. 이메일을 확인하세요.');
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || 'OTP 전송 실패');
       }
+      const payload = await res.json();
+      setRegisterOtpStatus(`OTP 전송 완료. 메일함과 아래 코드를 확인하세요: ${payload.otp || '이메일 확인'}`);
+      if (!supabase) {
+        return;
+      }
+      const email = deriveEmail(normalizeUsername(registerForm.username));
+      await supabase.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
     } catch (err: any) {
       const message = err?.message || 'OTP 전송에 실패했습니다.';
-      if (target === 'login') {
-        setLoginOtpStatus(message);
-      } else {
-        setRegisterOtpStatus(message);
-      }
+      setRegisterOtpStatus(message);
     }
   }
 
   async function login() {
     try {
       const normalized = normalizeUsername(loginUsername);
-      if (!loginOtp.trim()) {
-        setStatus('OTP 코드를 입력하세요.');
-        return;
-      }
-      if (!supabase) {
-        throw new Error('Supabase 환경 변수를 확인하세요.');
-      }
-      setStatus('OTP 확인 중...');
-      const email = deriveEmail(normalized);
-      const { data, error } = await supabase.auth.verifyOtp({ email, token: loginOtp.trim(), type: 'email' });
-      if (error || !data?.session?.access_token) {
-        throw new Error(error?.message || 'OTP 인증에 실패했습니다.');
-      }
-
+      setStatus('로그인 확인 중...');
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: data.session.access_token, username: normalized })
+        body: JSON.stringify({ username: normalized })
       });
 
       if (res.status === 403) {
@@ -423,6 +419,7 @@ export default function Home() {
     setStatus(reason === 'expired' ? '세션 만료' : '로그아웃됨');
     setSessionRole(null);
     setSessionEmail(null);
+    setSessionUserId(null);
     setIdleDeadline(null);
     setShowAdmin(false);
     setStock([]);
@@ -525,7 +522,7 @@ export default function Home() {
 
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      const created_by = user?.id ?? null;
+      const created_by = sessionUserId ?? user?.id ?? null;
 
       const idempotency_key = `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
@@ -605,7 +602,7 @@ export default function Home() {
         throw new Error('Supabase 환경 변수를 확인하세요.');
       }
       const email = deriveEmail(normalized);
-      const { data, error } = await supabase.auth.verifyOtp({ email, token: registerForm.otp.trim(), type: 'email' });
+      const { data, error } = await supabase.auth.verifyOtp({ email, token: registerForm.otp.trim(), type: 'signup' });
       if (error || !data?.session?.access_token) {
         throw new Error(error?.message || 'OTP 인증에 실패했습니다.');
       }
@@ -934,22 +931,10 @@ export default function Home() {
 
   return (
     <main className="page">
-      <header className="page-header">
+      <header className="page-header compact-header">
         <div>
-          <p className="eyebrow">재고 관리 대시보드</p>
-          <p className="muted">Python 데스크톱에서 쓰던 순서를 그대로: 로그인 → 입/출고 입력 → 재고/이력 확인 → 엑셀 다운로드.</p>
-          <p className="muted">상단 탭에서 현재 재고 · 입출고 이력 · 관리자 페이지를 전환하세요.</p>
-        </div>
-        <div className="status-panel">
-          <div className="status-row">
-            <span className="status-dot" aria-hidden />
-            <span>{status}</span>
-          </div>
-          <div className="status-row">{isLoading ? '동기화 중...' : '대기'}</div>
-          {sessionEmail && (
-            <div className="status-row">{sessionEmail} ({sessionRole})</div>
-          )}
-          <button className="ghost" onClick={refresh}>새로고침</button>
+          <p className="eyebrow">재고 관리</p>
+          <p className="muted">필수 메뉴는 우측 하단 탭과 좌측 입/출고 패널을 이용하세요.</p>
         </div>
       </header>
 
@@ -984,20 +969,12 @@ export default function Home() {
                 <span>사내 ID (@ 없이 입력)</span>
                 <input placeholder="예: honggildong" value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} />
               </label>
-              <label>
-                <span>이메일 OTP 코드</span>
-                <input
-                  placeholder="이메일로 받은 숫자 코드"
-                  value={loginOtp}
-                  onChange={(e) => setLoginOtp(e.target.value)}
-                />
-              </label>
               <div className="actions-row">
-                <button className="ghost" onClick={() => requestOtp('login')}>OTP 요청</button>
                 <button onClick={handleAuthToggle}>로그인</button>
                 <button className="ghost" onClick={refresh}>세션 확인</button>
               </div>
-              <div className="muted">{loginOtpStatus || status}</div>
+              <div className="muted">최초 회원가입만 OTP 인증, 로그인은 ID만으로 진행됩니다.</div>
+              <div className="muted">{status}</div>
             </div>
             <div className="card-subpanel">
               <p className="mini-label">새 계정 만들기 (OTP + 관리자 승인)</p>
@@ -1052,7 +1029,7 @@ export default function Home() {
                 </label>
               </div>
               <div className="actions-row">
-                <button className="ghost" onClick={() => requestOtp('register')}>OTP 요청</button>
+                <button className="ghost" onClick={requestRegisterOtp}>OTP 요청</button>
                 <button onClick={registerAccount}>계정 생성</button>
                 <span className="muted">{registerStatus || registerOtpStatus || 'OTP 인증 후 생성되며 관리자 승인이 필요합니다.'}</span>
               </div>
@@ -1087,6 +1064,7 @@ export default function Home() {
       )}
 
       {activePanel === 'admin' && showAdmin && (
+        <div ref={adminRef} className="panel-anchor">
         <Section
           title="관리자 도구"
           actions={
@@ -1267,362 +1245,367 @@ export default function Home() {
             </div>
           </div>
         </Section>
+        </div>
       )}
 
       {activePanel === 'stock' && (
-        <>
-          <Section
-            title="입/출고 등록"
-            actions={
-              <div className="section-actions">
-                <button className="ghost" onClick={() => setMovement(EMPTY_MOVEMENT)}>입력값 초기화</button>
-              </div>
-            }
-          >
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const direction: 'IN' | 'OUT' = movement.direction === 'OUT' ? 'OUT' : 'IN';
-                submitMovement(direction);
-              }}
+        <div className="split-panels" ref={stockRef}>
+          <div className="left-sticky">
+            <Section
+              title="입/출고 등록"
+              actions={
+                <div className="section-actions">
+                  <button className="ghost" onClick={() => setMovement(EMPTY_MOVEMENT)}>입력값 초기화</button>
+                </div>
+              }
             >
-              <div className="form-row">
-                <label>
-                  <span>아티스트</span>
-                  <input
-                    value={movement.artist}
-                    onChange={(e) => setMovement({ ...movement, artist: e.target.value })}
-                    placeholder="예: ARTIST"
-                  />
-                </label>
-                <label className="compact">
-                  <span>카테고리</span>
-                  <select
-                    value={movement.category}
-                    onChange={(e) => setMovement({ ...movement, category: e.target.value as MovementPayload['category'] })}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const direction: 'IN' | 'OUT' = movement.direction === 'OUT' ? 'OUT' : 'IN';
+                  submitMovement(direction);
+                }}
+              >
+                <div className="form-row">
+                  <label>
+                    <span>아티스트</span>
+                    <input
+                      value={movement.artist}
+                      onChange={(e) => setMovement({ ...movement, artist: e.target.value })}
+                      placeholder="예: ARTIST"
+                    />
+                  </label>
+                  <label className="compact">
+                    <span>카테고리</span>
+                    <select
+                      value={movement.category}
+                      onChange={(e) => setMovement({ ...movement, category: e.target.value as MovementPayload['category'] })}
+                    >
+                      <option value="album">앨범</option>
+                      <option value="md">MD</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>앨범/버전</span>
+                    <input
+                      value={movement.album_version}
+                      onChange={(e) => setMovement({ ...movement, album_version: e.target.value })}
+                      placeholder="앨범명/버전"
+                    />
+                  </label>
+                  <label>
+                    <span>옵션</span>
+                    <input
+                      value={movement.option}
+                      onChange={(e) => setMovement({ ...movement, option: e.target.value })}
+                      placeholder="포카/키트 등"
+                    />
+                  </label>
+                  <label>
+                    <span>로케이션</span>
+                    <input
+                      list="location-options"
+                      value={movement.location}
+                      onChange={(e) => setMovement({ ...movement, location: e.target.value })}
+                      placeholder="창고/선반"
+                    />
+                    <datalist id="location-options">
+                      {locationOptions.map((loc) => (
+                        <option key={loc} value={loc} />
+                      ))}
+                    </datalist>
+                  </label>
+                  <label className="compact">
+                    <span>수량</span>
+                    <input
+                      type="number"
+                      value={movement.quantity}
+                      min={1}
+                      onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
+                    />
+                  </label>
+                </div>
+                <div className="form-row">
+                  <label className="wide">
+                    <span>메모</span>
+                    <input
+                      value={movement.memo}
+                      onChange={(e) => setMovement({ ...movement, memo: e.target.value })}
+                      placeholder="작업 사유/비고"
+                    />
+                  </label>
+                </div>
+                <div className="actions-row">
+                  <button
+                    type="button"
+                    disabled={isSubmitting}
+                    onClick={() => submitMovement('IN')}
                   >
+                    {isSubmitting ? '처리 중...' : '입고'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSubmitting}
+                    className="secondary"
+                    onClick={() => submitMovement('OUT')}
+                  >
+                    {isSubmitting ? '처리 중...' : '출고'}
+                  </button>
+                  <p className="muted">입고/출고를 버튼으로 나눠 Python GUI와 동일한 동선을 제공합니다.</p>
+                </div>
+              </form>
+            </Section>
+          </div>
+          <div className="right-panel">
+            <Section
+              title="현재 재고"
+              actions={
+                <div className="filter-row">
+                  <input
+                    className="inline-input"
+                    placeholder="검색 (아티스트/버전/옵션/위치)"
+                    value={stockFilters.search}
+                    onChange={(e) => setStockFilters({ ...stockFilters, search: e.target.value })}
+                  />
+                  <select
+                    className="scroll-select"
+                    value={stockFilters.artist}
+                    onChange={(e) => setStockFilters({ ...stockFilters, artist: e.target.value })}
+                  >
+                    <option value="">전체 아티스트</option>
+                    {artistOptions.map((artist) => (
+                      <option key={artist} value={artist}>
+                        {artist}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="scroll-select"
+                    value={stockFilters.location}
+                    onChange={(e) => setStockFilters({ ...stockFilters, location: e.target.value })}
+                  >
+                    <option value="">전체 로케이션</option>
+                    {filterLocationOptions.map((loc) => (
+                      <option key={loc} value={loc}>
+                        {loc}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="compact"
+                    value={stockFilters.category}
+                    onChange={(e) => setStockFilters({ ...stockFilters, category: e.target.value })}
+                  >
+                    <option value="">전체</option>
                     <option value="album">앨범</option>
                     <option value="md">MD</option>
                   </select>
-                </label>
-                <label>
-                  <span>앨범/버전</span>
-                  <input
-                    value={movement.album_version}
-                    onChange={(e) => setMovement({ ...movement, album_version: e.target.value })}
-                    placeholder="앨범명/버전"
-                  />
-                </label>
-                <label>
-                  <span>옵션</span>
-                  <input
-                    value={movement.option}
-                    onChange={(e) => setMovement({ ...movement, option: e.target.value })}
-                    placeholder="포카/키트 등"
-                  />
-                </label>
-                <label>
-                  <span>로케이션</span>
-                  <input
-                    list="location-options"
-                    value={movement.location}
-                    onChange={(e) => setMovement({ ...movement, location: e.target.value })}
-                    placeholder="창고/선반"
-                  />
-                  <datalist id="location-options">
-                    {locationOptions.map((loc) => (
-                      <option key={loc} value={loc} />
+                  <a className="ghost button-link" href="/api/export?type=inventory">엑셀 다운로드</a>
+                </div>
+              }
+            >
+              <div className="stats">
+                <div className="stat">
+                  <p className="eyebrow">재고 수량</p>
+                  <h3>{totalQuantity.toLocaleString()}</h3>
+                  <p className="muted">전체 로케이션 합계</p>
+                </div>
+                <div className="stat">
+                  <p className="eyebrow">고유 품목</p>
+                  <h3>{distinctItems.toLocaleString()}</h3>
+                  <p className="muted">아티스트/버전/옵션 기준</p>
+                </div>
+                <div className="stat">
+                  <p className="eyebrow">로케이션 분포</p>
+                  <div className="pill-row">
+                    {locationBreakdown.slice(0, 4).map(([loc, qty]) => (
+                      <Pill key={loc}>
+                        {loc}: {qty.toLocaleString()}
+                      </Pill>
                     ))}
-                  </datalist>
-                </label>
-                <label className="compact">
-                  <span>수량</span>
-                  <input
-                    type="number"
-                    value={movement.quantity}
-                    min={1}
-                    onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
-                  />
-                </label>
+                  </div>
+                </div>
               </div>
-              <div className="form-row">
-                <label className="wide">
-                  <span>메모</span>
-                  <input
-                    value={movement.memo}
-                    onChange={(e) => setMovement({ ...movement, memo: e.target.value })}
-                    placeholder="작업 사유/비고"
-                  />
-                </label>
-              </div>
-              <div className="actions-row">
-                <button
-                  type="button"
-                  disabled={isSubmitting}
-                  onClick={() => submitMovement('IN')}
-                >
-                  {isSubmitting ? '처리 중...' : '입고'}
-                </button>
-                <button
-                  type="button"
-                  disabled={isSubmitting}
-                  className="secondary"
-                  onClick={() => submitMovement('OUT')}
-                >
-                  {isSubmitting ? '처리 중...' : '출고'}
-                </button>
-                <p className="muted">입고/출고를 버튼으로 나눠 Python GUI와 동일한 동선을 제공합니다.</p>
-              </div>
-            </form>
-          </Section>
-
-          <Section
-            title="현재 재고"
-            actions={
-              <div className="filter-row">
-                <input
-                  className="inline-input"
-                  placeholder="검색 (아티스트/버전/옵션/위치)"
-                  value={stockFilters.search}
-                  onChange={(e) => setStockFilters({ ...stockFilters, search: e.target.value })}
-                />
-                <select
-                  className="scroll-select"
-                  value={stockFilters.artist}
-                  onChange={(e) => setStockFilters({ ...stockFilters, artist: e.target.value })}
-                >
-                  <option value="">전체 아티스트</option>
-                  {artistOptions.map((artist) => (
-                    <option key={artist} value={artist}>
-                      {artist}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  className="scroll-select"
-                  value={stockFilters.location}
-                  onChange={(e) => setStockFilters({ ...stockFilters, location: e.target.value })}
-                >
-                  <option value="">전체 로케이션</option>
-                  {filterLocationOptions.map((loc) => (
-                    <option key={loc} value={loc}>
-                      {loc}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  className="compact"
-                  value={stockFilters.category}
-                  onChange={(e) => setStockFilters({ ...stockFilters, category: e.target.value })}
-                >
-                  <option value="">전체</option>
-                  <option value="album">앨범</option>
-                  <option value="md">MD</option>
-                </select>
-                <a className="ghost button-link" href="/api/export?type=inventory">엑셀 다운로드</a>
-              </div>
-            }
-          >
-        <div className="stats">
-          <div className="stat">
-            <p className="eyebrow">재고 수량</p>
-            <h3>{totalQuantity.toLocaleString()}</h3>
-            <p className="muted">전체 로케이션 합계</p>
-          </div>
-          <div className="stat">
-            <p className="eyebrow">고유 품목</p>
-            <h3>{distinctItems.toLocaleString()}</h3>
-            <p className="muted">아티스트/버전/옵션 기준</p>
-          </div>
-          <div className="stat">
-            <p className="eyebrow">로케이션 분포</p>
-            <div className="pill-row">
-              {locationBreakdown.slice(0, 4).map(([loc, qty]) => (
-                <Pill key={loc}>
-                  {loc}: {qty.toLocaleString()}
-                </Pill>
-              ))}
-            </div>
-          </div>
-        </div>
-        <div className="table-wrapper">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>아티스트</th>
-                <th>카테고리</th>
-                <th>앨범/버전</th>
-                <th>옵션</th>
-                <th>로케이션</th>
-                <th className="align-right">현재고</th>
-                <th>관리</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredStock.map((row) => (
-                <React.Fragment key={row.key}>
-                  <tr
-                    className={selectedStockKeys.includes(row.key) ? 'selected-row' : ''}
-                    onClick={() => handleStockClick(row)}
-                    onDoubleClick={() => handleStockDoubleClick(row)}
-                  >
-                    <td>{row.artist}</td>
-                    <td>{row.category}</td>
-                    <td>{row.album_version}</td>
-                    <td>{row.option}</td>
-                    <td>
-                      <div className="pill-row wrap">
-                        {row.locations.map((loc) => (
-                          <button
-                            key={`${row.key}-${loc.id}`}
-                            className="ghost small"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedStockKeys((prev) =>
-                                prev.includes(row.key) ? prev : [...prev, row.key]
-                              );
-                              setFocusedStockKey(row.key);
-                              setEditDraft({
-                                id: loc.id,
-                                artist: row.artist,
-                                category: row.category,
-                                album_version: row.album_version,
-                                option: row.option,
-                                location: loc.location,
-                                quantity: loc.quantity,
-                              });
-                            }}
-                          >
-                            {loc.location}: {loc.quantity.toLocaleString()}
-                          </button>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="align-right">{row.total_quantity.toLocaleString()}</td>
-                    <td>
-                      {sessionRole === 'viewer' ? (
-                        <span className="muted">읽기 전용</span>
-                      ) : (
-                        <div className="row-actions">
-                          <button
-                            className="ghost small"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedStockKeys((prev) =>
-                                prev.includes(row.key) ? prev : [...prev, row.key]
-                              );
-                              const loc = row.locations[0];
-                              if (loc) {
-                                setFocusedStockKey(row.key);
-                                setEditDraft({
-                                  id: loc.id,
-                                  artist: row.artist,
-                                  category: row.category,
-                                  album_version: row.album_version,
-                                  option: row.option,
-                                  location: loc.location,
-                                  quantity: loc.quantity,
-                                });
-                              }
-                            }}
-                          >
-                            선택
-                          </button>
-                          <button
-                            className="ghost danger small"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedStockKeys((prev) =>
-                                prev.includes(row.key) ? prev : [...prev, row.key]
-                              );
-                              setFocusedStockKey(row.key);
-                              deleteInventoryRow(row);
-                            }}
-                          >
-                            삭제
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                  {sessionRole !== 'viewer' && editDraft && focusedStockKey === row.key && (
-                    <tr className="inline-editor-row">
-                      <td colSpan={7}>
-                        <div className="inline-editor">
-                          <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
-                            <h3>선택 재고 편집</h3>
-                            <span className="muted">더블클릭으로 입력창 자동 채우기 · 저장 후 새로고침</span>
-                          </div>
-                          <div className="form-row">
-                            <label>
-                              <span>아티스트</span>
-                              <input
-                                value={editDraft.artist}
-                                onChange={(e) => setEditDraft({ ...editDraft, artist: e.target.value })}
-                              />
-                            </label>
-                            <label className="compact">
-                              <span>카테고리</span>
-                              <select
-                                value={editDraft.category}
-                                onChange={(e) => setEditDraft({ ...editDraft, category: e.target.value })}
-                              >
-                                <option value="album">앨범</option>
-                                <option value="md">MD</option>
-                              </select>
-                            </label>
-                            <label>
-                              <span>앨범/버전</span>
-                              <input
-                                value={editDraft.album_version}
-                                onChange={(e) => setEditDraft({ ...editDraft, album_version: e.target.value })}
-                              />
-                            </label>
-                            <label>
-                              <span>옵션</span>
-                              <input
-                                value={editDraft.option}
-                                onChange={(e) => setEditDraft({ ...editDraft, option: e.target.value })}
-                              />
-                            </label>
-                            <label>
-                              <span>로케이션</span>
-                              <input
-                                value={editDraft.location}
-                                onChange={(e) => setEditDraft({ ...editDraft, location: e.target.value })}
-                              />
-                            </label>
-                            <label className="compact">
-                              <span>수량</span>
-                              <input
-                                type="number"
-                                value={editDraft.quantity}
-                                min={0}
-                                onChange={(e) => setEditDraft({ ...editDraft, quantity: Number(e.target.value) })}
-                              />
-                            </label>
-                          </div>
-                          <div className="actions-row">
-                            <button onClick={saveInventoryEdit}>수정 저장</button>
-                            <button className="ghost danger" onClick={() => deleteInventoryRow(editDraft)}>
-                              삭제
-                            </button>
-                            <span className="muted">{inventoryActionStatus || '선택 행만 operator/admin 수정 가능'}</span>
-                          </div>
-                        </div>
-                      </td>
+              <div className="table-wrapper">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>아티스트</th>
+                      <th>카테고리</th>
+                      <th>앨범/버전</th>
+                      <th>옵션</th>
+                      <th>로케이션</th>
+                      <th className="align-right">현재고</th>
+                      <th>관리</th>
                     </tr>
-                  )}
-                </React.Fragment>
-              ))}
-            </tbody>
-          </table>
+                  </thead>
+                  <tbody>
+                    {filteredStock.map((row) => (
+                      <React.Fragment key={row.key}>
+                        <tr
+                          className={selectedStockKeys.includes(row.key) ? 'selected-row' : ''}
+                          onClick={() => handleStockClick(row)}
+                          onDoubleClick={() => handleStockDoubleClick(row)}
+                        >
+                          <td>{row.artist}</td>
+                          <td>{row.category}</td>
+                          <td>{row.album_version}</td>
+                          <td>{row.option}</td>
+                          <td>
+                            <div className="pill-row wrap">
+                              {row.locations.map((loc) => (
+                                <button
+                                  key={`${row.key}-${loc.id}`}
+                                  className="ghost small"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedStockKeys((prev) =>
+                                      prev.includes(row.key) ? prev : [...prev, row.key]
+                                    );
+                                    setFocusedStockKey(row.key);
+                                    setEditDraft({
+                                      id: loc.id,
+                                      artist: row.artist,
+                                      category: row.category,
+                                      album_version: row.album_version,
+                                      option: row.option,
+                                      location: loc.location,
+                                      quantity: loc.quantity,
+                                    });
+                                  }}
+                                >
+                                  {loc.location}: {loc.quantity.toLocaleString()}
+                                </button>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="align-right">{row.total_quantity.toLocaleString()}</td>
+                          <td>
+                            {sessionRole === 'viewer' ? (
+                              <span className="muted">읽기 전용</span>
+                            ) : (
+                              <div className="row-actions">
+                                <button
+                                  className="ghost small"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedStockKeys((prev) =>
+                                      prev.includes(row.key) ? prev : [...prev, row.key]
+                                    );
+                                    const loc = row.locations[0];
+                                    if (loc) {
+                                      setFocusedStockKey(row.key);
+                                      setEditDraft({
+                                        id: loc.id,
+                                        artist: row.artist,
+                                        category: row.category,
+                                        album_version: row.album_version,
+                                        option: row.option,
+                                        location: loc.location,
+                                        quantity: loc.quantity,
+                                      });
+                                    }
+                                  }}
+                                >
+                                  선택
+                                </button>
+                                <button
+                                  className="ghost danger small"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedStockKeys((prev) =>
+                                      prev.includes(row.key) ? prev : [...prev, row.key]
+                                    );
+                                    setFocusedStockKey(row.key);
+                                    deleteInventoryRow(row);
+                                  }}
+                                >
+                                  삭제
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                        {sessionRole !== 'viewer' && editDraft && focusedStockKey === row.key && (
+                          <tr className="inline-editor-row">
+                            <td colSpan={7}>
+                              <div className="inline-editor">
+                                <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
+                                  <h3>선택 재고 편집</h3>
+                                  <span className="muted">더블클릭으로 입력창 자동 채우기 · 저장 후 새로고침</span>
+                                </div>
+                                <div className="form-row">
+                                  <label>
+                                    <span>아티스트</span>
+                                    <input
+                                      value={editDraft.artist}
+                                      onChange={(e) => setEditDraft({ ...editDraft, artist: e.target.value })}
+                                    />
+                                  </label>
+                                  <label className="compact">
+                                    <span>카테고리</span>
+                                    <select
+                                      value={editDraft.category}
+                                      onChange={(e) => setEditDraft({ ...editDraft, category: e.target.value })}
+                                    >
+                                      <option value="album">앨범</option>
+                                      <option value="md">MD</option>
+                                    </select>
+                                  </label>
+                                  <label>
+                                    <span>앨범/버전</span>
+                                    <input
+                                      value={editDraft.album_version}
+                                      onChange={(e) => setEditDraft({ ...editDraft, album_version: e.target.value })}
+                                    />
+                                  </label>
+                                  <label>
+                                    <span>옵션</span>
+                                    <input
+                                      value={editDraft.option}
+                                      onChange={(e) => setEditDraft({ ...editDraft, option: e.target.value })}
+                                    />
+                                  </label>
+                                  <label>
+                                    <span>로케이션</span>
+                                    <input
+                                      value={editDraft.location}
+                                      onChange={(e) => setEditDraft({ ...editDraft, location: e.target.value })}
+                                    />
+                                  </label>
+                                  <label className="compact">
+                                    <span>수량</span>
+                                    <input
+                                      type="number"
+                                      value={editDraft.quantity}
+                                      min={0}
+                                      onChange={(e) => setEditDraft({ ...editDraft, quantity: Number(e.target.value) })}
+                                    />
+                                  </label>
+                                </div>
+                                <div className="actions-row">
+                                  <button onClick={saveInventoryEdit}>수정 저장</button>
+                                  <button className="ghost danger" onClick={() => deleteInventoryRow(editDraft)}>
+                                    삭제
+                                  </button>
+                                  <span className="muted">{inventoryActionStatus || '선택 행만 operator/admin 수정 가능'}</span>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Section>
+          </div>
         </div>
-      </Section>
-        </>
       )}
 
       {activePanel === 'history' && (
+      <div ref={historyRef} className="panel-anchor">
       <Section
         title="입출고 이력"
         actions={
@@ -1708,7 +1691,25 @@ export default function Home() {
           </table>
         </div>
       </Section>
+      </div>
       )}
+
+      <div className="floating-nav">
+        <button className={activePanel === 'stock' ? 'tab active' : 'tab'} onClick={() => scrollToPanel('stock')}>
+          현재 재고
+        </button>
+        <button className={activePanel === 'history' ? 'tab active' : 'tab'} onClick={() => scrollToPanel('history')}>
+          입출고 이력
+        </button>
+        <button
+          className={activePanel === 'admin' ? 'tab active' : 'tab'}
+          onClick={() => scrollToPanel('admin')}
+          disabled={sessionRole !== 'admin'}
+          title={sessionRole === 'admin' ? undefined : '관리자 로그인 필요'}
+        >
+          관리자 페이지
+        </button>
+      </div>
 
       {accountManagerOpen && (
         <div className="modal-backdrop">

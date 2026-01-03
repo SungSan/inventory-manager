@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { loginWithAccessToken, setSession } from '../../../../lib/auth';
+import { loginWithUsername, setSession } from '../../../../lib/auth';
 
 export async function POST(req: NextRequest) {
-  const { access_token, username } = await req.json();
-  if (!access_token || !username) {
-    return NextResponse.json({ error: '인증 정보가 부족합니다.' }, { status: 400 });
+  const { username } = await req.json();
+  if (!username) {
+    return NextResponse.json({ error: 'ID를 입력하세요.' }, { status: 400 });
   }
 
   try {
-    const user = await loginWithAccessToken(access_token, username);
+    const user = await loginWithUsername(username);
 
     if ('pending' in user && (user as any).pending) {
       return NextResponse.json(

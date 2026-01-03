@@ -5,7 +5,7 @@ import type { NextRequest } from 'next/server';
 
 const CORPORATE_DOMAIN = 'sound-wave.co.kr';
 
-function normalizeUsername(raw: string) {
+export function normalizeUsername(raw: string) {
   const username = raw.trim();
   if (!username || /\s/.test(username) || username.includes('@')) {
     throw new Error('유효한 사내 ID를 입력하세요. 공백이나 @ 문자를 포함할 수 없습니다.');
@@ -13,8 +13,63 @@ function normalizeUsername(raw: string) {
   return username.toLowerCase();
 }
 
-function deriveEmail(username: string) {
+export function deriveEmail(username: string) {
   return `${username}@${CORPORATE_DOMAIN}`;
+}
+
+export async function loginWithUsername(rawUsername: string) {
+  const username = normalizeUsername(rawUsername);
+  const email = deriveEmail(username);
+
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from('user_profiles')
+    .select('user_id, approved, role')
+    .eq('username', username)
+    .single();
+
+  if (profileError) {
+    throw new Error(profileError.message || '사용자 정보를 찾을 수 없습니다.');
+  }
+
+  if (!profile || profile.approved === false || profile.role === 'pending') {
+    return { pending: true, email };
+  }
+
+  const userId = profile.user_id;
+  const { data: userRow, error: userError } = await supabaseAdmin
+    .from('users')
+    .select('id, email, role, active, full_name, department, contact, purpose')
+    .eq('id', userId)
+    .single();
+
+  if (userError && userError.code !== 'PGRST116') {
+    throw new Error(userError.message);
+  }
+
+  const role: Role = (userRow?.role as Role) ?? (profile.role as Role) ?? 'viewer';
+
+  if (userRow && userRow.active === false) {
+    throw new Error('비활성화된 계정입니다. 관리자에게 문의하세요.');
+  }
+
+  await supabaseAdmin
+    .from('users')
+    .upsert({
+      id: userId,
+      email,
+      role,
+      active: true,
+      full_name: userRow?.full_name || email,
+      department: userRow?.department || '',
+      contact: userRow?.contact || '',
+      purpose: userRow?.purpose || '',
+    });
+
+  return {
+    id: userId,
+    email,
+    role,
+  };
 }
 
 export async function loginWithAccessToken(
