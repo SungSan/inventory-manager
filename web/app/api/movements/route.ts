@@ -27,14 +27,24 @@ export async function POST(req: Request) {
 
     const trimmedArtist = String(artist ?? '').trim();
     const trimmedAlbum = String(album_version ?? '').trim();
-    const trimmedLocation = String(location ?? '').trim();
+    const effectiveLocation = String(location ?? '').trim() || String(option ?? '').trim();
     const normalizedQuantity = Number(quantity);
     const normalizedMemo = String(memo ?? '').trim();
     const normalizedDirection = String(direction ?? '').toUpperCase();
 
-    if (!trimmedArtist || !category || !trimmedAlbum || !trimmedLocation || !normalizedDirection) {
+    if (!trimmedArtist || !category || !trimmedAlbum || !effectiveLocation || !normalizedDirection) {
       const error = 'missing fields';
-      console.error({ step: 'validation', error, payload: { artist: trimmedArtist, category, album_version: trimmedAlbum, location: trimmedLocation, direction: normalizedDirection } });
+      console.error({
+        step: 'validation',
+        error,
+        payload: {
+          artist: trimmedArtist,
+          category,
+          album_version: trimmedAlbum,
+          location: effectiveLocation,
+          direction: normalizedDirection
+        }
+      });
       return NextResponse.json({ ok: false, error }, { status: 400 });
     }
 
@@ -50,13 +60,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error }, { status: 400 });
     }
 
-    const idempotency = idempotency_key ?? idempotencyKey ?? null;
+    const idempotencyRaw = idempotency_key ?? idempotencyKey ?? null;
+    const idempotency = idempotencyRaw ? String(idempotencyRaw).trim() : null;
     const payload = {
       artist: trimmedArtist,
       category,
       album_version: trimmedAlbum,
-      option: option || '',
-      location: trimmedLocation,
+      option: String(option ?? '').trim() || '',
+      location: effectiveLocation,
       quantity: normalizedQuantity,
       direction: normalizedDirection,
       memo: normalizedMemo,
@@ -67,8 +78,24 @@ export async function POST(req: Request) {
     try {
       const { data, error } = await supabaseAdmin.rpc('record_movement', payload);
       if (error) {
-        console.error({ step: 'record_movement_rpc', payload, error });
-        return NextResponse.json({ ok: false, step: 'record_movement_rpc', error: error.message }, { status: 500 });
+        console.error('record_movement rpc failed:', {
+          message: error.message,
+          details: (error as any)?.details,
+          hint: (error as any)?.hint,
+          code: (error as any)?.code,
+          payload
+        });
+        return NextResponse.json(
+          {
+            ok: false,
+            step: 'record_movement_rpc',
+            error: error.message,
+            details: (error as any)?.details ?? null,
+            hint: (error as any)?.hint ?? null,
+            code: (error as any)?.code ?? null
+          },
+          { status: 500 }
+        );
       }
 
       const result = (data as any) || {};
