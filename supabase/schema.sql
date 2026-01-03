@@ -140,23 +140,25 @@ select i.artist, i.category, i.album_version, i.option, inv.location, inv.quanti
 from public.inventory inv
 join public.items i on inv.item_id = i.id;
 
-create or replace view public.movements_view as
+drop view if exists public.movements_view;
+create view public.movements_view as
 select
   m.created_at,
   m.direction,
-  i.artist,
-  i.category,
-  i.album_version,
-  i.option,
+  coalesce(i.artist, '') as artist,
+  coalesce(i.category, '') as category,
+  coalesce(i.album_version, '') as album_version,
+  coalesce(i.option, '') as option,
   m.location,
   m.quantity,
   m.memo,
-  coalesce(u.email::text, m.created_by::text) as created_by,
-  coalesce(nullif(u.full_name, ''), coalesce(u.email::text, m.created_by::text)) as created_by_name,
-  coalesce(nullif(u.department, ''), '') as created_by_department
+  m.item_id,
+  m.created_by,
+  coalesce(up.full_name, u.email, m.created_by::text, '') as created_by_name
 from public.movements m
-join public.items i on m.item_id = i.id
+left join public.items i on i.id = m.item_id
 left join public.users u on u.id = m.created_by
+left join public.user_profiles up on up.user_id = u.id
 order by m.created_at desc;
 
 -- transactional movement function

@@ -553,7 +553,11 @@ export default function Home() {
       });
 
       const payload = await res.json().catch(() => null);
-      if (!res.ok || !payload?.movement_inserted || !payload?.inventory_updated) {
+      const idempotent = payload?.idempotent === true;
+      const movementInserted = payload?.movement_inserted === true;
+      const inventoryUpdated = payload?.inventory_updated === true;
+
+      if (!res.ok || (!movementInserted && !idempotent) || (!inventoryUpdated && !idempotent)) {
         const message = payload?.error || payload?.message || `입출고 실패 (${res.status})`;
         console.error('movement submit error:', { message, payload });
         alert(message);

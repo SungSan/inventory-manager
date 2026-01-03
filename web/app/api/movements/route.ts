@@ -94,7 +94,7 @@ export async function POST(req: Request) {
             hint: (error as any)?.hint ?? null,
             code: (error as any)?.code ?? null
           },
-          { status: 500 }
+          { status: 400 }
         );
       }
 
@@ -102,6 +102,15 @@ export async function POST(req: Request) {
       const movementInserted = result.movement_inserted === true;
       const inventoryUpdated = result.inventory_updated === true;
       const idempotent = result.idempotent === true;
+
+      if (idempotent) {
+        return NextResponse.json({
+          ok: true,
+          idempotent: true,
+          movement_inserted: false,
+          inventory_updated: false,
+        });
+      }
 
       if (!movementInserted || !inventoryUpdated) {
         const message = result.message || '입출고 처리 결과가 반영되지 않았습니다.';
@@ -114,15 +123,15 @@ export async function POST(req: Request) {
             inventory_updated: inventoryUpdated,
             error: message
           },
-          { status: idempotent ? 409 : 500 }
+          { status: 400 }
         );
       }
 
       return NextResponse.json({
         ok: true,
-        idempotent,
-        movement_inserted: movementInserted,
-        inventory_updated: inventoryUpdated,
+        idempotent: false,
+        movement_inserted: true,
+        inventory_updated: true,
         opening: result.opening,
         closing: result.closing,
         item_id: result.item_id,
