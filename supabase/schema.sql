@@ -14,6 +14,7 @@ set search_path = public;
 -- drop table if exists public.locations cascade;
 -- drop table if exists public.admin_logs cascade;
 -- drop table if exists public.user_profiles cascade;
+-- drop view if exists public.admin_users_view cascade;
 -- drop type if exists public.user_role cascade;
 
 do $$
@@ -120,6 +121,26 @@ create table if not exists public.admin_logs (
 create index if not exists admin_logs_created_at_idx on public.admin_logs(created_at desc);
 
 -- materialized views
+create or replace view public.admin_users_view as
+select
+  u.id,
+  u.email,
+  u.role,
+  u.active,
+  u.created_at,
+  u.full_name,
+  u.department,
+  u.contact,
+  u.purpose,
+  p.username,
+  p.approved,
+  p.role as profile_role,
+  p.requested_at,
+  p.approved_at,
+  p.approved_by
+from public.users u
+left join public.user_profiles p on p.user_id = u.id;
+
 create or replace view public.inventory_view as
 select i.artist, i.category, i.album_version, i.option, inv.location, inv.quantity
 from public.inventory inv

@@ -8,10 +8,9 @@ import type { Role } from '../../../../lib/session';
 export async function GET() {
   return withAuth(['admin'], async () => {
     const { data, error } = await supabaseAdmin
-      .from('user_profiles')
+      .from('admin_users_view')
       .select(
-        `user_id, username, approved, role, requested_at, approved_at, approved_by,
-         users:users(id, email, full_name, department, contact, purpose, role, active, created_at)`
+        'id, email, role, active, created_at, full_name, department, contact, purpose, username, approved, profile_role, requested_at, approved_at, approved_by'
       )
       .order('requested_at', { ascending: true });
 
@@ -20,20 +19,20 @@ export async function GET() {
     }
 
     const mapped = (data || []).map((row: any) => ({
-      id: row.user_id,
-      username: row.username,
-      approved: row.approved,
-      role: row.role,
-      requested_at: row.requested_at,
+      id: row.id,
+      username: row.username ?? row.email,
+      approved: row.approved ?? false,
+      role: (row.profile_role as Role | undefined) ?? (row.role as Role | undefined) ?? 'pending',
+      requested_at: row.requested_at ?? row.created_at,
       approved_at: row.approved_at,
       approved_by: row.approved_by,
-      email: row.users?.email ?? '',
-      full_name: row.users?.full_name ?? '',
-      department: row.users?.department ?? '',
-      contact: row.users?.contact ?? '',
-      purpose: row.users?.purpose ?? '',
-      active: row.users?.active ?? false,
-      created_at: row.users?.created_at ?? row.requested_at,
+      email: row.email ?? '',
+      full_name: row.full_name ?? '',
+      department: row.department ?? '',
+      contact: row.contact ?? '',
+      purpose: row.purpose ?? '',
+      active: row.active ?? false,
+      created_at: row.created_at ?? row.requested_at,
     }));
 
     return NextResponse.json(mapped);
