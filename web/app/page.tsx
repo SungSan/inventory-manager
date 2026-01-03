@@ -192,6 +192,8 @@ export default function Home() {
   const [accountsStatus, setAccountsStatus] = useState('');
   const [registerStatus, setRegisterStatus] = useState('');
   const [registerOtpStatus, setRegisterOtpStatus] = useState('');
+  const [otpEnabled, setOtpEnabled] = useState(false);
+  const [otpExpiry, setOtpExpiry] = useState<number | null>(null);
   const [adminStatus, setAdminStatus] = useState('');
   const [sessionRole, setSessionRole] = useState<Role | null>(null);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
@@ -366,40 +368,6 @@ export default function Home() {
     } else {
       const text = await res.text();
       setAdminStatus(`삭제 실패: ${text || res.status}`);
-    }
-  }
-
-  async function requestRegisterOtp() {
-    try {
-      const normalized = normalizeUsername(registerForm.username);
-      if (!registerForm.password || registerForm.password.length < 8) {
-        throw new Error('비밀번호를 8자 이상 입력하세요.');
-      }
-
-      if (registerForm.password !== registerForm.confirm) {
-        throw new Error('비밀번호 확인이 일치하지 않습니다.');
-      }
-
-      const res = await fetch('/api/auth/request-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: normalized, password: registerForm.password })
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || 'OTP 전송 실패');
-      }
-      const payload = await res.json();
-      setRegisterOtpStatus(`OTP 전송 완료. 메일함과 아래 코드를 확인하세요: ${payload.otp || '이메일 확인'}`);
-      const supabase = requireSupabase();
-      if (!supabase) {
-        return;
-      }
-      const email = deriveEmail(normalizeUsername(registerForm.username));
-      await supabase.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
-    } catch (err: any) {
-      const message = err?.message || 'OTP 전송에 실패했습니다.';
-      setRegisterOtpStatus(message);
     }
   }
 
@@ -625,10 +593,6 @@ export default function Home() {
     setRegisterStatus('계정 생성 중...');
     try {
       const normalized = normalizeUsername(registerForm.username);
-      if (!registerForm.otp.trim()) {
-        setRegisterStatus('이메일로 받은 OTP 코드를 입력하세요.');
-        return;
-      }
       if (!registerForm.password || registerForm.password.length < 8) {
         setRegisterStatus('비밀번호를 8자 이상 입력하세요.');
         return;
@@ -637,10 +601,41 @@ export default function Home() {
         setRegisterStatus('비밀번호 확인이 일치하지 않습니다.');
         return;
       }
-      if (!registerForm.name || !registerForm.department) {
-        setRegisterStatus('성함과 부서를 입력하세요.');
+      if (!registerForm.name || !registerForm.department || !registerForm.contact || !registerForm.purpose) {
+        setRegisterStatus('ID, 비밀번호, 성함, 부서, 연락처, 사용 목적을 모두 입력하세요.');
         return;
       }
+
+      if (!otpEnabled) {
+        setRegisterStatus('OTP 발송 중...');
+        const res = await fetch('/api/auth/request-otp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: normalized })
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || 'OTP 요청 실패');
+        }
+
+        const payload = await res.json();
+        setRegisterOtpStatus(payload.message || 'OTP 전송 완료. 메일함을 확인하세요.');
+        if (payload.otp) {
+          setRegisterForm((prev) => ({ ...prev, otp: payload.otp }));
+        }
+        const expiry = Date.now() + 180_000;
+        setOtpEnabled(true);
+        setOtpExpiry(expiry);
+        setRegisterStatus('이메일로 받은 OTP 코드를 입력하세요. (3분 이내)');
+        return;
+      }
+
+      if (!registerForm.otp.trim()) {
+        setRegisterStatus('이메일로 받은 OTP 코드를 입력하세요.');
+        return;
+      }
+
       const supabase = requireSupabase();
       if (!supabase) {
         return;
@@ -668,6 +663,9 @@ export default function Home() {
       if (res.ok) {
         setRegisterStatus('계정 생성 완료! 관리자 승인 후 사용 가능합니다.');
         setRegisterForm({ username: '', password: '', confirm: '', otp: '', name: '', department: '', contact: '', purpose: '' });
+        setOtpEnabled(false);
+        setOtpExpiry(null);
+        setRegisterOtpStatus('');
         await supabase.auth.signOut();
       } else {
         const text = await res.text();
@@ -678,7 +676,8 @@ export default function Home() {
     }
   }
 
-  async function loadAccounts() {
+  async function loadAccounts
+() {
     setAccountsStatus('목록 불러오는 중...');
     const res = await fetch('/api/admin/users');
     if (res.ok) {
@@ -928,6 +927,27 @@ export default function Home() {
   }, [isLoggedIn]);
 
   useEffect(() => {
+    if (!otpExpiry) return;
+    const remaining = otpExpiry - Date.now();
+    if (remaining <= 0) {
+      setOtpEnabled(false);
+      setRegisterForm((prev) => ({ ...prev, otp: '' }));
+      setRegisterOtpStatus('OTP가 만료되었습니다. 계정 생성 버튼을 눌러 다시 요청하세요.');
+      setOtpExpiry(null);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setOtpEnabled(false);
+      setRegisterForm((prev) => ({ ...prev, otp: '' }));
+      setRegisterOtpStatus('OTP가 만료되었습니다. 계정 생성 버튼을 눌러 다시 요청하세요.');
+      setOtpExpiry(null);
+    }, remaining);
+
+    return () => clearTimeout(timer);
+  }, [otpExpiry]);
+
+  useEffect(() => {
     setShowAdmin(activePanel === 'admin' && sessionRole === 'admin');
   }, [activePanel, sessionRole]);
 
@@ -1065,6 +1085,7 @@ export default function Home() {
                     value={registerForm.otp}
                     onChange={(e) => setRegisterForm({ ...registerForm, otp: e.target.value })}
                     placeholder="이메일로 받은 숫자 코드"
+                    disabled={!otpEnabled}
                   />
                 </label>
                 <label>
@@ -1101,9 +1122,8 @@ export default function Home() {
                 </label>
               </div>
               <div className="actions-row">
-                <button className="ghost" onClick={requestRegisterOtp}>OTP 요청</button>
                 <button onClick={registerAccount}>계정 생성</button>
-                <span className="muted">{registerStatus || registerOtpStatus || 'OTP 인증 후 생성되며 관리자 승인이 필요합니다.'}</span>
+                <span className="muted">{registerStatus || registerOtpStatus || '모든 정보를 입력한 뒤 계정 생성 버튼을 누르면 OTP가 자동으로 전송됩니다. 관리자 승인 후 사용 가능합니다.'}</span>
               </div>
             </div>
           </div>

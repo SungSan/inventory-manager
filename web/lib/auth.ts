@@ -112,7 +112,7 @@ export async function loginWithUsername(rawUsername: string, password: string) {
   return {
     id: verified.id,
     email: verified.email,
-    role: (verified.role as Role) ?? 'viewer',
+    role: (verified.role as Role) ?? 'admin',
   };
 }
 

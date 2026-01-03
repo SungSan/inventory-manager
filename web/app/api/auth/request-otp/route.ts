@@ -1,33 +1,32 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../../lib/supabase';
-import { normalizeUsername, deriveEmail } from '../../../../lib/auth';
+import { deriveEmail, normalizeUsername } from '../../../../lib/auth';
 
-export async function POST(req: Request) {
-  const { username, password } = await req.json();
-
+export async function POST(req: NextRequest) {
   try {
-    const normalized = normalizeUsername((username ?? '').toString());
+    const body = await req.json().catch(() => ({} as Record<string, unknown>));
+    const rawId = (body as any).id ?? (body as any).username;
+    if (!rawId || typeof rawId !== 'string') {
+      return NextResponse.json({ ok: false, message: 'ID를 입력하세요.' }, { status: 400 });
+    }
+
+    const normalized = normalizeUsername(rawId);
     const email = deriveEmail(normalized);
 
-    if (!password || password.toString().length < 8) {
-      throw new Error('비밀번호를 8자 이상 입력하세요.');
-    }
-
-    const { data, error } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'signup',
+    const { data, error } = await supabaseAdmin.auth.signInWithOtp({
       email,
-      password: password.toString(),
+      options: {
+        shouldCreateUser: true,
+      },
     });
 
-    if (error || !data) {
-      throw new Error(error?.message || 'OTP 생성에 실패했습니다.');
+    if (error) {
+      return NextResponse.json({ ok: false, message: error.message }, { status: 400 });
     }
 
-    // Also trigger the managed email to ensure users receive the code in their inbox.
-    await supabaseAdmin.auth.resend({ type: 'signup', email });
-
-    return NextResponse.json({ ok: true, otp: data.properties?.email_otp ?? null });
+    const otp = (data as any)?.properties?.email_otp;
+    return NextResponse.json({ ok: true, message: 'OTP 전송 완료. 이메일을 확인하세요.', otp });
   } catch (err: any) {
-    return NextResponse.json({ error: err?.message || 'OTP 생성 실패' }, { status: 400 });
+    return NextResponse.json({ ok: false, message: err?.message || 'OTP 요청 실패' }, { status: 500 });
   }
 }
