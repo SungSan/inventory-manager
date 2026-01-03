@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import * as XLSX from 'xlsx';
+import { read, utils } from 'xlsx';
 import { withAuth } from '../../../../lib/auth';
 import { supabaseAdmin } from '../../../../lib/supabase';
 import { recordAdminLog } from '../../../../lib/admin-log';
@@ -63,15 +63,15 @@ export async function POST(req: Request) {
     const buffer = await fileObj.arrayBuffer();
     let payload: any;
 
-    const parseExcel = () => {
-      const workbook = XLSX.read(buffer, { type: 'array' });
-      const [stockSheetName, historySheetName] = workbook.SheetNames;
-      const stockSheet = stockSheetName ? workbook.Sheets[stockSheetName] : undefined;
-      const historySheet = historySheetName ? workbook.Sheets[historySheetName] : undefined;
-      if (!stockSheet) throw new Error('엑셀 시트가 비어 있습니다');
+      const parseExcel = () => {
+        const workbook = read(buffer, { type: 'array' });
+        const [stockSheetName, historySheetName] = workbook.SheetNames;
+        const stockSheet = stockSheetName ? workbook.Sheets[stockSheetName] : undefined;
+        const historySheet = historySheetName ? workbook.Sheets[historySheetName] : undefined;
+        if (!stockSheet) throw new Error('엑셀 시트가 비어 있습니다');
 
-      const stockRows = XLSX.utils.sheet_to_json(stockSheet, { defval: '' }) as any[];
-      const historyRows = historySheet ? (XLSX.utils.sheet_to_json(historySheet, { defval: '' }) as any[]) : [];
+        const stockRows = utils.sheet_to_json(stockSheet, { defval: '' }) as any[];
+        const historyRows = historySheet ? (utils.sheet_to_json(historySheet, { defval: '' }) as any[]) : [];
 
       const normalize = (value: any) => (value === undefined || value === null ? '' : String(value).trim());
 

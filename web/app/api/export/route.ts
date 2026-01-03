@@ -1,14 +1,14 @@
 import { NextResponse } from 'next/server';
-import * as XLSX from 'xlsx';
+import { utils, write } from 'xlsx';
 import { supabaseAdmin } from '../../../lib/supabase';
 import { withAuth } from '../../../lib/auth';
 
 function toExcelBuffer(rows: any[], sheetName: string) {
-  const workbook = XLSX.utils.book_new();
+  const workbook = utils.book_new();
   const safeRows = rows && rows.length ? rows : [{}];
-  const sheet = XLSX.utils.json_to_sheet(safeRows);
-  XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
-  return XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' });
+  const sheet = utils.json_to_sheet(safeRows);
+  utils.book_append_sheet(workbook, sheet, sheetName);
+  return write(workbook, { bookType: 'xlsx', type: 'buffer' });
 }
 
 export async function GET(req: Request) {

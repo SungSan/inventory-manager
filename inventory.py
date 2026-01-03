@@ -56,6 +56,7 @@ class Transaction:
     quantity: int
     timestamp: datetime
     category: str = "album"
+    actor: str = ""
     description: str = ""
     event: bool = False
     event_id: str = ""
@@ -83,6 +84,7 @@ class Transaction:
             "location": self.location,
             "quantity": self.quantity,
             "timestamp": self.timestamp.isoformat(),
+            "actor": self.actor,
             "period": self.period,
             "day": self.day,
             "year": self.year,
@@ -529,6 +531,7 @@ def export_to_xlsx(entries: List[Dict], path: str, *, include_summary: bool) -> 
         "월",
         "연",
         "상세내용",
+        "작성자",
     ]
     ws.append(headers)
     for entry in entries:
@@ -546,6 +549,7 @@ def export_to_xlsx(entries: List[Dict], path: str, *, include_summary: bool) -> 
                 entry.get("period"),
                 entry.get("year"),
                 entry.get("description", ""),
+                entry.get("actor", ""),
             ]
         )
     if include_summary:

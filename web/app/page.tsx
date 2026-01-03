@@ -539,26 +539,26 @@ export default function Home() {
     }
   }
 
-  async function deleteInventoryRow(target?: InventoryRow | InventoryEditDraft) {
-    const row = target && 'locations' in target ? { ...target, ...target.locations[0] } : target ?? editDraft;
-    if (!row) return;
-    if (!confirm('선택한 재고를 삭제하시겠습니까?')) return;
-    setInventoryActionStatus('삭제 중...');
-    const res = await fetch(`/api/inventory/${row.id}`, { method: 'DELETE' });
-    if (res.ok) {
-      setInventoryActionStatus('삭제 완료');
-      const removalKey = deriveStockKey('locations' in (target || {}) ? (target as InventoryRow) : row) ?? row.id;
-      setSelectedStockKeys((prev) => prev.filter((id) => id !== removalKey));
-      if (focusedStockKey === removalKey) {
-        setFocusedStockKey(null);
+    async function deleteInventoryRow(target?: InventoryRow | InventoryEditDraft) {
+      const row = target && 'locations' in target ? { ...target, ...target.locations[0] } : target ?? editDraft;
+      if (!row) return;
+      if (!confirm('선택한 재고를 삭제하시겠습니까?')) return;
+      setInventoryActionStatus('삭제 중...');
+      const res = await fetch(`/api/inventory/${row.id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setInventoryActionStatus('삭제 완료');
+        const removalKey = deriveStockKey('locations' in (target || {}) ? (target as InventoryRow) : row) ?? row.id;
+        setSelectedStockKeys((prev) => prev.filter((id) => id !== removalKey));
+        if (focusedStockKey === removalKey) {
+          setFocusedStockKey(null);
+        }
+        await refresh();
+      } else {
+        const text = await res.text();
+        setInventoryActionStatus(`삭제 실패: ${text || res.status}`);
+        alert(text || '삭제 실패');
       }
-      await refresh();
-    } else {
-      const text = await res.text();
-      setInventoryActionStatus(`삭제 실패: ${text || res.status}`);
-      alert(text || '삭제 실패');
     }
-  }
 
   const filteredStock = useMemo(() => {
     return stock.filter((row) => {
