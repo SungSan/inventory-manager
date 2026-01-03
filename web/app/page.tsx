@@ -146,6 +146,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [stock, setStock] = useState<InventoryRow[]>([]);
+  const [showAnomalies, setShowAnomalies] = useState(false);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [movement, setMovement] = useState<MovementPayload>(EMPTY_MOVEMENT);
   const [selectedStockKeys, setSelectedStockKeys] = useState<string[]>([]);
@@ -173,6 +174,7 @@ export default function Home() {
   const [historyFilters, setHistoryFilters] = useState({
     search: '',
     direction: '',
+    category: '',
     from: sevenDaysAgo.toISOString().slice(0, 10),
     to: today.toISOString().slice(0, 10)
   });
@@ -797,29 +799,41 @@ export default function Home() {
     }
   }
 
-    async function deleteInventoryRow(target?: InventoryRow | InventoryEditDraft) {
-      const row = target && 'locations' in target ? { ...target, ...target.locations[0] } : target ?? editDraft;
-      if (!row) return;
-      if (!confirm('선택한 재고를 삭제하시겠습니까?')) return;
-      setInventoryActionStatus('삭제 중...');
-      const res = await fetch(`/api/inventory/${row.id}`, { method: 'DELETE' });
-      if (res.ok) {
-        setInventoryActionStatus('삭제 완료');
-        const removalKey = deriveStockKey('locations' in (target || {}) ? (target as InventoryRow) : row) ?? row.id;
-        setSelectedStockKeys((prev) => prev.filter((id) => id !== removalKey));
-        if (focusedStockKey === removalKey) {
-          setFocusedStockKey(null);
-        }
-        await refresh();
-      } else {
+  async function deleteInventoryRow(target?: InventoryRow | InventoryEditDraft) {
+    if (sessionRole !== 'admin') {
+      alert('재고 삭제는 관리자만 가능합니다.');
+      return;
+    }
+    const row = target && 'locations' in target ? { ...target, ...target.locations[0] } : target ?? editDraft;
+    if (!row) return;
+    if (!confirm('선택한 재고를 삭제하시겠습니까?')) return;
+    setInventoryActionStatus('삭제 중...');
+    const res = await fetch(`/api/inventory/${row.id}`, { method: 'DELETE' });
+    if (res.ok) {
+      setInventoryActionStatus('삭제 완료');
+      const removalKey = deriveStockKey('locations' in (target || {}) ? (target as InventoryRow) : row) ?? row.id;
+      setSelectedStockKeys((prev) => prev.filter((id) => id !== removalKey));
+      if (focusedStockKey === removalKey) {
+        setFocusedStockKey(null);
+      }
+      await refresh();
+    } else {
         const text = await res.text();
         setInventoryActionStatus(`삭제 실패: ${text || res.status}`);
         alert(text || '삭제 실패');
       }
     }
 
+  const anomalousStock = useMemo(
+    () => stock.filter((row) => row.locations.some((loc) => loc.quantity < 0)),
+    [stock]
+  );
+
+  const anomalyCount = anomalousStock.length;
+
   const filteredStock = useMemo(() => {
-    return stock.filter((row) => {
+    const source = showAnomalies ? anomalousStock : stock;
+    return source.filter((row) => {
       const locationText = row.locations.map((loc) => `${loc.location} ${loc.quantity}`).join(' ');
       const matchesSearch = [row.artist, row.album_version, row.option, locationText]
         .join(' ')
@@ -831,7 +845,7 @@ export default function Home() {
       const matchesArtist = !stockFilters.artist || row.artist === stockFilters.artist;
       return matchesSearch && matchesCategory && matchesLocation && matchesArtist;
     });
-  }, [stock, stockFilters]);
+  }, [anomalousStock, showAnomalies, stock, stockFilters]);
 
   const stockLocations = useMemo(
     () => Array.from(new Set(stock.flatMap((row) => row.locations.map((loc) => loc.location)))).filter(Boolean).sort(),
@@ -850,11 +864,17 @@ export default function Home() {
     [stock]
   );
 
+  const historyCategoryOptions = useMemo(
+    () => Array.from(new Set(history.map((row) => row.category))).filter(Boolean).sort(),
+    [history]
+  );
+
   const filteredHistory = useMemo(() => {
     const fromDate = historyFilters.from ? new Date(historyFilters.from) : null;
     const toDate = historyFilters.to ? new Date(`${historyFilters.to}T23:59:59`) : null;
     return history.filter((row) => {
       const matchesDirection = !historyFilters.direction || row.direction === historyFilters.direction;
+      const matchesCategory = !historyFilters.category || row.category === historyFilters.category;
       const matchesSearch = [
         row.artist,
         row.album_version,
@@ -871,7 +891,7 @@ export default function Home() {
       const created = new Date(row.created_at);
       const matchesFrom = !fromDate || created >= fromDate;
       const matchesTo = !toDate || created <= toDate;
-      return matchesDirection && matchesSearch && matchesFrom && matchesTo;
+      return matchesDirection && matchesCategory && matchesSearch && matchesFrom && matchesTo;
     });
   }, [history, historyFilters]);
 
@@ -914,6 +934,12 @@ export default function Home() {
       loadAdminLogs();
     }
   }, [showAdmin, sessionRole]);
+
+  useEffect(() => {
+    if (showAnomalies && anomalyCount === 0) {
+      setShowAnomalies(false);
+    }
+  }, [anomalyCount, showAnomalies]);
 
   useEffect(() => {
     if (!isLoggedIn) return;
@@ -1496,6 +1522,18 @@ export default function Home() {
                 </div>
               }
             >
+              {anomalyCount > 0 && (
+                <div className="alert-row">
+                  <button
+                    type="button"
+                    className={showAnomalies ? 'warning-button active' : 'warning-button'}
+                    onClick={() => setShowAnomalies((prev) => !prev)}
+                  >
+                    이상재고 {anomalyCount}건
+                  </button>
+                  <span className="muted small-text">음수 수량만 따로 모아 볼 수 있습니다.</span>
+                </div>
+              )}
               <div className="stats">
                 <div className="stat">
                   <p className="eyebrow">재고 수량</p>
@@ -1601,19 +1639,21 @@ export default function Home() {
                                 >
                                   선택
                                 </button>
-                                <button
-                                  className="ghost danger small"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedStockKeys((prev) =>
-                                      prev.includes(row.key) ? prev : [...prev, row.key]
-                                    );
-                                    setFocusedStockKey(row.key);
-                                    deleteInventoryRow(row);
-                                  }}
-                                >
-                                  삭제
-                                </button>
+                                {sessionRole === 'admin' && (
+                                  <button
+                                    className="ghost danger small"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedStockKeys((prev) =>
+                                        prev.includes(row.key) ? prev : [...prev, row.key]
+                                      );
+                                      setFocusedStockKey(row.key);
+                                      deleteInventoryRow(row);
+                                    }}
+                                  >
+                                    삭제
+                                  </button>
+                                )}
                               </div>
                             )}
                           </td>
@@ -1677,10 +1717,12 @@ export default function Home() {
                                 </div>
                                 <div className="actions-row">
                                   <button onClick={saveInventoryEdit}>수정 저장</button>
-                                  <button className="ghost danger" onClick={() => deleteInventoryRow(editDraft)}>
-                                    삭제
-                                  </button>
-                                  <span className="muted">{inventoryActionStatus || '선택 행만 operator/admin 수정 가능'}</span>
+                                  {sessionRole === 'admin' && (
+                                    <button className="ghost danger" onClick={() => deleteInventoryRow(editDraft)}>
+                                      삭제
+                                    </button>
+                                  )}
+                                  <span className="muted">{inventoryActionStatus || '선택 행만 operator 수정 · 관리자 삭제 가능'}</span>
                                 </div>
                               </div>
                             </td>
@@ -1718,6 +1760,18 @@ export default function Home() {
               <option value="OUT">출고</option>
               <option value="ADJUST">조정</option>
             </select>
+            <select
+              className="compact"
+              value={historyFilters.category}
+              onChange={(e) => setHistoryFilters({ ...historyFilters, category: e.target.value })}
+            >
+              <option value="">전체 카테고리</option>
+              {historyCategoryOptions.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
+                </option>
+              ))}
+            </select>
             <label className="compact date-label">
               <span>시작</span>
               <input
@@ -1734,6 +1788,9 @@ export default function Home() {
                 onChange={(e) => setHistoryFilters({ ...historyFilters, to: e.target.value })}
               />
             </label>
+            <button className="ghost" type="button" onClick={reloadHistory}>
+              새로고침
+            </button>
             <a className="ghost button-link" href="/api/export?type=history">엑셀 다운로드</a>
           </div>
         }

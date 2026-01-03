@@ -106,6 +106,9 @@ label span { display: block; font-size: 0.85rem; color: var(--muted); margin-bot
 .row-actions .small { padding: 0.35rem 0.55rem; font-size: 0.85rem; }
 .danger { color: #b91c1c; border-color: #fecdd3; }
 .danger:hover { background: #fee2e2; }
+.alert-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.85rem; }
+.warning-button { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+.warning-button.active { background: #fcd34d; }
 
 @media (max-width: 768px) {
   main.page { padding: 1.25rem; }

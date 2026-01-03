@@ -64,7 +64,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 }
 
 export async function DELETE(req: Request, { params }: { params: { id: string } }) {
-  return withAuth(['admin', 'operator'], async () => {
+  return withAuth(['admin'], async () => {
     const { error } = await supabaseAdmin.from('inventory').delete().eq('id', params.id);
     if (error) return NextResponse.json({ error: error.message }, { status: 400 });
     return NextResponse.json({ ok: true });
