@@ -938,7 +938,8 @@ export default function Home() {
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                submitMovement(movement.direction);
+                const direction: 'IN' | 'OUT' = movement.direction === 'OUT' ? 'OUT' : 'IN';
+                submitMovement(direction);
               }}
             >
               <div className="form-row">
