@@ -1,7 +1,15 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-const publicPaths = ['/api/auth/login', '/api/auth/logout', '/api/auth/register', '/api/auth/me', '/api/auth/request-otp', '/'];
+const publicPaths = [
+  '/api/auth/login',
+  '/api/auth/logout',
+  '/api/auth/register',
+  '/api/auth/me',
+  '/api/auth/request-otp',
+  '/auth/callback',
+  '/',
+];
 const cookieName = process.env.SESSION_COOKIE_NAME || 'inventory_session';
 
 export function middleware(req: NextRequest) {

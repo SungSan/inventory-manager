@@ -614,12 +614,12 @@ export default function Home() {
           body: JSON.stringify({ id: normalized })
         });
 
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(text || 'OTP 요청 실패');
-        }
+        const payload = await res.json().catch(() => null);
 
-        const payload = await res.json();
+        if (!res.ok) {
+          const message = payload?.error || payload?.message || `OTP 요청 실패 (${res.status})`;
+          throw new Error(message);
+        }
         setRegisterOtpStatus(payload.message || 'OTP 전송 완료. 메일함을 확인하세요.');
         if (payload.otp) {
           setRegisterForm((prev) => ({ ...prev, otp: payload.otp }));
