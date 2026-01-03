@@ -1,24 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyLogin, setSession } from '../../../../lib/auth';
-import { supabaseAdmin } from '../../../../lib/supabase';
+import { loginWithAccessToken, setSession } from '../../../../lib/auth';
 
 export async function POST(req: NextRequest) {
-  const { identifier, email, password } = await req.json();
-  const loginId = (identifier ?? email ?? '').toString().trim();
-  if (!loginId || !password) return NextResponse.json({ error: 'missing' }, { status: 400 });
-  const user = await verifyLogin(loginId, password);
-  if (!user) {
-    const { data: existing, error } = await supabaseAdmin
-      .from('users')
-      .select('active')
-      .eq('email', loginId.toLowerCase())
-      .limit(1);
+  const { access_token, username } = await req.json();
+  if (!access_token || !username) {
+    return NextResponse.json({ error: '인증 정보가 부족합니다.' }, { status: 400 });
+  }
 
-    if (!error && existing && existing.length > 0 && existing[0].active === false) {
-      return NextResponse.json({ error: '관리자 승인 후 사용 가능합니다. 권한 요청을 위해 관리자에게 문의하세요.' }, { status: 403 });
+  try {
+    const user = await loginWithAccessToken(access_token, username);
+
+    if ('pending' in user && (user as any).pending) {
+      return NextResponse.json(
+        { error: '관리자 승인 대기 중입니다. 관리자에게 승인 요청하세요.' },
+        { status: 403 }
+      );
     }
 
-    return NextResponse.json({ error: 'invalid credentials' }, { status: 401 });
+    return setSession(req, user as any);
+  } catch (err: any) {
+    return NextResponse.json({ error: err?.message || '로그인 실패' }, { status: 400 });
   }
-  return setSession(req, user);
 }

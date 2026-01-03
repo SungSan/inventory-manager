@@ -13,6 +13,7 @@ set search_path = public;
 -- drop table if exists public.idempotency_keys cascade;
 -- drop table if exists public.locations cascade;
 -- drop table if exists public.admin_logs cascade;
+-- drop table if exists public.user_profiles cascade;
 -- drop type if exists public.user_role cascade;
 
 do $$
@@ -24,15 +25,17 @@ begin
     where t.typname = 'user_role'
       and n.nspname = 'public'
   ) then
-    create type public.user_role as enum ('admin','operator','viewer');
+    create type public.user_role as enum ('admin','operator','viewer','pending');
   end if;
 end $$;
+
+alter type public.user_role add value if not exists 'pending';
 
 create table if not exists public.users (
   id uuid primary key default gen_random_uuid(),
   email text unique not null,
-  password_hash text not null,
-  role public.user_role not null default 'operator',
+  password_hash text,
+  role public.user_role not null default 'pending',
   active boolean not null default true,
   created_at timestamptz not null default now()
 );
@@ -48,6 +51,18 @@ update public.users set contact = coalesce(contact, '');
 update public.users set purpose = coalesce(purpose, '');
 alter table public.users alter column full_name set not null;
 alter table public.users alter column department set not null;
+alter table public.users alter column role set default 'pending';
+alter table public.users alter column password_hash drop not null;
+
+create table if not exists public.user_profiles (
+  user_id uuid primary key references public.users(id) on delete cascade,
+  username text not null unique,
+  approved boolean not null default false,
+  role public.user_role not null default 'pending',
+  requested_at timestamptz not null default now(),
+  approved_at timestamptz,
+  approved_by uuid references public.users(id)
+);
 
 create table if not exists public.items (
   id uuid primary key default gen_random_uuid(),

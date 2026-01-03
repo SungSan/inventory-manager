@@ -1,15 +1,33 @@
+import crypto from 'crypto';
 import { supabaseAdmin } from './supabase';
 import type { Role } from './session';
 
+const CORPORATE_DOMAIN = 'sound-wave.co.kr';
+
+function normalizeUsername(raw: string) {
+  const username = raw.trim();
+  if (!username || /\s/.test(username) || username.includes('@')) {
+    throw new Error('유효한 사내 ID를 입력하세요. 공백이나 @ 문자를 포함할 수 없습니다.');
+  }
+  return username.toLowerCase();
+}
+
+function deriveEmail(username: string) {
+  return `${username}@${CORPORATE_DOMAIN}`;
+}
+
 export interface CreateUserPayload {
-  id: string;
-  password: string;
+  id?: string;
+  username?: string;
+  password?: string;
   full_name?: string;
   department?: string;
   contact?: string;
   purpose?: string;
   role?: Role;
   active?: boolean;
+  approved?: boolean;
+  approved_by?: string | null;
 }
 
 export interface CreateUserResult {
@@ -18,23 +36,23 @@ export interface CreateUserResult {
 }
 
 export async function createUserWithProfile(payload: CreateUserPayload): Promise<CreateUserResult> {
-  const loginId = (payload.id ?? '').toString().trim();
-  const password = (payload.password ?? '').toString();
+  const username = normalizeUsername((payload.username ?? payload.id ?? '').toString());
+  const password = (payload.password ?? crypto.randomBytes(12).toString('hex')).toString();
   const fullName = (payload.full_name ?? '').toString().trim();
   const department = (payload.department ?? '').toString().trim();
   const contact = (payload.contact ?? '').toString().trim();
   const purpose = (payload.purpose ?? '').toString().trim();
-  const role: Role = (payload.role as Role) ?? 'operator';
-  const activeFlag = payload.active !== false;
-
-  const authEmail = loginId.includes('@') ? loginId : `${loginId}@local`;
+  const role: Role = (payload.role as Role) ?? 'pending';
+  const activeFlag = payload.active === true;
+  const approvedFlag = payload.approved === true;
+  const email = deriveEmail(username);
 
   const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-    email: authEmail,
+    email,
     password,
     email_confirm: true,
     user_metadata: {
-      login_id: loginId,
+      username,
       full_name: fullName,
       department,
       contact,
@@ -47,26 +65,46 @@ export async function createUserWithProfile(payload: CreateUserPayload): Promise
     throw new Error(authError.message);
   }
 
-  const { data: profileData, error: profileError } = await supabaseAdmin.rpc('create_user', {
-    p_email: loginId,
-    p_password: password,
-    p_role: role,
-    p_full_name: fullName,
-    p_department: department,
-    p_contact: contact,
-    p_purpose: purpose,
-  });
+  const authId = authData?.user?.id;
+
+  if (!authId) {
+    throw new Error('auth user id 생성에 실패했습니다.');
+  }
+
+  const nextRole: Role = approvedFlag ? (role === 'pending' ? 'viewer' : role) : 'pending';
+
+  const { error: userError } = await supabaseAdmin
+    .from('users')
+    .upsert({
+      id: authId,
+      email,
+      role: nextRole,
+      active: approvedFlag && activeFlag,
+      full_name: fullName || email,
+      department,
+      contact,
+      purpose,
+    });
+
+  if (userError) {
+    throw new Error(userError.message);
+  }
+
+  const { error: profileError } = await supabaseAdmin
+    .from('user_profiles')
+    .upsert({
+      user_id: authId,
+      username,
+      approved: approvedFlag,
+      role: nextRole,
+      requested_at: new Date().toISOString(),
+      approved_at: approvedFlag ? new Date().toISOString() : null,
+      approved_by: approvedFlag ? payload.approved_by ?? null : null,
+    });
 
   if (profileError) {
     throw new Error(profileError.message);
   }
 
-  const profileRow = Array.isArray(profileData) ? profileData[0] : profileData;
-  const userId = authData?.user?.id ?? profileRow?.id ?? null;
-
-  if (userId && !activeFlag) {
-    await supabaseAdmin.from('users').update({ active: false }).eq('id', userId);
-  }
-
-  return { userId, role: profileRow?.role ?? role };
+  return { userId: authId, role: nextRole };
 }

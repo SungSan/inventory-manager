@@ -37,14 +37,18 @@ type HistoryRow = {
 
 type AccountRow = {
   id: string;
+  username: string;
   email: string;
   full_name: string;
   department: string;
   contact?: string;
   purpose?: string;
   role: Role;
+  approved: boolean;
   active: boolean;
   created_at: string;
+  requested_at?: string;
+  approved_at?: string | null;
 };
 
 type AdminLog = {
@@ -67,9 +71,10 @@ type MovementPayload = {
   memo: string;
 };
 
-type Role = 'admin' | 'operator' | 'viewer';
+type Role = 'admin' | 'operator' | 'viewer' | 'pending';
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes of inactivity triggers logout
+const CORPORATE_DOMAIN = 'sound-wave.co.kr';
 
 const EMPTY_MOVEMENT: MovementPayload = {
   artist: '',
@@ -128,16 +133,19 @@ function aggregateLocations(rows: InventoryRow[]) {
   return Object.entries(byLocation).sort((a, b) => b[1] - a[1]);
 }
 
-function isStrongPassword(value: string) {
-  if (!value || value.length < 8) return false;
-  const hasLetter = /[A-Za-z]/.test(value);
-  const hasNumber = /\d/.test(value);
-  return hasLetter && hasNumber;
-}
-
 export default function Home() {
-  const [loginId, setLoginId] = useState('');
-  const [password, setPassword] = useState('');
+  const normalizeUsername = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed || /\s/.test(trimmed) || trimmed.includes('@')) {
+      throw new Error('ID에는 공백이나 @를 포함할 수 없습니다.');
+    }
+    return trimmed.toLowerCase();
+  };
+
+  const deriveEmail = (username: string) => `${username}@${CORPORATE_DOMAIN}`;
+
+  const [loginUsername, setLoginUsername] = useState('');
+  const [loginOtp, setLoginOtp] = useState('');
   const [status, setStatus] = useState<string>('로그인 필요');
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -151,9 +159,8 @@ export default function Home() {
   const [stockFilters, setStockFilters] = useState({ search: '', category: '', location: '', artist: '' });
   const [locationPresets, setLocationPresets] = useState<string[]>([]);
   const [registerForm, setRegisterForm] = useState({
-    id: '',
-    password: '',
-    confirm: '',
+    username: '',
+    otp: '',
     name: '',
     department: '',
     contact: '',
@@ -171,9 +178,9 @@ export default function Home() {
     from: sevenDaysAgo.toISOString().slice(0, 10),
     to: today.toISOString().slice(0, 10)
   });
-  const [newUser, setNewUser] = useState<{ email: string; password: string; role: Role; full_name: string; department: string; contact: string; purpose: string }>(
+  const [newUser, setNewUser] = useState<{ username: string; password: string; role: Role; full_name: string; department: string; contact: string; purpose: string }>(
     {
-      email: '',
+      username: '',
       password: '',
       role: 'operator',
       full_name: '',
@@ -186,11 +193,14 @@ export default function Home() {
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [accountsStatus, setAccountsStatus] = useState('');
   const [registerStatus, setRegisterStatus] = useState('');
+  const [loginOtpStatus, setLoginOtpStatus] = useState('');
+  const [registerOtpStatus, setRegisterOtpStatus] = useState('');
   const [adminStatus, setAdminStatus] = useState('');
   const [sessionRole, setSessionRole] = useState<Role | null>(null);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [showAdmin, setShowAdmin] = useState(false);
   const [idleDeadline, setIdleDeadline] = useState<number | null>(null);
+  const [pendingBlock, setPendingBlock] = useState<string | null>(null);
   const [importStatus, setImportStatus] = useState('');
   const [logStatus, setLogStatus] = useState('');
   const [adminLogs, setAdminLogs] = useState<AdminLog[]>([]);
@@ -220,6 +230,11 @@ export default function Home() {
       setSessionEmail(null);
       setShowAdmin(false);
       setIdleDeadline(null);
+      return null;
+    }
+    if (data.approved === false) {
+      setPendingBlock('관리자 승인 대기 중입니다. 관리자에게 승인 요청하세요.');
+      await logout();
       return null;
     }
     setSessionRole(data.role ?? null);
@@ -327,24 +342,79 @@ export default function Home() {
     }
   }
 
-  async function login() {
-    setStatus('로그인 중...');
-    const res = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ identifier: loginId, password })
-    });
-    if (res.ok) {
-      setStatus('로그인 완료');
-      markActivity();
-      const sessionInfo = await fetchSessionInfo();
-      if (sessionInfo?.role === 'admin') {
-        await loadAdminLogs();
+  async function requestOtp(target: 'login' | 'register') {
+    try {
+      const username = target === 'login' ? loginUsername : registerForm.username;
+      const normalized = normalizeUsername(username);
+      if (!supabase) {
+        throw new Error('Supabase 환경 변수를 확인하세요.');
       }
-      await refresh();
-    } else {
-      const text = await res.text();
-      setStatus(`로그인 실패: ${text || res.status}`);
+      const email = deriveEmail(normalized);
+      const shouldCreateUser = target === 'register';
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: { shouldCreateUser },
+      });
+      if (error) throw error;
+      if (target === 'login') {
+        setLoginOtpStatus('OTP 전송 완료. 이메일을 확인하세요.');
+      } else {
+        setRegisterOtpStatus('OTP 전송 완료. 이메일을 확인하세요.');
+      }
+    } catch (err: any) {
+      const message = err?.message || 'OTP 전송에 실패했습니다.';
+      if (target === 'login') {
+        setLoginOtpStatus(message);
+      } else {
+        setRegisterOtpStatus(message);
+      }
+    }
+  }
+
+  async function login() {
+    try {
+      const normalized = normalizeUsername(loginUsername);
+      if (!loginOtp.trim()) {
+        setStatus('OTP 코드를 입력하세요.');
+        return;
+      }
+      if (!supabase) {
+        throw new Error('Supabase 환경 변수를 확인하세요.');
+      }
+      setStatus('OTP 확인 중...');
+      const email = deriveEmail(normalized);
+      const { data, error } = await supabase.auth.verifyOtp({ email, token: loginOtp.trim(), type: 'email' });
+      if (error || !data?.session?.access_token) {
+        throw new Error(error?.message || 'OTP 인증에 실패했습니다.');
+      }
+
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token: data.session.access_token, username: normalized })
+      });
+
+      if (res.status === 403) {
+        setPendingBlock('관리자 승인 대기 중입니다. 관리자에게 승인 요청하세요.');
+        setStatus('승인 대기 중');
+        await supabase.auth.signOut();
+        return;
+      }
+
+      if (res.ok) {
+        setStatus('로그인 완료');
+        markActivity();
+        const sessionInfo = await fetchSessionInfo();
+        if (sessionInfo?.role === 'admin') {
+          await loadAdminLogs();
+        }
+        await refresh();
+      } else {
+        const text = await res.text();
+        setStatus(`로그인 실패: ${text || res.status}`);
+      }
+    } catch (err: any) {
+      setStatus(err?.message || '로그인 실패');
     }
   }
 
@@ -368,6 +438,7 @@ export default function Home() {
       clearTimeout(logoutTimeout.current);
       logoutTimeout.current = null;
     }
+    await supabase?.auth.signOut();
   }
 
   const isLoggedIn = Boolean(sessionEmail);
@@ -492,19 +563,15 @@ export default function Home() {
 
   async function createUser() {
     setCreateUserStatus('계정 생성 중...');
-    if (!newUser.email || !newUser.full_name || !newUser.department) {
+    if (!newUser.username || !newUser.full_name || !newUser.department) {
       setCreateUserStatus('ID, 성함, 부서를 모두 입력하세요.');
-      return;
-    }
-    if (!isStrongPassword(newUser.password)) {
-      setCreateUserStatus('비밀번호는 영문/숫자를 포함해 8자 이상이어야 합니다.');
       return;
     }
     const res = await fetch('/api/admin/create-user', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        id: newUser.email,
+        username: newUser.username,
         password: newUser.password,
         role: newUser.role,
         full_name: newUser.full_name,
@@ -515,7 +582,7 @@ export default function Home() {
     });
     if (res.ok) {
       setCreateUserStatus('새 계정 생성 완료');
-      setNewUser({ email: '', password: '', role: 'operator', full_name: '', department: '', contact: '', purpose: '' });
+      setNewUser({ username: '', password: '', role: 'operator', full_name: '', department: '', contact: '', purpose: '' });
     } else {
       const text = await res.text();
       setCreateUserStatus(`생성 실패: ${text || res.status}`);
@@ -524,32 +591,48 @@ export default function Home() {
 
   async function registerAccount() {
     setRegisterStatus('계정 생성 중...');
-    if (!registerForm.id || !registerForm.password || !registerForm.confirm || !registerForm.name || !registerForm.department) {
-      setRegisterStatus('ID/비밀번호/성함/부서를 모두 입력하세요.');
-      return;
-    }
+    try {
+      const normalized = normalizeUsername(registerForm.username);
+      if (!registerForm.otp.trim()) {
+        setRegisterStatus('이메일로 받은 OTP 코드를 입력하세요.');
+        return;
+      }
+      if (!registerForm.name || !registerForm.department) {
+        setRegisterStatus('성함과 부서를 입력하세요.');
+        return;
+      }
+      if (!supabase) {
+        throw new Error('Supabase 환경 변수를 확인하세요.');
+      }
+      const email = deriveEmail(normalized);
+      const { data, error } = await supabase.auth.verifyOtp({ email, token: registerForm.otp.trim(), type: 'email' });
+      if (error || !data?.session?.access_token) {
+        throw new Error(error?.message || 'OTP 인증에 실패했습니다.');
+      }
 
-    if (registerForm.password !== registerForm.confirm) {
-      setRegisterStatus('비밀번호가 일치하지 않습니다.');
-      return;
-    }
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: normalized,
+          name: registerForm.name,
+          department: registerForm.department,
+          contact: registerForm.contact,
+          purpose: registerForm.purpose,
+          access_token: data.session.access_token,
+        })
+      });
 
-    if (!isStrongPassword(registerForm.password)) {
-      setRegisterStatus('비밀번호는 영문/숫자를 포함해 8자 이상이어야 합니다.');
-      return;
-    }
-    const res = await fetch('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...registerForm })
-    });
-
-    if (res.ok) {
-      setRegisterStatus('계정 생성 완료! 로그인하세요.');
-      setRegisterForm({ id: '', password: '', confirm: '', name: '', department: '', contact: '', purpose: '' });
-    } else {
-      const text = await res.text();
-      setRegisterStatus(`생성 실패: ${text || res.status}`);
+      if (res.ok) {
+        setRegisterStatus('계정 생성 완료! 관리자 승인 후 사용 가능합니다.');
+        setRegisterForm({ username: '', otp: '', name: '', department: '', contact: '', purpose: '' });
+        await supabase.auth.signOut();
+      } else {
+        const text = await res.text();
+        setRegisterStatus(`생성 실패: ${text || res.status}`);
+      }
+    } catch (err: any) {
+      setRegisterStatus(err?.message || '계정 생성 실패');
     }
   }
 
@@ -567,12 +650,12 @@ export default function Home() {
     }
   }
 
-  async function updateAccount(id: string, nextRole: Role, nextActive?: boolean) {
+  async function updateAccount(id: string, nextRole: Role, nextActive?: boolean, nextApproved?: boolean) {
     setAccountsStatus('저장 중...');
     const res = await fetch('/api/admin/users', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, role: nextRole, active: nextActive })
+      body: JSON.stringify({ id, role: nextRole, approved: nextApproved ?? nextActive })
     });
 
     if (res.ok) {
@@ -898,51 +981,41 @@ export default function Home() {
           <div className="form-grid two">
             <div>
               <label>
-                <span>아이디</span>
-                <input placeholder="로그인 ID" value={loginId} onChange={(e) => setLoginId(e.target.value)} />
+                <span>사내 ID (@ 없이 입력)</span>
+                <input placeholder="예: honggildong" value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} />
               </label>
               <label>
-                <span>비밀번호</span>
+                <span>이메일 OTP 코드</span>
                 <input
-                  type="password"
-                  placeholder="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="이메일로 받은 숫자 코드"
+                  value={loginOtp}
+                  onChange={(e) => setLoginOtp(e.target.value)}
                 />
               </label>
               <div className="actions-row">
+                <button className="ghost" onClick={() => requestOtp('login')}>OTP 요청</button>
                 <button onClick={handleAuthToggle}>로그인</button>
                 <button className="ghost" onClick={refresh}>세션 확인</button>
-                <span className="muted">{status}</span>
               </div>
+              <div className="muted">{loginOtpStatus || status}</div>
             </div>
             <div className="card-subpanel">
-              <p className="mini-label">새 계정 만들기 (self-service)</p>
+              <p className="mini-label">새 계정 만들기 (OTP + 관리자 승인)</p>
               <div className="form-grid two">
                 <label>
                   <span>ID</span>
                   <input
-                    value={registerForm.id}
-                    onChange={(e) => setRegisterForm({ ...registerForm, id: e.target.value })}
-                    placeholder="사번/닉네임 등"
+                    value={registerForm.username}
+                    onChange={(e) => setRegisterForm({ ...registerForm, username: e.target.value })}
+                    placeholder="@ 없이 사내 ID"
                   />
                 </label>
                 <label>
-                  <span>비밀번호</span>
+                  <span>이메일 OTP 코드</span>
                   <input
-                    type="password"
-                    value={registerForm.password}
-                    onChange={(e) => setRegisterForm({ ...registerForm, password: e.target.value })}
-                    placeholder="영문/숫자 포함 8자 이상"
-                  />
-                </label>
-                <label>
-                  <span>비밀번호 확인</span>
-                  <input
-                    type="password"
-                    value={registerForm.confirm}
-                    onChange={(e) => setRegisterForm({ ...registerForm, confirm: e.target.value })}
-                    placeholder="동일하게 입력"
+                    value={registerForm.otp}
+                    onChange={(e) => setRegisterForm({ ...registerForm, otp: e.target.value })}
+                    placeholder="이메일로 받은 숫자 코드"
                   />
                 </label>
                 <label>
@@ -979,8 +1052,9 @@ export default function Home() {
                 </label>
               </div>
               <div className="actions-row">
+                <button className="ghost" onClick={() => requestOtp('register')}>OTP 요청</button>
                 <button onClick={registerAccount}>계정 생성</button>
-                <span className="muted">{registerStatus || '기본 viewer 권한으로 생성됩니다.'}</span>
+                <span className="muted">{registerStatus || registerOtpStatus || 'OTP 인증 후 생성되며 관리자 승인이 필요합니다.'}</span>
               </div>
             </div>
           </div>
@@ -998,6 +1072,18 @@ export default function Home() {
             </div>
           </div>
         </Section>
+      )}
+
+      {pendingBlock && (
+        <div className="modal-backdrop">
+          <div className="modal-card">
+            <p className="mini-label">승인 대기</p>
+            <p className="muted">{pendingBlock}</p>
+            <div className="actions-row">
+              <button onClick={() => setPendingBlock(null)}>확인</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {activePanel === 'admin' && showAdmin && (
@@ -1022,23 +1108,23 @@ export default function Home() {
             </div>
             <div className="guide-card">
               <p className="mini-label">신규 계정 발급</p>
-              <p className="muted">관리자가 직접 ID/비밀번호/권한을 생성합니다. 이름과 부서를 함께 기록해 이력에 표시합니다.</p>
+              <p className="muted">관리자가 직접 ID와 권한을 생성합니다. 비밀번호는 선택 입력이며 이메일은 자동으로 @sound-wave.co.kr 도메인을 사용합니다.</p>
               <div className="form-grid two">
                 <label>
                   <span>계정 ID</span>
                   <input
-                    value={newUser.email}
-                    onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-                    placeholder="ID 또는 사번"
+                    value={newUser.username}
+                    onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
+                    placeholder="@ 없이 사내 ID"
                   />
                 </label>
                 <label>
-                  <span>비밀번호</span>
+                  <span>비밀번호 (선택)</span>
                   <input
                     type="password"
                     value={newUser.password}
                     onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-                    placeholder="영문/숫자 포함 8자 이상"
+                    placeholder="미입력 시 자동 생성"
                   />
                 </label>
                 <label>
@@ -1635,30 +1721,32 @@ export default function Home() {
               </div>
             </div>
             <p className="muted" style={{ marginTop: 0 }}>
-              ID, 실명, 부서를 확인하고 권한과 활성화 여부를 바로 수정할 수 있습니다.
+              ID, 실명, 부서를 확인하고 권한과 승인 여부를 바로 수정할 수 있습니다.
             </p>
             <div className="table-wrapper">
               <table className="table compact-table">
                 <thead>
                   <tr>
                     <th>ID</th>
+                    <th>이메일</th>
                     <th>성함</th>
                     <th>부서</th>
                     <th>연락처</th>
                     <th>사용 목적</th>
                     <th>권한</th>
-                    <th>활성</th>
+                    <th>승인</th>
                     <th>생성일</th>
                   </tr>
                 </thead>
                 <tbody>
                   {accounts.length === 0 && (
                     <tr>
-                      <td colSpan={8}>계정 정보가 없습니다.</td>
+                      <td colSpan={9}>계정 정보가 없습니다.</td>
                     </tr>
                   )}
                   {accounts.map((acc) => (
                     <tr key={acc.id}>
+                      <td>{acc.username}</td>
                       <td>{acc.email}</td>
                       <td>{acc.full_name}</td>
                       <td>{acc.department || '-'}</td>
@@ -1667,21 +1755,22 @@ export default function Home() {
                       <td>
                         <select
                           value={acc.role}
-                          onChange={(e) => updateAccount(acc.id, e.target.value as Role, acc.active)}
+                          onChange={(e) => updateAccount(acc.id, e.target.value as Role, acc.approved, acc.approved)}
                         >
                           <option value="admin">admin</option>
                           <option value="operator">operator</option>
                           <option value="viewer">viewer</option>
+                          <option value="pending">pending</option>
                         </select>
                       </td>
                       <td>
                         <label className="muted small-text" style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}>
                           <input
                             type="checkbox"
-                            checked={acc.active}
-                            onChange={(e) => updateAccount(acc.id, acc.role, e.target.checked)}
+                            checked={acc.approved}
+                            onChange={(e) => updateAccount(acc.id, acc.role, acc.approved, e.target.checked)}
                           />
-                          활성화
+                          승인 여부
                         </label>
                       </td>
                       <td>{formatDate(acc.created_at)}</td>

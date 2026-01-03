@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '../../../../lib/session';
+import { supabaseAdmin } from '../../../../lib/supabase';
 
 export async function GET() {
   const session = await getSession();
@@ -7,11 +8,19 @@ export async function GET() {
     return NextResponse.json({ authenticated: false });
   }
 
+  const { data: profile } = await supabaseAdmin
+    .from('user_profiles')
+    .select('approved, role, username')
+    .eq('user_id', session.userId)
+    .single();
+
   return NextResponse.json({
     authenticated: true,
     userId: session.userId,
     email: session.email ?? null,
     role: session.role ?? null,
-    expiresAt: session.expiresAt ?? null
+    expiresAt: session.expiresAt ?? null,
+    approved: profile?.approved ?? false,
+    username: profile?.username ?? null,
   });
 }
