@@ -49,7 +49,7 @@ type MovementPayload = {
   option: string;
   location: string;
   quantity: number;
-  direction: 'IN' | 'OUT' | 'ADJUST';
+  direction: 'IN' | 'OUT';
   memo: string;
 };
 
