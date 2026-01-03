@@ -389,6 +389,8 @@ export default function Home() {
     const stockRes = await fetch('/api/inventory');
     if (stockRes.ok) {
       setStock(await stockRes.json());
+    } else {
+      setStatus('재고 불러오기 실패');
     }
   }
 
@@ -396,6 +398,8 @@ export default function Home() {
     const histRes = await fetch('/api/history');
     if (histRes.ok) {
       setHistory(await histRes.json());
+    } else {
+      setStatus('입출고 이력 불러오기 실패');
     }
   }
 
@@ -881,97 +885,112 @@ export default function Home() {
         </button>
       </div>
 
-      <Section title="로그인">
-        <div className="form-grid two">
-          <div>
-            <label>
-              <span>아이디</span>
-              <input placeholder="로그인 ID" value={loginId} onChange={(e) => setLoginId(e.target.value)} />
-            </label>
-            <label>
-              <span>비밀번호</span>
-              <input
-                type="password"
-                placeholder="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </label>
-            <div className="actions-row">
-              <button onClick={handleAuthToggle}>{isLoggedIn ? '로그아웃' : '로그인'}</button>
-              <button className="ghost" onClick={refresh}>세션 확인</button>
-              <span className="muted">{status}</span>
-            </div>
-          </div>
-          <div className="card-subpanel">
-            <p className="mini-label">새 계정 만들기 (self-service)</p>
-            <div className="form-grid two">
+      {!isLoggedIn ? (
+        <Section title="로그인">
+          <div className="form-grid two">
+            <div>
               <label>
-                <span>ID</span>
-                <input
-                  value={registerForm.id}
-                  onChange={(e) => setRegisterForm({ ...registerForm, id: e.target.value })}
-                  placeholder="사번/닉네임 등"
-                />
+                <span>아이디</span>
+                <input placeholder="로그인 ID" value={loginId} onChange={(e) => setLoginId(e.target.value)} />
               </label>
               <label>
                 <span>비밀번호</span>
                 <input
                   type="password"
-                  value={registerForm.password}
-                  onChange={(e) => setRegisterForm({ ...registerForm, password: e.target.value })}
-                  placeholder="영문/숫자 포함 8자 이상"
+                  placeholder="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
                 />
               </label>
-              <label>
-                <span>비밀번호 확인</span>
-                <input
-                  type="password"
-                  value={registerForm.confirm}
-                  onChange={(e) => setRegisterForm({ ...registerForm, confirm: e.target.value })}
-                  placeholder="동일하게 입력"
-                />
-              </label>
-              <label>
-                <span>성함</span>
-                <input
-                  value={registerForm.name}
-                  onChange={(e) => setRegisterForm({ ...registerForm, name: e.target.value })}
-                  placeholder="홍길동"
-                />
-              </label>
-              <label>
-                <span>부서</span>
-                <input
-                  value={registerForm.department}
-                  onChange={(e) => setRegisterForm({ ...registerForm, department: e.target.value })}
-                  placeholder="물류팀"
-                />
-              </label>
-              <label>
-                <span>연락처</span>
-                <input
-                  value={registerForm.contact}
-                  onChange={(e) => setRegisterForm({ ...registerForm, contact: e.target.value })}
-                  placeholder="010-0000-0000"
-                />
-              </label>
-              <label className="wide">
-                <span>사용 목적</span>
-                <input
-                  value={registerForm.purpose}
-                  onChange={(e) => setRegisterForm({ ...registerForm, purpose: e.target.value })}
-                  placeholder="예: 매장 재고 확인"
-                />
-              </label>
+              <div className="actions-row">
+                <button onClick={handleAuthToggle}>로그인</button>
+                <button className="ghost" onClick={refresh}>세션 확인</button>
+                <span className="muted">{status}</span>
+              </div>
             </div>
-            <div className="actions-row">
-              <button onClick={registerAccount}>계정 생성</button>
-              <span className="muted">{registerStatus || '기본 viewer 권한으로 생성됩니다.'}</span>
+            <div className="card-subpanel">
+              <p className="mini-label">새 계정 만들기 (self-service)</p>
+              <div className="form-grid two">
+                <label>
+                  <span>ID</span>
+                  <input
+                    value={registerForm.id}
+                    onChange={(e) => setRegisterForm({ ...registerForm, id: e.target.value })}
+                    placeholder="사번/닉네임 등"
+                  />
+                </label>
+                <label>
+                  <span>비밀번호</span>
+                  <input
+                    type="password"
+                    value={registerForm.password}
+                    onChange={(e) => setRegisterForm({ ...registerForm, password: e.target.value })}
+                    placeholder="영문/숫자 포함 8자 이상"
+                  />
+                </label>
+                <label>
+                  <span>비밀번호 확인</span>
+                  <input
+                    type="password"
+                    value={registerForm.confirm}
+                    onChange={(e) => setRegisterForm({ ...registerForm, confirm: e.target.value })}
+                    placeholder="동일하게 입력"
+                  />
+                </label>
+                <label>
+                  <span>성함</span>
+                  <input
+                    value={registerForm.name}
+                    onChange={(e) => setRegisterForm({ ...registerForm, name: e.target.value })}
+                    placeholder="홍길동"
+                  />
+                </label>
+                <label>
+                  <span>부서</span>
+                  <input
+                    value={registerForm.department}
+                    onChange={(e) => setRegisterForm({ ...registerForm, department: e.target.value })}
+                    placeholder="물류팀"
+                  />
+                </label>
+                <label>
+                  <span>연락처</span>
+                  <input
+                    value={registerForm.contact}
+                    onChange={(e) => setRegisterForm({ ...registerForm, contact: e.target.value })}
+                    placeholder="010-0000-0000"
+                  />
+                </label>
+                <label className="wide">
+                  <span>사용 목적</span>
+                  <input
+                    value={registerForm.purpose}
+                    onChange={(e) => setRegisterForm({ ...registerForm, purpose: e.target.value })}
+                    placeholder="예: 매장 재고 확인"
+                  />
+                </label>
+              </div>
+              <div className="actions-row">
+                <button onClick={registerAccount}>계정 생성</button>
+                <span className="muted">{registerStatus || '기본 viewer 권한으로 생성됩니다.'}</span>
+              </div>
             </div>
           </div>
-        </div>
-      </Section>
+        </Section>
+      ) : (
+        <Section title="로그인 완료">
+          <div className="actions-row">
+            <div>
+              <p className="mini-label">현재 세션</p>
+              <div className="muted">{sessionEmail} ({sessionRole})</div>
+            </div>
+            <div className="actions-row">
+              <button onClick={handleAuthToggle}>로그아웃</button>
+              <button className="ghost" onClick={refresh}>데이터 새로고침</button>
+            </div>
+          </div>
+        </Section>
+      )}
 
       {activePanel === 'admin' && showAdmin && (
         <Section
