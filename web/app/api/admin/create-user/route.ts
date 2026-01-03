@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
-import { withAuth } from '../../../../../lib/auth';
-import { recordAdminLog } from '../../../../../lib/admin-log';
-import { createUserWithProfile } from '../../../../../lib/create-user';
-import type { Role } from '../../../../../lib/session';
+import { withAuth } from '../../../../lib/auth';
+import { recordAdminLog } from '../../../../lib/admin-log';
+import { createUserWithProfile } from '../../../../lib/create-user';
+import type { Role } from '../../../../lib/session';
 
 function isStrongPassword(value: string) {
   if (!value || value.length < 8) return false;
