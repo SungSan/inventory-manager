@@ -45,7 +45,6 @@ type AccountRow = {
   purpose?: string;
   role: Role;
   approved: boolean;
-  active: boolean;
   created_at: string;
   requested_at?: string;
   approved_at?: string | null;
@@ -147,6 +146,7 @@ export default function Home() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [stock, setStock] = useState<InventoryRow[]>([]);
   const [showAnomalies, setShowAnomalies] = useState(false);
+  const [editPanelEnabled, setEditPanelEnabled] = useState(false);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [movement, setMovement] = useState<MovementPayload>(EMPTY_MOVEMENT);
   const [selectedStockKeys, setSelectedStockKeys] = useState<string[]>([]);
@@ -693,12 +693,12 @@ export default function Home() {
     }
   }
 
-  async function updateAccount(id: string, nextRole: Role, nextActive?: boolean, nextApproved?: boolean) {
+  async function updateAccount(id: string, nextRole: Role, nextApproved?: boolean) {
     setAccountsStatus('저장 중...');
     const res = await fetch('/api/admin/users', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, role: nextRole, approved: nextApproved ?? nextActive })
+      body: JSON.stringify({ id, role: nextRole, approved: nextApproved })
     });
 
     if (res.ok) {
@@ -1041,6 +1041,21 @@ export default function Home() {
           onClick={() => setActivePanel('history')}
         >
           입출고 이력
+        </button>
+        <button
+          className={editPanelEnabled ? 'tab active' : 'tab disabled'}
+          onClick={() => {
+            setEditPanelEnabled((prev) => {
+              const next = !prev;
+              if (!next) {
+                setEditDraft(null);
+                setFocusedStockKey(null);
+              }
+              return next;
+            });
+          }}
+        >
+          선택 재고 편집
         </button>
         <button
           className={activePanel === 'admin' ? 'tab active' : 'tab'}
@@ -1658,7 +1673,7 @@ export default function Home() {
                             )}
                           </td>
                         </tr>
-                        {sessionRole !== 'viewer' && editDraft && focusedStockKey === row.key && (
+                        {editPanelEnabled && sessionRole !== 'viewer' && editDraft && focusedStockKey === row.key && (
                           <tr className="inline-editor-row">
                             <td colSpan={7}>
                               <div className="inline-editor">
@@ -1710,7 +1725,6 @@ export default function Home() {
                                     <input
                                       type="number"
                                       value={editDraft.quantity}
-                                      min={0}
                                       onChange={(e) => setEditDraft({ ...editDraft, quantity: Number(e.target.value) })}
                                     />
                                   </label>
@@ -1851,6 +1865,21 @@ export default function Home() {
           입출고 이력
         </button>
         <button
+          className={editPanelEnabled ? 'tab active' : 'tab disabled'}
+          onClick={() => {
+            setEditPanelEnabled((prev) => {
+              const next = !prev;
+              if (!next) {
+                setEditDraft(null);
+                setFocusedStockKey(null);
+              }
+              return next;
+            });
+          }}
+        >
+          선택 재고 편집
+        </button>
+        <button
           className={activePanel === 'admin' ? 'tab active' : 'tab'}
           onClick={() => scrollToPanel('admin')}
           disabled={sessionRole !== 'admin'}
@@ -1905,7 +1934,7 @@ export default function Home() {
                       <td>
                         <select
                           value={acc.role}
-                          onChange={(e) => updateAccount(acc.id, e.target.value as Role, acc.approved, acc.approved)}
+                          onChange={(e) => updateAccount(acc.id, e.target.value as Role, acc.approved)}
                         >
                           <option value="admin">admin</option>
                           <option value="operator">operator</option>
@@ -1918,7 +1947,7 @@ export default function Home() {
                           <input
                             type="checkbox"
                             checked={acc.approved}
-                            onChange={(e) => updateAccount(acc.id, acc.role, acc.approved, e.target.checked)}
+                            onChange={(e) => updateAccount(acc.id, acc.role, e.target.checked)}
                           />
                           승인 여부
                         </label>

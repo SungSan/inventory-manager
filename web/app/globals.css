@@ -103,6 +103,7 @@ label span { display: block; font-size: 0.85rem; color: var(--muted); margin-bot
 .tab-row { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
 .tab { background: #e5e7eb; color: #111827; border: 1px solid var(--border); }
 .tab.active { background: #1e40af; color: white; border-color: #1e3a8a; }
+.tab.disabled { background: #e5e7eb; color: #6b7280; border-color: #d1d5db; opacity: 0.85; }
 .row-actions .small { padding: 0.35rem 0.55rem; font-size: 0.85rem; }
 .danger { color: #b91c1c; border-color: #fecdd3; }
 .danger:hover { background: #fee2e2; }
