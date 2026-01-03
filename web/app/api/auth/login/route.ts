@@ -10,15 +10,10 @@ export async function POST(req: NextRequest) {
   try {
     const user = await loginWithUsername(username, password);
 
-    if ('pending' in user && (user as any).pending) {
-      return NextResponse.json(
-        { error: '관리자 승인 대기 중입니다. 관리자에게 승인 요청하세요.' },
-        { status: 403 }
-      );
-    }
-
     return setSession(req, user as any);
   } catch (err: any) {
-    return NextResponse.json({ error: err?.message || '로그인 실패' }, { status: 400 });
+    const message = err?.message || '로그인 실패';
+    const status = err?.code === 'PENDING_APPROVAL' ? 403 : 400;
+    return NextResponse.json({ error: message }, { status });
   }
 }

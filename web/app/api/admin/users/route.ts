@@ -78,13 +78,9 @@ export async function PATCH(req: Request) {
     }
 
     const updates: Record<string, any> = {};
-    const profileUpdates: Record<string, any> = {};
 
     if (typeof approved === 'boolean') {
       updates.approved = approved;
-      profileUpdates.approved = approved;
-      profileUpdates.approved_at = approved ? new Date().toISOString() : null;
-      profileUpdates.approved_by = approved ? session.userId : null;
     }
 
     if (role) {
@@ -93,25 +89,15 @@ export async function PATCH(req: Request) {
         return NextResponse.json({ error: 'invalid role' }, { status: 400 });
       }
       updates.role = role as Role;
-      profileUpdates.role = role as Role;
     }
 
-    if (Object.keys(updates).length === 0 && Object.keys(profileUpdates).length === 0) {
+    if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: 'no updates provided' }, { status: 400 });
     }
 
-    if (Object.keys(updates).length > 0) {
-      const { error } = await supabaseAdmin.from('users').update(updates).eq('id', id);
-      if (error) {
-        return NextResponse.json({ error: error.message }, { status: 400 });
-      }
-    }
-
-    if (Object.keys(profileUpdates).length > 0) {
-      const { error } = await supabaseAdmin.from('user_profiles').update(profileUpdates).eq('user_id', id);
-      if (error) {
-        return NextResponse.json({ error: error.message }, { status: 400 });
-      }
+    const { error } = await supabaseAdmin.from('users').update(updates).eq('id', id);
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
     }
 
     await recordAdminLog(session, 'update_user', `${id} ${role ?? ''} ${approved ?? ''}`.trim());

@@ -125,19 +125,13 @@ create or replace view public.admin_users_view as
 select
   u.id,
   u.email,
-  u.role,
-  u.active,
-  u.created_at,
   coalesce(p.full_name, u.email, '') as full_name,
   coalesce(p.department, '') as department,
   coalesce(p.contact, '') as contact,
   coalesce(p.purpose, '') as purpose,
-  p.username,
-  coalesce(u.approved, p.approved, false) as approved,
-  p.role as profile_role,
-  p.requested_at,
-  p.approved_at,
-  p.approved_by
+  u.role,
+  coalesce(u.approved, false) as approved,
+  u.created_at
 from public.users u
 left join public.user_profiles p on p.user_id = u.id;
 

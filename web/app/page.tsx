@@ -389,7 +389,9 @@ export default function Home() {
       });
 
       if (res.status === 403) {
-        setPendingBlock('관리자 승인 대기 중입니다. 관리자에게 승인 요청하세요.');
+        const body = await res.json().catch(() => ({}));
+        const message = body.error || '관리자 승인 대기 중입니다. 관리자에게 승인 요청하세요.';
+        setPendingBlock(message);
         setStatus('승인 대기 중');
         const supabase = requireSupabase();
         if (supabase) {

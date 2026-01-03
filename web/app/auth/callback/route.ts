@@ -64,10 +64,6 @@ export async function GET(req: NextRequest) {
 
     const loginResult = await loginWithAccessToken(data.session.access_token, username);
 
-    if ('pending' in loginResult && (loginResult as any).pending) {
-      return redirectWithError(req, '관리자 승인 대기 중입니다. 관리자에게 승인 요청하세요.');
-    }
-
     const siteUrl = getSiteUrl(req);
     const baseResponse = NextResponse.redirect(new URL('/', siteUrl));
     const { session, response } = await getSessionFromRequest(req, baseResponse);

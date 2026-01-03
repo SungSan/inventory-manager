@@ -53,7 +53,7 @@ export async function POST(req: Request) {
       email,
       role: 'viewer',
       approved: false,
-      active: false,
+      active: true,
       full_name: fullName || email,
       department: dept,
       contact: contactInfo,

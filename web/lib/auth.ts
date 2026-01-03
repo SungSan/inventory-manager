@@ -6,6 +6,7 @@ import type { NextRequest } from 'next/server';
 const CORPORATE_DOMAIN = 'sound-wave.co.kr';
 const SPECIAL_EMAIL = 'tksdlvkxl@gmail.com';
 const SPECIAL_USERNAME = 'tksdlvkxl';
+const APPROVAL_ERROR = 'PENDING_APPROVAL';
 
 export function normalizeUsername(raw: string) {
   const username = raw.trim();
@@ -60,7 +61,9 @@ export async function loginWithUsername(rawUsername: string, password: string) {
   const approvedFlag = special ? true : userRow?.approved ?? false;
 
   if (!approvedFlag) {
-    return { pending: true, email };
+    const err = new Error('관리자 승인 대기 중입니다. 관리자에게 승인 요청하세요.');
+    (err as any).code = APPROVAL_ERROR;
+    throw err;
   }
 
   const verified = await verifyPassword(email, password);
@@ -99,7 +102,7 @@ export async function loginWithUsername(rawUsername: string, password: string) {
 export async function loginWithAccessToken(
   accessToken: string,
   rawUsername: string
-): Promise<{ pending: true; email: string } | { id: string; email: string; role: Role }> {
+): Promise<{ id: string; email: string; role: Role }> {
   const rawLower = rawUsername.trim().toLowerCase();
   const special = rawLower === SPECIAL_EMAIL || rawLower === SPECIAL_USERNAME;
   const username = special ? SPECIAL_USERNAME : normalizeUsername(rawUsername);
@@ -131,7 +134,9 @@ export async function loginWithAccessToken(
   const approvedFlag = bypassApproval ? true : userRow?.approved ?? false;
 
   if (!approvedFlag) {
-    return { pending: true, email };
+    const err = new Error('관리자 승인 대기 중입니다. 관리자에게 승인 요청하세요.');
+    (err as any).code = APPROVAL_ERROR;
+    throw err;
   }
 
   const nextRole: Role = (userRow?.role as Role) ?? (bypassApproval ? 'admin' : 'viewer');
