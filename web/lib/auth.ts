@@ -5,6 +5,7 @@ import type { NextRequest } from 'next/server';
 
 const CORPORATE_DOMAIN = 'sound-wave.co.kr';
 const SPECIAL_EMAIL = 'tksdlvkxl@gmail.com';
+const SPECIAL_USERNAME = 'tksdlvkxl';
 
 export function normalizeUsername(raw: string) {
   const username = raw.trim();
@@ -41,8 +42,9 @@ export async function loginWithUsername(rawUsername: string, password: string) {
     throw new Error('비밀번호를 입력하세요.');
   }
 
-  const special = rawUsername.trim().toLowerCase() === SPECIAL_EMAIL;
-  const username = special ? rawUsername.trim().toLowerCase() : normalizeUsername(rawUsername);
+  const rawLower = rawUsername.trim().toLowerCase();
+  const special = rawLower === SPECIAL_EMAIL || rawLower === SPECIAL_USERNAME;
+  const username = special ? SPECIAL_USERNAME : normalizeUsername(rawUsername);
   const email = special ? SPECIAL_EMAIL : deriveEmail(username);
 
   if (!special) {
@@ -120,15 +122,20 @@ export async function loginWithAccessToken(
   accessToken: string,
   rawUsername: string
 ): Promise<{ pending: true; email: string } | { id: string; email: string; role: Role }> {
-  const username = normalizeUsername(rawUsername);
-  const email = deriveEmail(username);
+  const rawLower = rawUsername.trim().toLowerCase();
+  const special = rawLower === SPECIAL_EMAIL || rawLower === SPECIAL_USERNAME;
+  const username = special ? SPECIAL_USERNAME : normalizeUsername(rawUsername);
+  const email = special ? SPECIAL_EMAIL : deriveEmail(username);
 
   const { data: authUser, error: authError } = await supabaseAdmin.auth.getUser(accessToken);
   if (authError || !authUser?.user) {
     throw new Error(authError?.message || '인증 토큰이 유효하지 않습니다.');
   }
 
-  if (!authUser.user.email || authUser.user.email.toLowerCase() !== email.toLowerCase()) {
+  if (
+    !authUser.user.email ||
+    (authUser.user.email.toLowerCase() !== email.toLowerCase() && authUser.user.email.toLowerCase() !== SPECIAL_EMAIL)
+  ) {
     throw new Error('ID와 이메일이 일치하지 않습니다. @ 문자를 포함하지 않는 사내 ID만 입력하세요.');
   }
 
@@ -142,11 +149,13 @@ export async function loginWithAccessToken(
     throw new Error(profileError.message);
   }
 
-  if (!profile || profile.approved === false || profile.role === 'pending') {
+  const bypassApproval = authUser.user.email?.toLowerCase() === SPECIAL_EMAIL || special;
+
+  if (!bypassApproval && (!profile || profile.approved === false || profile.role === 'pending')) {
     return { pending: true, email };
   }
 
-  const nextRole: Role = (profile.role as Role) ?? 'viewer';
+  const nextRole: Role = (profile?.role as Role) ?? (bypassApproval ? 'admin' : 'viewer');
 
   const metadata = authUser.user.user_metadata || {};
 
