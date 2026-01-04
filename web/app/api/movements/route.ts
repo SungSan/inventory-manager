@@ -114,7 +114,7 @@ export async function POST(req: Request) {
     };
 
     try {
-      const { data, error } = await supabaseAdmin.rpc('record_movement_v2', payload);
+      const { data, error } = await supabaseAdmin.rpc('record_movement', payload);
       if (error) {
         console.error('record_movement rpc failed:', {
           message: error.message,
