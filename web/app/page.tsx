@@ -1,5 +1,6 @@
 'use client';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { utils, writeFile } from 'xlsx';
 import { getSupabaseClient } from '../lib/supabaseClient';
 
 type InventoryLocation = {
@@ -98,15 +99,18 @@ function Pill({ children }: { children: React.ReactNode }) {
   return <span className="pill">{children}</span>;
 }
 
+const kstFormatter = new Intl.DateTimeFormat('ko-KR', {
+  timeZone: 'Asia/Seoul',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit'
+});
+
 function formatDate(value: string) {
-  return new Date(value).toLocaleString('ko-KR', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  });
+  return kstFormatter.format(new Date(value));
 }
 
 function aggregateLocations(rows: InventoryRow[]) {
@@ -793,8 +797,9 @@ export default function Home() {
   );
 
   const filteredHistory = useMemo(() => {
-    const fromDate = historyFilters.from ? new Date(historyFilters.from) : null;
-    const toDate = historyFilters.to ? new Date(`${historyFilters.to}T23:59:59`) : null;
+    const parseKst = (value: string) => Date.parse(`${value}T00:00:00+09:00`);
+    const fromDateMs = historyFilters.from ? parseKst(historyFilters.from) : null;
+    const toDateMs = historyFilters.to ? parseKst(historyFilters.to) + 24 * 60 * 60 * 1000 : null;
     return history.filter((row) => {
       const matchesDirection = !historyFilters.direction || row.direction === historyFilters.direction;
       const matchesCategory = !historyFilters.category || row.category === historyFilters.category;
@@ -811,12 +816,48 @@ export default function Home() {
         .join(' ')
         .toLowerCase()
         .includes(historyFilters.search.toLowerCase());
-      const created = new Date(row.created_at);
-      const matchesFrom = !fromDate || created >= fromDate;
-      const matchesTo = !toDate || created <= toDate;
+      const createdKstMs = Date.parse(row.created_at) + 9 * 60 * 60 * 1000;
+      const matchesFrom = !fromDateMs || createdKstMs >= fromDateMs;
+      const matchesTo = !toDateMs || createdKstMs < toDateMs;
       return matchesDirection && matchesCategory && matchesSearch && matchesFrom && matchesTo;
     });
   }, [history, historyFilters]);
+
+  function exportToExcel(rows: any[], filename: string, sheetName: string) {
+    const workbook = utils.book_new();
+    const sheet = utils.json_to_sheet(rows.length ? rows : [{}]);
+    utils.book_append_sheet(workbook, sheet, sheetName);
+    writeFile(workbook, filename);
+  }
+
+  function exportInventory() {
+    const rows = filteredStock.map((row) => ({
+      artist: row.artist,
+      category: row.category,
+      album_version: row.album_version,
+      option: row.option,
+      locations: row.locations.map((loc) => `${loc.location}: ${loc.quantity}`).join(', '),
+      total_quantity: row.total_quantity
+    }));
+    exportToExcel(rows, 'inventory.xlsx', 'Inventory');
+  }
+
+  function exportHistory() {
+    const rows = filteredHistory.map((h) => ({
+      created_at_kst: formatDate(h.created_at),
+      direction: h.direction,
+      artist: h.artist,
+      category: h.category,
+      album_version: h.album_version,
+      option: h.option ?? '',
+      location: h.location,
+      quantity: h.quantity,
+      created_by_name: h.created_by_name ?? h.created_by ?? '',
+      created_by_department: h.created_by_department ?? '',
+      memo: h.memo ?? ''
+    }));
+    exportToExcel(rows, 'history.xlsx', 'History');
+  }
 
   const totalQuantity = useMemo(
     () => filteredStock.reduce((sum, row) => sum + row.total_quantity, 0),
@@ -1307,7 +1348,9 @@ export default function Home() {
                     <option value="album">앨범</option>
                     <option value="md">MD</option>
                   </select>
-                  <a className="ghost button-link" href="/api/export?type=inventory">엑셀 다운로드</a>
+                  <button className="ghost" type="button" onClick={exportInventory}>
+                    엑셀 다운로드
+                  </button>
                 </div>
               }
             >
@@ -1579,7 +1622,9 @@ export default function Home() {
             <button className="ghost" type="button" onClick={reloadHistory}>
               새로고침
             </button>
-            <a className="ghost button-link" href="/api/export?type=history">엑셀 다운로드</a>
+            <button className="ghost" type="button" onClick={exportHistory}>
+              엑셀 다운로드
+            </button>
           </div>
         }
       >
