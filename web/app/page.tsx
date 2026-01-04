@@ -35,6 +35,13 @@ type InventorySummary = {
   byLocation: Record<string, number>;
 };
 
+type InventoryMeta = {
+  summary: InventorySummary;
+  anomalyCount: number;
+  artists: string[];
+  locations: string[];
+};
+
 type InventoryEditDraft = InventoryLocation & Omit<InventoryRow, 'locations' | 'total_quantity' | 'key'>;
 
 type HistoryRow = {
@@ -193,17 +200,15 @@ export default function Home() {
   const [editDraft, setEditDraft] = useState<InventoryEditDraft | null>(null);
   const [activePanel, setActivePanel] = useState<'stock' | 'history' | 'admin'>('stock');
   const [stockFilters, setStockFilters] = useState({
-    search: '',
-    category: '',
-    location: '',
+    q: '',
     artist: '',
-    album_version: '',
-    option: '',
+    location: '',
   });
-  const [inventorySummary, setInventorySummary] = useState<InventorySummary>({
-    totalQuantity: 0,
-    uniqueItems: 0,
-    byLocation: {},
+  const [inventoryMeta, setInventoryMeta] = useState<InventoryMeta>({
+    summary: { totalQuantity: 0, uniqueItems: 0, byLocation: {} },
+    anomalyCount: 0,
+    artists: [],
+    locations: [],
   });
   const [inventoryPage, setInventoryPage] = useState({ limit: 50, offset: 0, totalRows: 0 });
   const [locationPresets, setLocationPresets] = useState<string[]>([]);
@@ -244,6 +249,7 @@ export default function Home() {
   const [newLocation, setNewLocation] = useState('');
   const [inventoryActionStatus, setInventoryActionStatus] = useState('');
   const logoutTimeout = useRef<NodeJS.Timeout | null>(null);
+  const searchTimeout = useRef<NodeJS.Timeout | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const stockRef = useRef<HTMLDivElement | null>(null);
   const historyRef = useRef<HTMLDivElement | null>(null);
@@ -479,16 +485,44 @@ export default function Home() {
     alert('30분 이상 사용 기록이 없어 자동 로그아웃되었습니다. 다시 로그인하세요.');
   }
 
-  async function reloadInventory(options?: { offset?: number; limit?: number; filters?: typeof stockFilters }) {
+  async function fetchInventoryMeta(filters: typeof stockFilters, options?: { prefix?: string }) {
+    const params = new URLSearchParams();
+    if (filters.artist) params.set('artist', filters.artist);
+    if (filters.location) params.set('location', filters.location);
+    if (filters.q) params.set('q', filters.q);
+    if (options?.prefix !== undefined) params.set('prefix', options.prefix ?? '');
+
+    const metaRes = await fetch(`/api/inventory/meta?${params.toString()}`, { cache: 'no-store' });
+    if (metaRes.ok) {
+      const payload = await metaRes.json();
+      if (payload?.ok) {
+        setInventoryMeta({
+          summary: payload.summary ?? { totalQuantity: 0, uniqueItems: 0, byLocation: {} },
+          anomalyCount: Number(payload.anomalyCount ?? 0),
+          artists: payload.artists ?? [],
+          locations: payload.locations ?? [],
+        });
+        return;
+      }
+    }
+    setStatus('재고 메타데이터 불러오기 실패');
+  }
+
+  async function reloadInventory(options?: {
+    offset?: number;
+    limit?: number;
+    filters?: typeof stockFilters;
+    fetchMeta?: boolean;
+    prefix?: string;
+  }) {
     const nextFilters = options?.filters ?? stockFilters;
     const nextOffset = options?.offset ?? inventoryPage.offset;
     const nextLimit = options?.limit ?? inventoryPage.limit;
 
     const params = new URLSearchParams();
     if (nextFilters.artist) params.set('artist', nextFilters.artist);
-    if (nextFilters.category) params.set('category', nextFilters.category);
-    if (nextFilters.album_version) params.set('album_version', nextFilters.album_version);
-    if (nextFilters.option) params.set('option', nextFilters.option);
+    if (nextFilters.location) params.set('location', nextFilters.location);
+    if (nextFilters.q) params.set('q', nextFilters.q);
     params.set('limit', String(nextLimit));
     params.set('offset', String(Math.max(0, nextOffset)));
 
@@ -504,27 +538,44 @@ export default function Home() {
           offset: payload.page?.offset ?? nextOffset,
           totalRows: payload.page?.totalRows ?? 0,
         });
-        setInventorySummary({
-          totalQuantity: payload.summary?.totalQuantity ?? 0,
-          uniqueItems: payload.summary?.uniqueItems ?? 0,
-          byLocation: payload.summary?.byLocation ?? {},
-        });
         setStock(groupInventoryRows(payload.rows || []));
+
+        if (options?.fetchMeta !== false) {
+          await fetchInventoryMeta(nextFilters, { prefix: options?.prefix ?? nextFilters.q });
+        }
         return;
       }
     }
     setStatus('재고 불러오기 실패');
   }
 
-  function applyInventoryFilters(next: typeof stockFilters) {
+  function applyInventoryFilters(next: typeof stockFilters, options?: { immediate?: boolean }) {
+    const nextOffset = 0;
+    setInventoryPage((prev) => ({ ...prev, offset: nextOffset }));
+    setStockFilters(next);
+    reloadInventory({ filters: next, offset: nextOffset, prefix: next.q, fetchMeta: true });
+    if (options?.immediate && searchTimeout.current) {
+      clearTimeout(searchTimeout.current);
+    }
+  }
+
+  function handleSearchChange(value: string) {
+    const next = { ...stockFilters, q: value };
+    setStockFilters(next);
     setInventoryPage((prev) => ({ ...prev, offset: 0 }));
-    reloadInventory({ filters: next, offset: 0 });
+    fetchInventoryMeta(next, { prefix: value });
+    if (searchTimeout.current) {
+      clearTimeout(searchTimeout.current);
+    }
+    searchTimeout.current = setTimeout(() => {
+      reloadInventory({ filters: next, offset: 0, fetchMeta: false });
+    }, 250);
   }
 
   function changeInventoryPage(nextOffset: number) {
     const clamped = Math.max(0, nextOffset);
     setInventoryPage((prev) => ({ ...prev, offset: clamped }));
-    reloadInventory({ offset: clamped });
+    reloadInventory({ offset: clamped, fetchMeta: true });
   }
 
   async function reloadHistory() {
@@ -861,49 +912,28 @@ export default function Home() {
     [stock]
   );
 
-  const anomalyCount = anomalousStock.length;
+  const anomalyCount = inventoryMeta.anomalyCount;
 
   const filteredStock = useMemo(() => {
-    const source = showAnomalies ? anomalousStock : stock;
-    return source.filter((row) => {
-      const locationText = row.locations.map((loc) => `${loc.location} ${loc.quantity}`).join(' ');
-      const matchesSearch = [row.artist, row.album_version, row.option, locationText]
-        .join(' ')
-        .toLowerCase()
-        .includes(stockFilters.search.toLowerCase());
-      const matchesCategory = !stockFilters.category || row.category === stockFilters.category;
-      const matchesLocation =
-        !stockFilters.location || row.locations.some((loc) => loc.location === stockFilters.location);
-      const matchesArtist = !stockFilters.artist || row.artist === stockFilters.artist;
-      const matchesAlbumVersion =
-        !stockFilters.album_version || row.album_version === stockFilters.album_version;
-      const matchesOption = !stockFilters.option || row.option === stockFilters.option;
-      return (
-        matchesSearch &&
-        matchesCategory &&
-        matchesLocation &&
-        matchesArtist &&
-        matchesAlbumVersion &&
-        matchesOption
-      );
-    });
-  }, [anomalousStock, showAnomalies, stock, stockFilters]);
-
-  const stockLocations = useMemo(
-    () => Array.from(new Set(stock.flatMap((row) => row.locations.map((loc) => loc.location)))).filter(Boolean).sort(),
-    [stock]
-  );
+    if (showAnomalies) {
+      return anomalousStock;
+    }
+    return stock;
+  }, [anomalousStock, showAnomalies, stock]);
 
   const locationOptions = useMemo(
-    () => Array.from(new Set([...locationPresets, ...stockLocations])).filter(Boolean).sort(),
-    [locationPresets, stockLocations]
+    () => Array.from(new Set([...locationPresets, ...inventoryMeta.locations])).filter(Boolean).sort(),
+    [inventoryMeta.locations, locationPresets]
   );
 
-  const filterLocationOptions = useMemo(() => stockLocations, [stockLocations]);
+  const filterLocationOptions = useMemo(
+    () => Array.from(new Set(inventoryMeta.locations)).filter(Boolean).sort(),
+    [inventoryMeta.locations]
+  );
 
   const artistOptions = useMemo(
-    () => Array.from(new Set(stock.map((row) => row.artist))).filter(Boolean).sort(),
-    [stock]
+    () => Array.from(new Set(inventoryMeta.artists)).filter(Boolean).sort(),
+    [inventoryMeta.artists]
   );
 
   const historyCategoryOptions = useMemo(
@@ -974,11 +1004,11 @@ export default function Home() {
     exportToExcel(rows, 'history.xlsx', 'History');
   }
 
-  const totalQuantity = inventorySummary.totalQuantity;
-  const distinctItems = inventorySummary.uniqueItems;
+  const totalQuantity = inventoryMeta.summary.totalQuantity;
+  const distinctItems = inventoryMeta.summary.uniqueItems;
   const locationBreakdown = useMemo(
-    () => Object.entries(inventorySummary.byLocation || {}).sort((a, b) => Number(b[1]) - Number(a[1])),
-    [inventorySummary.byLocation]
+    () => Object.entries(inventoryMeta.summary.byLocation || {}).sort((a, b) => Number(b[1]) - Number(a[1])),
+    [inventoryMeta.summary.byLocation]
   );
   const totalPages = Math.max(1, Math.ceil((inventoryPage.totalRows || 0) / inventoryPage.limit));
   const currentPage = Math.min(totalPages, Math.floor(inventoryPage.offset / inventoryPage.limit) + 1);
@@ -1077,6 +1107,14 @@ export default function Home() {
   useEffect(() => {
     fetchSessionInfo();
     refresh();
+    }, []);
+
+  useEffect(() => {
+    return () => {
+      if (searchTimeout.current) {
+        clearTimeout(searchTimeout.current);
+      }
+    };
   }, []);
 
   return (
@@ -1428,25 +1466,13 @@ export default function Home() {
                   <input
                     className="inline-input"
                     placeholder="검색 (아티스트/버전/옵션/위치)"
-                    value={stockFilters.search}
-                    onChange={(e) => setStockFilters({ ...stockFilters, search: e.target.value })}
-                  />
-                  <input
-                    className="inline-input"
-                    placeholder="앨범/버전 필터"
-                    value={stockFilters.album_version}
-                    onChange={(e) => applyInventoryFilters({ ...stockFilters, album_version: e.target.value })}
-                  />
-                  <input
-                    className="inline-input"
-                    placeholder="옵션 필터"
-                    value={stockFilters.option}
-                    onChange={(e) => applyInventoryFilters({ ...stockFilters, option: e.target.value })}
+                    value={stockFilters.q}
+                    onChange={(e) => handleSearchChange(e.target.value)}
                   />
                   <select
                     className="scroll-select"
                     value={stockFilters.artist}
-                    onChange={(e) => applyInventoryFilters({ ...stockFilters, artist: e.target.value })}
+                    onChange={(e) => applyInventoryFilters({ ...stockFilters, artist: e.target.value, q: stockFilters.q }, { immediate: true })}
                   >
                     <option value="">전체 아티스트</option>
                     {artistOptions.map((artist) => (
@@ -1458,7 +1484,7 @@ export default function Home() {
                   <select
                     className="scroll-select"
                     value={stockFilters.location}
-                    onChange={(e) => setStockFilters({ ...stockFilters, location: e.target.value })}
+                    onChange={(e) => applyInventoryFilters({ ...stockFilters, location: e.target.value }, { immediate: true })}
                   >
                     <option value="">전체 로케이션</option>
                     {filterLocationOptions.map((loc) => (
@@ -1467,33 +1493,26 @@ export default function Home() {
                       </option>
                     ))}
                   </select>
-                  <select
-                    className="compact"
-                    value={stockFilters.category}
-                    onChange={(e) => applyInventoryFilters({ ...stockFilters, category: e.target.value })}
-                  >
-                    <option value="">전체</option>
-                    <option value="album">앨범</option>
-                    <option value="md">MD</option>
-                  </select>
                   <button className="ghost" type="button" onClick={exportInventory}>
                     엑셀 다운로드
                   </button>
                 </div>
               }
             >
-              {anomalyCount > 0 && (
-                <div className="alert-row">
-                  <button
-                    type="button"
-                    className={showAnomalies ? 'warning-button active' : 'warning-button'}
-                    onClick={() => setShowAnomalies((prev) => !prev)}
-                  >
-                    이상재고 {anomalyCount}건
-                  </button>
-                  <span className="muted small-text">음수 수량만 따로 모아 볼 수 있습니다.</span>
-                </div>
-              )}
+              <div className="alert-row">
+                <button
+                  type="button"
+                  className={showAnomalies ? 'warning-button active' : 'warning-button'}
+                  disabled={anomalyCount === 0}
+                  onClick={() => {
+                    if (anomalyCount === 0) return;
+                    setShowAnomalies((prev) => !prev);
+                  }}
+                >
+                  이상재고 {anomalyCount}건
+                </button>
+                <span className="muted small-text">음수 수량만 따로 모아 볼 수 있습니다.</span>
+              </div>
               <div className="stats">
                 <div className="stat">
                   <p className="eyebrow">재고 수량</p>

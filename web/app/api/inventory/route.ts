@@ -8,9 +8,8 @@ const DEFAULT_LIMIT = 50;
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const artist = searchParams.get('artist') || undefined;
-  const category = searchParams.get('category') || undefined;
-  const album_version = searchParams.get('album_version') || undefined;
-  const option = searchParams.get('option') || undefined;
+  const location = searchParams.get('location') || undefined;
+  const q = searchParams.get('q') || undefined;
   const limitParam = Number(searchParams.get('limit'));
   const offsetParam = Number(searchParams.get('offset'));
   const limit = Number.isFinite(limitParam) ? Math.min(Math.max(1, limitParam), MAX_LIMIT) : DEFAULT_LIMIT;
@@ -27,38 +26,24 @@ export async function GET(req: Request) {
       .range(offset, offset + limit - 1);
 
     if (artist) query = query.eq('artist', artist);
-    if (category) query = query.eq('category', category);
-    if (album_version) query = query.eq('album_version', album_version);
-    if (option) query = query.eq('option', option);
+    if (location) query = query.eq('location', location);
+    if (q) {
+      const term = `%${q}%`;
+      query = query.or(
+        ['artist', 'album_version', 'option', 'location'].map((col) => `${col}.ilike.${term}`).join(',')
+      );
+    }
 
     const { data, error, count } = await query;
     if (error) {
       return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     }
 
-    const { data: summaryData, error: summaryError } = await supabaseAdmin.rpc('get_inventory_summary', {
-      p_artist: artist ?? null,
-      p_category: category ?? null,
-      p_album_version: album_version ?? null,
-      p_option: option ?? null,
-    });
-
-    if (summaryError) {
-      return NextResponse.json({ ok: false, error: summaryError.message }, { status: 500 });
-    }
-
-    const summary = summaryData?.[0] ?? {};
-
     return NextResponse.json(
       {
         ok: true,
         rows: data ?? [],
         page: { limit, offset, totalRows: count ?? 0 },
-        summary: {
-          totalQuantity: summary.total_quantity ?? 0,
-          uniqueItems: summary.unique_items ?? 0,
-          byLocation: summary.by_location ?? {},
-        },
       },
       {
         headers: {
