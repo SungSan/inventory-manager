@@ -40,6 +40,7 @@ type InventoryMeta = {
   anomalyCount: number;
   artists: string[];
   locations: string[];
+  categories: string[];
 };
 
 type InventoryEditDraft = InventoryLocation & Omit<InventoryRow, 'locations' | 'total_quantity' | 'key'>;
@@ -203,12 +204,14 @@ export default function Home() {
     q: '',
     artist: '',
     location: '',
+    category: '',
   });
   const [inventoryMeta, setInventoryMeta] = useState<InventoryMeta>({
     summary: { totalQuantity: 0, uniqueItems: 0, byLocation: {} },
     anomalyCount: 0,
     artists: [],
     locations: [],
+    categories: [],
   });
   const [inventoryPage, setInventoryPage] = useState({ limit: 50, offset: 0, totalRows: 0 });
   const [locationPresets, setLocationPresets] = useState<string[]>([]);
@@ -489,6 +492,7 @@ export default function Home() {
     const params = new URLSearchParams();
     if (filters.artist) params.set('artist', filters.artist);
     if (filters.location) params.set('location', filters.location);
+    if (filters.category) params.set('category', filters.category);
     if (filters.q) params.set('q', filters.q);
     if (options?.prefix !== undefined) params.set('prefix', options.prefix ?? '');
 
@@ -501,6 +505,7 @@ export default function Home() {
           anomalyCount: Number(payload.anomalyCount ?? 0),
           artists: payload.artists ?? [],
           locations: payload.locations ?? [],
+          categories: payload.categories ?? [],
         });
         return;
       }
@@ -522,6 +527,7 @@ export default function Home() {
     const params = new URLSearchParams();
     if (nextFilters.artist) params.set('artist', nextFilters.artist);
     if (nextFilters.location) params.set('location', nextFilters.location);
+    if (nextFilters.category) params.set('category', nextFilters.category);
     if (nextFilters.q) params.set('q', nextFilters.q);
     params.set('limit', String(nextLimit));
     params.set('offset', String(Math.max(0, nextOffset)));
@@ -582,14 +588,17 @@ export default function Home() {
     const histRes = await fetch('/api/history', { cache: 'no-store' });
     if (histRes.ok) {
       const payload = await histRes.json();
-      const rows = Array.isArray(payload)
-        ? payload.map((row: any) => ({
-            ...row,
-            option: row.option ?? '',
-            created_by_name: row.created_by_name ?? '',
-            created_by_department: row.created_by_department ?? '',
-          }))
+      const list = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.rows)
+        ? payload.rows
         : [];
+      const rows = list.map((row: any) => ({
+        ...row,
+        option: row.option ?? '',
+        created_by_name: row.created_by_name ?? '',
+        created_by_department: row.created_by_department ?? '',
+      }));
       setHistory(rows);
     } else {
       const payload = await histRes.json().catch(() => null);
@@ -934,6 +943,11 @@ export default function Home() {
   const artistOptions = useMemo(
     () => Array.from(new Set(inventoryMeta.artists)).filter(Boolean).sort(),
     [inventoryMeta.artists]
+  );
+
+  const categoryOptions = useMemo(
+    () => Array.from(new Set(inventoryMeta.categories)).filter(Boolean).sort(),
+    [inventoryMeta.categories]
   );
 
   const historyCategoryOptions = useMemo(
@@ -1478,6 +1492,18 @@ export default function Home() {
                     {artistOptions.map((artist) => (
                       <option key={artist} value={artist}>
                         {artist}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="scroll-select"
+                    value={stockFilters.category}
+                    onChange={(e) => applyInventoryFilters({ ...stockFilters, category: e.target.value }, { immediate: true })}
+                  >
+                    <option value="">전체 카테고리</option>
+                    {categoryOptions.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
                       </option>
                     ))}
                   </select>

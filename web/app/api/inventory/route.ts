@@ -9,6 +9,7 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const artist = searchParams.get('artist') || undefined;
   const location = searchParams.get('location') || undefined;
+  const category = searchParams.get('category') || undefined;
   const q = searchParams.get('q') || undefined;
   const limitParam = Number(searchParams.get('limit'));
   const offsetParam = Number(searchParams.get('offset'));
@@ -27,6 +28,7 @@ export async function GET(req: Request) {
 
     if (artist) query = query.eq('artist', artist);
     if (location) query = query.eq('location', location);
+    if (category) query = query.eq('category', category);
     if (q) {
       const term = `%${q}%`;
       query = query.or(

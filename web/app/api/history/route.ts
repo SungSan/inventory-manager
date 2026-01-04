@@ -23,13 +23,16 @@ export async function GET(req: Request) {
     if (data && data.length > 0) {
       console.info('[history] latest_created_at', { created_at: data[0]?.created_at });
     }
-    return NextResponse.json(data || [], {
-      headers: {
-        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-        Pragma: 'no-cache',
-        Expires: '0',
-        'Surrogate-Control': 'no-store',
-      },
-    });
+    return NextResponse.json(
+      { ok: true, rows: data || [] },
+      {
+        headers: {
+          'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+          Pragma: 'no-cache',
+          Expires: '0',
+          'Surrogate-Control': 'no-store',
+        },
+      }
+    );
   });
 }

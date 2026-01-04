@@ -6,33 +6,45 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const artist = searchParams.get('artist') || undefined;
   const location = searchParams.get('location') || undefined;
+  const category = searchParams.get('category') || undefined;
   const q = searchParams.get('q') || undefined;
   const prefix = searchParams.get('prefix') || undefined;
 
   return withAuth(['admin', 'operator', 'viewer'], async () => {
-    const [summaryRes, anomalyRes, artistsRes, locationsRes] = await Promise.all([
+    const [summaryRes, anomalyRes, artistsRes, locationsRes, categoriesRes] = await Promise.all([
       supabaseAdmin.rpc('get_inventory_summary_v2', {
         p_artist: artist ?? null,
+        p_category: category ?? null,
         p_location: location ?? null,
         p_q: q ?? null,
       }),
       supabaseAdmin.rpc('get_inventory_anomaly_count', {
         p_artist: artist ?? null,
+        p_category: category ?? null,
         p_location: location ?? null,
         p_q: q ?? null,
       }),
       supabaseAdmin.rpc('get_inventory_artists', {
         p_prefix: prefix ?? null,
+        p_category: category ?? null,
         p_location: location ?? null,
         p_q: q ?? null,
       }),
       supabaseAdmin.rpc('get_inventory_locations', {
+        p_category: category ?? null,
         p_artist: artist ?? null,
+        p_q: q ?? null,
+      }),
+      supabaseAdmin.rpc('get_inventory_categories', {
+        p_artist: artist ?? null,
+        p_location: location ?? null,
         p_q: q ?? null,
       }),
     ]);
 
-    const firstError = [summaryRes.error, anomalyRes.error, artistsRes.error, locationsRes.error].find(Boolean);
+    const firstError = [summaryRes.error, anomalyRes.error, artistsRes.error, locationsRes.error, categoriesRes.error].find(
+      Boolean
+    );
     if (firstError) {
       return NextResponse.json({ ok: false, error: firstError.message }, { status: 500 });
     }
@@ -48,9 +60,10 @@ export async function GET(req: Request) {
           uniqueItems: summaryRow.unique_items ?? 0,
           byLocation: summaryRow.by_location ?? {},
         },
-        anomalyCount: Number(anomalyRow.count ?? anomalyRow.total ?? 0),
+        anomalyCount: Number(anomalyRow.count ?? anomalyRow.total ?? anomalyRow.anomaly_count ?? 0) || 0,
         artists: artistsRes.data?.map((row: any) => row.artist).filter(Boolean) ?? [],
         locations: locationsRes.data?.map((row: any) => row.location).filter(Boolean) ?? [],
+        categories: categoriesRes.data?.map((row: any) => row.category).filter(Boolean) ?? [],
       },
       {
         headers: {
