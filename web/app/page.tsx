@@ -7,6 +7,7 @@ type InventoryLocation = {
   id: string;
   location: string;
   quantity: number;
+  editableId?: string | null;
 };
 
 type InventoryRow = {
@@ -17,6 +18,21 @@ type InventoryRow = {
   option: string;
   total_quantity: number;
   locations: InventoryLocation[];
+};
+
+type InventoryApiRow = {
+  artist: string;
+  category: string;
+  album_version: string;
+  option: string;
+  location: string;
+  quantity: number;
+};
+
+type InventorySummary = {
+  totalQuantity: number;
+  uniqueItems: number;
+  byLocation: Record<string, number>;
 };
 
 type InventoryEditDraft = InventoryLocation & Omit<InventoryRow, 'locations' | 'total_quantity' | 'key'>;
@@ -113,14 +129,42 @@ function formatDate(value: string) {
   return kstFormatter.format(new Date(value));
 }
 
-function aggregateLocations(rows: InventoryRow[]) {
-  const byLocation: Record<string, number> = {};
-  rows.forEach((row) => {
-    row.locations.forEach((loc) => {
-      byLocation[loc.location] = (byLocation[loc.location] ?? 0) + loc.quantity;
+function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
+  const grouped = new Map<string, InventoryRow>();
+
+  rows.forEach((row, idx) => {
+    const artist = row.artist ?? '';
+    const category = row.category ?? '';
+    const album_version = row.album_version ?? '';
+    const option = row.option ?? '';
+    const key = `${artist}|${category}|${album_version}|${option}`;
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        key,
+        artist,
+        category,
+        album_version,
+        option,
+        total_quantity: 0,
+        locations: [],
+      });
+    }
+
+    const entry = grouped.get(key)!;
+    entry.total_quantity += row.quantity ?? 0;
+    entry.locations.push({
+      id: `${key}|${row.location}|${idx}`,
+      editableId: null,
+      location: row.location,
+      quantity: row.quantity ?? 0,
     });
   });
-  return Object.entries(byLocation).sort((a, b) => b[1] - a[1]);
+
+  return Array.from(grouped.values()).map((row) => ({
+    ...row,
+    locations: row.locations.sort((a, b) => a.location.localeCompare(b.location)),
+  }));
 }
 
 export default function Home() {
@@ -148,7 +192,20 @@ export default function Home() {
   const [focusedStockKey, setFocusedStockKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<InventoryEditDraft | null>(null);
   const [activePanel, setActivePanel] = useState<'stock' | 'history' | 'admin'>('stock');
-  const [stockFilters, setStockFilters] = useState({ search: '', category: '', location: '', artist: '' });
+  const [stockFilters, setStockFilters] = useState({
+    search: '',
+    category: '',
+    location: '',
+    artist: '',
+    album_version: '',
+    option: '',
+  });
+  const [inventorySummary, setInventorySummary] = useState<InventorySummary>({
+    totalQuantity: 0,
+    uniqueItems: 0,
+    byLocation: {},
+  });
+  const [inventoryPage, setInventoryPage] = useState({ limit: 50, offset: 0, totalRows: 0 });
   const [locationPresets, setLocationPresets] = useState<string[]>([]);
   const [registerForm, setRegisterForm] = useState({
     username: '',
@@ -422,13 +479,52 @@ export default function Home() {
     alert('30분 이상 사용 기록이 없어 자동 로그아웃되었습니다. 다시 로그인하세요.');
   }
 
-  async function reloadInventory() {
-    const stockRes = await fetch('/api/inventory', { cache: 'no-store' });
+  async function reloadInventory(options?: { offset?: number; limit?: number; filters?: typeof stockFilters }) {
+    const nextFilters = options?.filters ?? stockFilters;
+    const nextOffset = options?.offset ?? inventoryPage.offset;
+    const nextLimit = options?.limit ?? inventoryPage.limit;
+
+    const params = new URLSearchParams();
+    if (nextFilters.artist) params.set('artist', nextFilters.artist);
+    if (nextFilters.category) params.set('category', nextFilters.category);
+    if (nextFilters.album_version) params.set('album_version', nextFilters.album_version);
+    if (nextFilters.option) params.set('option', nextFilters.option);
+    params.set('limit', String(nextLimit));
+    params.set('offset', String(Math.max(0, nextOffset)));
+
+    const stockRes = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
     if (stockRes.ok) {
-      setStock(await stockRes.json());
-    } else {
-      setStatus('재고 불러오기 실패');
+      const payload = await stockRes.json();
+      if (payload?.ok) {
+        if (options?.filters) {
+          setStockFilters(options.filters);
+        }
+        setInventoryPage({
+          limit: payload.page?.limit ?? nextLimit,
+          offset: payload.page?.offset ?? nextOffset,
+          totalRows: payload.page?.totalRows ?? 0,
+        });
+        setInventorySummary({
+          totalQuantity: payload.summary?.totalQuantity ?? 0,
+          uniqueItems: payload.summary?.uniqueItems ?? 0,
+          byLocation: payload.summary?.byLocation ?? {},
+        });
+        setStock(groupInventoryRows(payload.rows || []));
+        return;
+      }
     }
+    setStatus('재고 불러오기 실패');
+  }
+
+  function applyInventoryFilters(next: typeof stockFilters) {
+    setInventoryPage((prev) => ({ ...prev, offset: 0 }));
+    reloadInventory({ filters: next, offset: 0 });
+  }
+
+  function changeInventoryPage(nextOffset: number) {
+    const clamped = Math.max(0, nextOffset);
+    setInventoryPage((prev) => ({ ...prev, offset: clamped }));
+    reloadInventory({ offset: clamped });
   }
 
   async function reloadHistory() {
@@ -667,7 +763,7 @@ export default function Home() {
 
     if (row.locations[0]) {
       setEditDraft({
-        id: row.locations[0].id,
+        id: row.locations[0].editableId ?? row.locations[0].id,
         artist: row.artist,
         category: row.category,
         album_version: row.album_version,
@@ -696,7 +792,7 @@ export default function Home() {
     if (row.locations[0]) {
       setFocusedStockKey(row.key);
       setEditDraft({
-        id: row.locations[0].id,
+        id: row.locations[0].editableId ?? row.locations[0].id,
         artist: row.artist,
         category: row.category,
         album_version: row.album_version,
@@ -709,6 +805,10 @@ export default function Home() {
 
   async function saveInventoryEdit() {
     if (!editDraft) return;
+    if (!editDraft.id) {
+      alert('이 재고 항목은 편집할 수 없습니다.');
+      return;
+    }
     setInventoryActionStatus('재고 수정 중...');
     const res = await fetch(`/api/inventory/${editDraft.id}`, {
       method: 'PATCH',
@@ -733,6 +833,11 @@ export default function Home() {
     }
     const row = target && 'locations' in target ? { ...target, ...target.locations[0] } : target ?? editDraft;
     if (!row) return;
+    if (!row.id) {
+      alert('이 재고 항목은 삭제할 수 없습니다.');
+      setInventoryActionStatus('');
+      return;
+    }
     if (!confirm('선택한 재고를 삭제하시겠습니까?')) return;
     setInventoryActionStatus('삭제 중...');
     const res = await fetch(`/api/inventory/${row.id}`, { method: 'DELETE' });
@@ -770,7 +875,17 @@ export default function Home() {
       const matchesLocation =
         !stockFilters.location || row.locations.some((loc) => loc.location === stockFilters.location);
       const matchesArtist = !stockFilters.artist || row.artist === stockFilters.artist;
-      return matchesSearch && matchesCategory && matchesLocation && matchesArtist;
+      const matchesAlbumVersion =
+        !stockFilters.album_version || row.album_version === stockFilters.album_version;
+      const matchesOption = !stockFilters.option || row.option === stockFilters.option;
+      return (
+        matchesSearch &&
+        matchesCategory &&
+        matchesLocation &&
+        matchesArtist &&
+        matchesAlbumVersion &&
+        matchesOption
+      );
     });
   }, [anomalousStock, showAnomalies, stock, stockFilters]);
 
@@ -859,15 +974,16 @@ export default function Home() {
     exportToExcel(rows, 'history.xlsx', 'History');
   }
 
-  const totalQuantity = useMemo(
-    () => filteredStock.reduce((sum, row) => sum + row.total_quantity, 0),
-    [filteredStock]
+  const totalQuantity = inventorySummary.totalQuantity;
+  const distinctItems = inventorySummary.uniqueItems;
+  const locationBreakdown = useMemo(
+    () => Object.entries(inventorySummary.byLocation || {}).sort((a, b) => Number(b[1]) - Number(a[1])),
+    [inventorySummary.byLocation]
   );
-  const distinctItems = useMemo(
-    () => new Set(filteredStock.map((r) => `${r.artist}|${r.category}|${r.album_version}|${r.option}`)).size,
-    [filteredStock]
-  );
-  const locationBreakdown = useMemo(() => aggregateLocations(filteredStock), [filteredStock]);
+  const totalPages = Math.max(1, Math.ceil((inventoryPage.totalRows || 0) / inventoryPage.limit));
+  const currentPage = Math.min(totalPages, Math.floor(inventoryPage.offset / inventoryPage.limit) + 1);
+  const canPrevPage = inventoryPage.offset > 0;
+  const canNextPage = inventoryPage.offset + inventoryPage.limit < inventoryPage.totalRows;
 
   useEffect(() => {
     if (logoutTimeout.current) {
@@ -935,7 +1051,7 @@ export default function Home() {
     const defaultLocation = match?.locations?.[0];
     if (match && defaultLocation) {
       setEditDraft({
-        id: defaultLocation.id,
+        id: defaultLocation.editableId ?? defaultLocation.id,
         artist: match.artist,
         category: match.category,
         album_version: match.album_version,
@@ -1315,10 +1431,22 @@ export default function Home() {
                     value={stockFilters.search}
                     onChange={(e) => setStockFilters({ ...stockFilters, search: e.target.value })}
                   />
+                  <input
+                    className="inline-input"
+                    placeholder="앨범/버전 필터"
+                    value={stockFilters.album_version}
+                    onChange={(e) => applyInventoryFilters({ ...stockFilters, album_version: e.target.value })}
+                  />
+                  <input
+                    className="inline-input"
+                    placeholder="옵션 필터"
+                    value={stockFilters.option}
+                    onChange={(e) => applyInventoryFilters({ ...stockFilters, option: e.target.value })}
+                  />
                   <select
                     className="scroll-select"
                     value={stockFilters.artist}
-                    onChange={(e) => setStockFilters({ ...stockFilters, artist: e.target.value })}
+                    onChange={(e) => applyInventoryFilters({ ...stockFilters, artist: e.target.value })}
                   >
                     <option value="">전체 아티스트</option>
                     {artistOptions.map((artist) => (
@@ -1342,7 +1470,7 @@ export default function Home() {
                   <select
                     className="compact"
                     value={stockFilters.category}
-                    onChange={(e) => setStockFilters({ ...stockFilters, category: e.target.value })}
+                    onChange={(e) => applyInventoryFilters({ ...stockFilters, category: e.target.value })}
                   >
                     <option value="">전체</option>
                     <option value="album">앨범</option>
@@ -1419,14 +1547,14 @@ export default function Home() {
                                 <button
                                   key={`${row.key}-${loc.id}`}
                                   className="ghost small"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedStockKeys((prev) =>
-                                      prev.includes(row.key) ? prev : [...prev, row.key]
-                                    );
-                                    setFocusedStockKey(row.key);
-                                    setEditDraft({
-                                      id: loc.id,
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedStockKeys((prev) =>
+                                    prev.includes(row.key) ? prev : [...prev, row.key]
+                                  );
+                                  setFocusedStockKey(row.key);
+                                  setEditDraft({
+                                      id: loc.editableId ?? loc.id,
                                       artist: row.artist,
                                       category: row.category,
                                       album_version: row.album_version,
@@ -1458,7 +1586,7 @@ export default function Home() {
                                     if (loc) {
                                       setFocusedStockKey(row.key);
                                       setEditDraft({
-                                        id: loc.id,
+                                        id: loc.editableId ?? loc.id,
                                         artist: row.artist,
                                         category: row.category,
                                         album_version: row.album_version,
@@ -1563,6 +1691,29 @@ export default function Home() {
                     ))}
                   </tbody>
                 </table>
+                <div className="pagination-row">
+                  <span className="muted">
+                    총 {inventoryPage.totalRows.toLocaleString()}건 · {currentPage}/{totalPages} 페이지
+                  </span>
+                  <div className="section-actions">
+                    <button
+                      className="ghost"
+                      type="button"
+                      disabled={!canPrevPage}
+                      onClick={() => changeInventoryPage(inventoryPage.offset - inventoryPage.limit)}
+                    >
+                      이전
+                    </button>
+                    <button
+                      className="ghost"
+                      type="button"
+                      disabled={!canNextPage}
+                      onClick={() => changeInventoryPage(inventoryPage.offset + inventoryPage.limit)}
+                    >
+                      다음
+                    </button>
+                  </div>
+                </div>
               </div>
             </Section>
           </div>

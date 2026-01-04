@@ -2,74 +2,69 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../lib/supabase';
 import { withAuth } from '../../../lib/auth';
 
-type InventoryLocation = {
-  id: string;
-  location: string;
-  quantity: number;
-};
+const MAX_LIMIT = 200;
+const DEFAULT_LIMIT = 50;
 
-type InventoryRow = {
-  key: string;
-  artist: string;
-  category: string;
-  album_version: string;
-  option: string;
-  total_quantity: number;
-  locations: InventoryLocation[];
-};
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const artist = searchParams.get('artist') || undefined;
+  const category = searchParams.get('category') || undefined;
+  const album_version = searchParams.get('album_version') || undefined;
+  const option = searchParams.get('option') || undefined;
+  const limitParam = Number(searchParams.get('limit'));
+  const offsetParam = Number(searchParams.get('offset'));
+  const limit = Number.isFinite(limitParam) ? Math.min(Math.max(1, limitParam), MAX_LIMIT) : DEFAULT_LIMIT;
+  const offset = Number.isFinite(offsetParam) && offsetParam > 0 ? offsetParam : 0;
 
-export async function GET() {
   return withAuth(['admin', 'operator', 'viewer'], async () => {
-    const { data, error } = await supabaseAdmin
-      .from('inventory')
-      .select('id, quantity, location, items:items(artist, category, album_version, option)')
-      .order('updated_at', { ascending: false });
+    let query = supabaseAdmin
+      .from('inventory_view')
+      .select('artist,category,album_version,option,location,quantity', { count: 'exact' })
+      .order('artist', { ascending: true })
+      .order('album_version', { ascending: true })
+      .order('option', { ascending: true })
+      .order('location', { ascending: true })
+      .range(offset, offset + limit - 1);
 
+    if (artist) query = query.eq('artist', artist);
+    if (category) query = query.eq('category', category);
+    if (album_version) query = query.eq('album_version', album_version);
+    if (option) query = query.eq('option', option);
+
+    const { data, error, count } = await query;
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     }
 
-    const grouped = new Map<string, InventoryRow>();
-    const order: string[] = [];
-
-    (data || []).forEach((row: any) => {
-      const artist = row.items?.artist ?? '';
-      const category = row.items?.category ?? '';
-      const album_version = row.items?.album_version ?? '';
-      const option = row.items?.option ?? '';
-      const key = `${artist}|${category}|${album_version}|${option}`;
-
-      if (!grouped.has(key)) {
-        order.push(key);
-        grouped.set(key, {
-          key,
-          artist,
-          category,
-          album_version,
-          option,
-          total_quantity: 0,
-          locations: [],
-        });
-      }
-
-      const entry = grouped.get(key)!;
-      entry.total_quantity += row.quantity ?? 0;
-      entry.locations.push({
-        id: row.id,
-        location: row.location,
-        quantity: row.quantity,
-      });
+    const { data: summaryData, error: summaryError } = await supabaseAdmin.rpc('get_inventory_summary', {
+      p_artist: artist ?? null,
+      p_category: category ?? null,
+      p_album_version: album_version ?? null,
+      p_option: option ?? null,
     });
 
-    const rows: InventoryRow[] = order.map((key) => grouped.get(key)!).map((row) => ({
-      ...row,
-      locations: row.locations.sort((a, b) => a.location.localeCompare(b.location)),
-    }));
+    if (summaryError) {
+      return NextResponse.json({ ok: false, error: summaryError.message }, { status: 500 });
+    }
 
-    return NextResponse.json(rows, {
-      headers: {
-        'Cache-Control': 'no-store',
+    const summary = summaryData?.[0] ?? {};
+
+    return NextResponse.json(
+      {
+        ok: true,
+        rows: data ?? [],
+        page: { limit, offset, totalRows: count ?? 0 },
+        summary: {
+          totalQuantity: summary.total_quantity ?? 0,
+          uniqueItems: summary.unique_items ?? 0,
+          byLocation: summary.by_location ?? {},
+        },
       },
-    });
+      {
+        headers: {
+          'Cache-Control': 'no-store',
+        },
+      }
+    );
   });
 }
