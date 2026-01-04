@@ -12,7 +12,7 @@ export async function GET(req: Request) {
     const { data, error } = await supabaseAdmin
       .from('movements_view')
       .select(
-        'created_at, direction, artist, category, album_version, option, location, quantity, memo, item_id, created_by, created_by_name, created_by_department'
+        'id, created_at, direction, artist, category, album_version, option, location, quantity, memo, item_id, created_by, created_by_name, created_by_department'
       )
       .order('created_at', { ascending: false })
       .limit(200);

@@ -135,6 +135,7 @@ join public.items i on inv.item_id = i.id;
 drop view if exists public.movements_view;
 create view public.movements_view as
 select
+  m.id,
   m.created_at,
   m.direction,
   coalesce(i.artist, '') as artist,
