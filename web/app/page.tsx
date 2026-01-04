@@ -436,6 +436,7 @@ export default function Home() {
             ...row,
             option: row.option ?? '',
             created_by_name: row.created_by_name ?? '',
+            created_by_department: row.created_by_department ?? '',
           }))
         : [];
       setHistory(rows);

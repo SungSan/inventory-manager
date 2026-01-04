@@ -146,7 +146,8 @@ select
   m.memo,
   m.item_id,
   m.created_by,
-  coalesce(up.full_name, u.email, m.created_by::text, '') as created_by_name
+  coalesce(up.full_name, u.email, m.created_by::text, '') as created_by_name,
+  coalesce(up.department, '') as created_by_department
 from public.movements m
 left join public.items i on i.id = m.item_id
 left join public.users u on u.id = m.created_by
@@ -430,6 +431,40 @@ grant execute on function public.record_movement(
   text, text, text, text, text, integer, text, text, uuid, text
 ) to authenticated, service_role;
 
+-- diagnostics helper to confirm connected database and counts
+create or replace function public.diag_db_snapshot()
+returns json as $$
+declare
+  v_db text;
+  v_now timestamptz := now();
+  v_movements_cnt bigint;
+  v_movements_max timestamptz;
+  v_mv_cnt bigint;
+  v_mv_max timestamptz;
+  v_users_cnt bigint;
+  v_profiles_cnt bigint;
+begin
+  select current_database() into v_db;
+  select count(*), max(created_at) into v_movements_cnt, v_movements_max from public.movements;
+  select count(*), max(created_at) into v_mv_cnt, v_mv_max from public.movements_view;
+  select count(*) into v_users_cnt from public.users;
+  select count(*) into v_profiles_cnt from public.user_profiles;
+
+  return json_build_object(
+    'db', v_db,
+    'now_utc', v_now,
+    'movements_cnt', v_movements_cnt,
+    'movements_max', v_movements_max,
+    'movements_view_cnt', v_mv_cnt,
+    'movements_view_max', v_mv_max,
+    'users_cnt', v_users_cnt,
+    'profiles_cnt', v_profiles_cnt
+  );
+end;
+$$ language plpgsql security definer;
+
+grant execute on function public.diag_db_snapshot() to authenticated, service_role;
+
 -- smoke test
 -- select * from public.inventory_view limit 1;
 -- select public.record_movement('A','album','v1','', 'loc1', 1, 'IN', 'test', null, 'k1');
@@ -489,3 +524,23 @@ exception
     raise;
 end;
 $$ language plpgsql security definer;
+
+-- RLS safeguards to allow authenticated users to read their own records when client-side checks are used
+alter table if exists public.users enable row level security;
+alter table if exists public.user_profiles enable row level security;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies where schemaname = 'public' and tablename = 'users' and policyname = 'users_select_own'
+  ) then
+    create policy users_select_own on public.users for select to authenticated using (id = auth.uid());
+  end if;
+
+  if not exists (
+    select 1 from pg_policies where schemaname = 'public' and tablename = 'user_profiles' and policyname = 'profiles_select_own'
+  ) then
+    create policy profiles_select_own on public.user_profiles for select to authenticated using (user_id = auth.uid());
+  end if;
+end;
+$$;
