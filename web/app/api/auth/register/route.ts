@@ -61,13 +61,8 @@ export async function POST(req: Request) {
       email,
       role: 'viewer',
       approved: false,
-      active: true,
-      full_name: fullName || email,
-      department: dept,
-      contact: contactInfo,
-      purpose: userPurpose,
+      active: false,
       password_hash: passwordHash,
-      created_at: new Date().toISOString(),
     });
 
     if (userError) {
@@ -82,7 +77,7 @@ export async function POST(req: Request) {
       username: normalizedUsername,
       approved: false,
       role: 'viewer',
-      full_name: fullName || email,
+      full_name: fullName,
       department: dept,
       contact: contactInfo,
       purpose: userPurpose,

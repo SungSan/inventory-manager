@@ -58,6 +58,10 @@ alter table public.users add column if not exists approved boolean not null defa
 create table if not exists public.user_profiles (
   user_id uuid primary key references public.users(id) on delete cascade,
   username text not null unique,
+  full_name text not null default '',
+  department text not null default '',
+  contact text not null default '',
+  purpose text not null default '',
   approved boolean not null default false,
   role public.user_role not null default 'viewer',
   requested_at timestamptz not null default now(),
@@ -134,6 +138,7 @@ select
   coalesce(p.purpose, '') as purpose,
   u.role,
   coalesce(u.approved, false) as approved,
+  u.active,
   u.created_at
 from public.users u
 left join public.user_profiles p on p.user_id = u.id;

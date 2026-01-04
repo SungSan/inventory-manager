@@ -12,6 +12,7 @@ type AdminUserRow = {
   purpose?: string | null;
   role: Role;
   approved: boolean;
+  active: boolean;
   created_at: string;
 };
 
@@ -20,6 +21,7 @@ function mapAdminUser(row: AdminUserRow) {
     id: row.id,
     username: (row.email ?? '').split('@')[0] || row.email || '',
     approved: Boolean(row.approved),
+    active: Boolean(row.active),
     role: (row.role as Role | undefined) ?? 'viewer',
     email: row.email ?? '',
     full_name: row.full_name ?? '',
@@ -34,7 +36,7 @@ export async function GET() {
   return withAuth(['admin'], async () => {
     const { data, error } = await supabaseAdmin
       .from('admin_users_view')
-      .select('id,email,full_name,department,contact,purpose,role,approved,created_at')
+      .select('id,email,full_name,department,contact,purpose,role,approved,active,created_at')
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -73,6 +75,7 @@ export async function PATCH(req: Request) {
 
     if (typeof approved === 'boolean') {
       updates.approved = approved;
+      updates.active = approved;
     }
 
     if (typeof role !== 'undefined') {
@@ -89,7 +92,7 @@ export async function PATCH(req: Request) {
 
     const { data: existingUser, error: fetchUserError } = await supabaseAdmin
       .from('users')
-      .select('approved, role')
+      .select('approved, role, active')
       .eq('id', id)
       .single();
 
@@ -104,7 +107,7 @@ export async function PATCH(req: Request) {
       .from('users')
       .update(updates)
       .eq('id', id)
-      .select('id,email,full_name,department,contact,purpose,role,approved,created_at')
+      .select('id,email,full_name,department,contact,purpose,role,approved,active,created_at')
       .single();
 
     if (updateUsersError) {
@@ -145,7 +148,7 @@ export async function PATCH(req: Request) {
       if (profileError || !profileRow) {
         await supabaseAdmin
           .from('users')
-          .update({ approved: existingUser?.approved, role: existingUser?.role })
+          .update({ approved: existingUser?.approved, role: existingUser?.role, active: existingUser?.active })
           .eq('id', id);
 
         return NextResponse.json(
@@ -164,7 +167,7 @@ export async function PATCH(req: Request) {
 
     const { data: viewRow, error: viewError } = await supabaseAdmin
       .from('admin_users_view')
-      .select('id,email,full_name,department,contact,purpose,role,approved,created_at')
+      .select('id,email,full_name,department,contact,purpose,role,approved,active,created_at')
       .eq('id', id)
       .single();
 
