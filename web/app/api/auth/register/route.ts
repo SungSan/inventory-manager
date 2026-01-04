@@ -56,7 +56,7 @@ export async function POST(req: Request) {
 
     const passwordHash = await bcrypt.hash(password.toString(), 10);
 
-    await supabaseAdmin.from('users').upsert({
+    const { error: userError } = await supabaseAdmin.from('users').upsert({
       id: authId,
       email,
       role: 'viewer',
@@ -67,20 +67,39 @@ export async function POST(req: Request) {
       contact: contactInfo,
       purpose: userPurpose,
       password_hash: passwordHash,
+      created_at: new Date().toISOString(),
     });
 
-    await supabaseAdmin.from('user_profiles').upsert({
+    if (userError) {
+      return NextResponse.json(
+        { ok: false, step: 'upsert_users', error: userError.message },
+        { status: 500 }
+      );
+    }
+
+    const { error: profileError } = await supabaseAdmin.from('user_profiles').upsert({
       user_id: authId,
       username: normalizedUsername,
       approved: false,
       role: 'viewer',
+      full_name: fullName || email,
+      department: dept,
+      contact: contactInfo,
+      purpose: userPurpose,
       requested_at: new Date().toISOString(),
       approved_at: null,
       approved_by: null,
     });
 
+    if (profileError) {
+      return NextResponse.json(
+        { ok: false, step: 'upsert_user_profiles', error: profileError.message },
+        { status: 500 }
+      );
+    }
+
     return NextResponse.json({ ok: true, pending: true });
   } catch (err: any) {
-    return NextResponse.json({ error: err?.message || '계정 생성 실패' }, { status: 400 });
+    return NextResponse.json({ ok: false, step: 'register', error: err?.message || '계정 생성 실패' }, { status: 400 });
   }
 }
