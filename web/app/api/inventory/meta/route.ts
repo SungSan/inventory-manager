@@ -9,6 +9,9 @@ export async function GET(req: Request) {
   const category = searchParams.get('category') || undefined;
   const q = searchParams.get('q') || undefined;
   const prefix = searchParams.get('prefix') || undefined;
+  const albumVersion = searchParams.get('album_version') || undefined;
+
+  const qTerm = albumVersion || q || undefined;
 
   return withAuth(['admin', 'operator', 'viewer'], async () => {
     const [summaryRes, anomalyRes, artistsRes, locationsRes, categoriesRes] = await Promise.all([
@@ -16,29 +19,29 @@ export async function GET(req: Request) {
         p_artist: artist ?? null,
         p_category: category ?? null,
         p_location: location ?? null,
-        p_q: q ?? null,
+        p_q: qTerm ?? null,
       }),
       supabaseAdmin.rpc('get_inventory_anomaly_count', {
         p_artist: artist ?? null,
         p_category: category ?? null,
         p_location: location ?? null,
-        p_q: q ?? null,
+        p_q: qTerm ?? null,
       }),
       supabaseAdmin.rpc('get_inventory_artists', {
         p_prefix: prefix ?? null,
         p_category: category ?? null,
         p_location: location ?? null,
-        p_q: q ?? null,
+        p_q: qTerm ?? null,
       }),
       supabaseAdmin.rpc('get_inventory_locations', {
         p_artist: artist ?? null,
         p_category: category ?? null,
-        p_q: q ?? null,
+        p_q: qTerm ?? null,
       }),
       supabaseAdmin.rpc('get_inventory_categories', {
         p_artist: artist ?? null,
         p_location: location ?? null,
-        p_q: q ?? null,
+        p_q: qTerm ?? null,
       }),
     ]);
 

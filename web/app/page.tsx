@@ -217,10 +217,13 @@ export default function Home() {
   const [activePanel, setActivePanel] = useState<'stock' | 'history' | 'admin'>('stock');
   const [stockFilters, setStockFilters] = useState({
     q: '',
+    albumVersion: '',
     artist: '',
     location: '',
     category: '',
   });
+  const [searchTerm, setSearchTerm] = useState('');
+  const [albumVersionTerm, setAlbumVersionTerm] = useState('');
   const [inventoryMeta, setInventoryMeta] = useState<InventoryMeta>({
     summary: { totalQuantity: 0, uniqueItems: 0, byLocation: {} },
     anomalyCount: 0,
@@ -263,7 +266,6 @@ export default function Home() {
   const [newLocation, setNewLocation] = useState('');
   const [inventoryActionStatus, setInventoryActionStatus] = useState('');
   const logoutTimeout = useRef<NodeJS.Timeout | null>(null);
-  const searchTimeout = useRef<NodeJS.Timeout | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const stockRef = useRef<HTMLDivElement | null>(null);
   const historyRef = useRef<HTMLDivElement | null>(null);
@@ -505,6 +507,7 @@ export default function Home() {
     if (filters.location) params.set('location', filters.location);
     if (filters.category) params.set('category', filters.category);
     if (filters.q) params.set('q', filters.q);
+    if (filters.albumVersion) params.set('album_version', filters.albumVersion);
     if (options?.prefix !== undefined) params.set('prefix', options.prefix ?? '');
 
     const metaRes = await fetch(`/api/inventory/meta?${params.toString()}`, { cache: 'no-store' });
@@ -540,6 +543,7 @@ export default function Home() {
     if (nextFilters.location) params.set('location', nextFilters.location);
     if (nextFilters.category) params.set('category', nextFilters.category);
     if (nextFilters.q) params.set('q', nextFilters.q);
+    if (nextFilters.albumVersion) params.set('album_version', nextFilters.albumVersion);
     params.set('limit', String(nextLimit));
     params.set('offset', String(Math.max(0, nextOffset)));
 
@@ -566,27 +570,28 @@ export default function Home() {
     setStatus('재고 불러오기 실패');
   }
 
-  function applyInventoryFilters(next: typeof stockFilters, options?: { immediate?: boolean }) {
+  function applyInventoryFilters(next: typeof stockFilters) {
     const nextOffset = 0;
     setInventoryPage((prev) => ({ ...prev, offset: nextOffset }));
     setStockFilters(next);
     reloadInventory({ filters: next, offset: nextOffset, prefix: next.q, fetchMeta: true });
-    if (options?.immediate && searchTimeout.current) {
-      clearTimeout(searchTimeout.current);
-    }
   }
 
-  function handleSearchChange(value: string) {
-    const next = { ...stockFilters, q: value };
-    setStockFilters(next);
-    setInventoryPage((prev) => ({ ...prev, offset: 0 }));
-    fetchInventoryMeta(next, { prefix: value });
-    if (searchTimeout.current) {
-      clearTimeout(searchTimeout.current);
-    }
-    searchTimeout.current = setTimeout(() => {
-      reloadInventory({ filters: next, offset: 0, fetchMeta: false });
-    }, 250);
+  function handleInventorySearchSubmit(e?: React.FormEvent) {
+    if (e) e.preventDefault();
+    const next = {
+      ...stockFilters,
+      q: searchTerm.trim(),
+      albumVersion: albumVersionTerm.trim(),
+    };
+    applyInventoryFilters(next);
+  }
+
+  function resetInventorySearch() {
+    setSearchTerm('');
+    setAlbumVersionTerm('');
+    const cleared = { ...stockFilters, q: '', albumVersion: '', artist: '', location: '', category: '' };
+    applyInventoryFilters(cleared);
   }
 
   function changeInventoryPage(nextOffset: number) {
@@ -932,19 +937,26 @@ export default function Home() {
       }
     }
 
+  const albumVersionFilter = stockFilters.albumVersion.trim().toLowerCase();
+
+  const baseStock = useMemo(() => {
+    if (!albumVersionFilter) return stock;
+    return stock.filter((row) => row.album_version.toLowerCase().includes(albumVersionFilter));
+  }, [albumVersionFilter, stock]);
+
   const anomalousStock = useMemo(
-    () => stock.filter((row) => row.locations.some((loc) => loc.quantity < 0)),
-    [stock]
+    () => baseStock.filter((row) => row.locations.some((loc) => loc.quantity < 0)),
+    [baseStock]
   );
 
-  const anomalyCount = inventoryMeta.anomalyCount;
+  const anomalyCount = anomalousStock.length;
 
   const filteredStock = useMemo(() => {
     if (showAnomalies) {
       return anomalousStock;
     }
-    return stock;
-  }, [anomalousStock, showAnomalies, stock]);
+    return baseStock;
+  }, [anomalousStock, baseStock, showAnomalies]);
 
   const locationOptions = useMemo(
     () => Array.from(new Set([...locationPresets, ...inventoryMeta.locations])).filter(Boolean).sort(),
@@ -1148,15 +1160,8 @@ export default function Home() {
     refresh();
     }, []);
 
-  useEffect(() => {
-    return () => {
-      if (searchTimeout.current) {
-        clearTimeout(searchTimeout.current);
-      }
-    };
-  }, []);
-
   return (
+    <>
     <main className="page">
       <header className="page-header compact-header">
         <div>
@@ -1504,51 +1509,69 @@ export default function Home() {
               title="현재 재고"
               actions={
                 <div className="filter-row">
-                  <input
-                    className="inline-input"
-                    placeholder="검색 (아티스트/버전/옵션/위치)"
-                    value={stockFilters.q}
-                    onChange={(e) => handleSearchChange(e.target.value)}
-                  />
-                  <select
-                    className="scroll-select"
-                    value={stockFilters.artist}
-                    onChange={(e) => applyInventoryFilters({ ...stockFilters, artist: e.target.value, q: stockFilters.q }, { immediate: true })}
-                  >
-                    <option value="">전체 아티스트</option>
-                    {artistOptions.map((artist) => (
-                      <option key={artist} value={artist}>
-                        {artist}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    className="scroll-select"
-                    value={stockFilters.category}
-                    onChange={(e) => applyInventoryFilters({ ...stockFilters, category: e.target.value }, { immediate: true })}
-                  >
-                    <option value="">전체 카테고리</option>
-                    {categoryOptions.map((cat) => (
-                      <option key={cat} value={cat}>
-                        {cat}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    className="scroll-select"
-                    value={stockFilters.location}
-                    onChange={(e) => applyInventoryFilters({ ...stockFilters, location: e.target.value }, { immediate: true })}
-                  >
-                    <option value="">전체 로케이션</option>
-                    {filterLocationOptions.map((loc) => (
-                      <option key={loc} value={loc}>
-                        {loc}
-                      </option>
-                    ))}
-                  </select>
-                  <button className="ghost" type="button" onClick={exportInventory}>
-                    엑셀 다운로드
-                  </button>
+                  <form className="filter-row inventory-filters" onSubmit={handleInventorySearchSubmit}>
+                    <div className="filter-stack">
+                      <input
+                        className="inline-input"
+                        placeholder="검색 (아티스트/버전/옵션/위치)"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                      />
+                      <input
+                        className="inline-input"
+                        placeholder="앨범/버전"
+                        value={albumVersionTerm}
+                        onChange={(e) => setAlbumVersionTerm(e.target.value)}
+                      />
+                      <button className="primary" type="submit">
+                        검색
+                      </button>
+                      <button className="ghost" type="button" onClick={resetInventorySearch}>
+                        초기화
+                      </button>
+                    </div>
+                    <div className="filter-stack wrap">
+                      <select
+                        className="scroll-select"
+                        value={stockFilters.artist}
+                        onChange={(e) => applyInventoryFilters({ ...stockFilters, artist: e.target.value })}
+                      >
+                        <option value="">전체 아티스트</option>
+                        {artistOptions.map((artist) => (
+                          <option key={artist} value={artist}>
+                            {artist}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className="scroll-select"
+                        value={stockFilters.category}
+                        onChange={(e) => applyInventoryFilters({ ...stockFilters, category: e.target.value })}
+                      >
+                        <option value="">전체 카테고리</option>
+                        {categoryOptions.map((cat) => (
+                          <option key={cat} value={cat}>
+                            {cat}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className="scroll-select"
+                        value={stockFilters.location}
+                        onChange={(e) => applyInventoryFilters({ ...stockFilters, location: e.target.value })}
+                      >
+                        <option value="">전체 로케이션</option>
+                        {filterLocationOptions.map((loc) => (
+                          <option key={loc} value={loc}>
+                            {loc}
+                          </option>
+                        ))}
+                      </select>
+                      <button className="ghost" type="button" onClick={exportInventory}>
+                        엑셀 다운로드
+                      </button>
+                    </div>
+                  </form>
                 </div>
               }
             >
@@ -1579,8 +1602,9 @@ export default function Home() {
                 </div>
                 <div className="stat">
                   <p className="eyebrow">로케이션 분포</p>
-                  <div className="pill-row">
-                    {locationBreakdown.slice(0, 4).map(([loc, qty]) => (
+                  <div className="pill-row wrap">
+                    {locationBreakdown.length === 0 && <span className="muted">로케이션 정보가 없습니다.</span>}
+                    {locationBreakdown.map(([loc, qty]) => (
                       <Pill key={loc}>
                         {loc}: {qty.toLocaleString()}
                       </Pill>
@@ -1588,7 +1612,7 @@ export default function Home() {
                   </div>
                 </div>
               </div>
-              <div className="table-wrapper">
+              <div className="table-wrapper responsive-table">
                 <table className="table">
                   <thead>
                     <tr>
@@ -1889,7 +1913,7 @@ export default function Home() {
                 <td className="align-right">{h.quantity.toLocaleString()}</td>
                 <td className="align-center">
                   <div className="stacked-label">
-                    <strong>{h.created_by_name || '-'}</strong>
+                    <strong>{h.created_by_name || h.created_by || '-'}</strong>
                     <span className="muted small-text">{h.created_by_department || '부서 정보 없음'}</span>
                   </div>
                 </td>
@@ -1945,11 +1969,11 @@ export default function Home() {
                 <button className="ghost" onClick={closeAccountManager}>닫기</button>
               </div>
             </div>
-            <p className="muted" style={{ marginTop: 0 }}>
-              ID, 실명, 부서를 확인하고 권한과 승인 여부를 바로 수정할 수 있습니다.
-            </p>
-            <div className="table-wrapper">
-              <table className="table compact-table">
+              <p className="muted" style={{ marginTop: 0 }}>
+                ID, 실명, 부서를 확인하고 권한과 승인 여부를 바로 수정할 수 있습니다.
+              </p>
+              <div className="table-wrapper responsive-table">
+                <table className="table compact-table">
                 <thead>
                   <tr>
                     <th>ID</th>
@@ -2008,5 +2032,61 @@ export default function Home() {
         </div>
       )}
     </main>
+    <style jsx global>{`
+      .inventory-filters {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        align-items: stretch;
+      }
+
+      .filter-stack {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+      }
+
+      .filter-stack.wrap {
+        justify-content: flex-start;
+      }
+
+      @media (min-width: 768px) {
+        .inventory-filters {
+          flex-direction: column;
+          gap: 0.75rem;
+        }
+        .filter-stack {
+          flex-wrap: wrap;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .inventory-filters .inline-input,
+        .inventory-filters select,
+        .inventory-filters button {
+          width: 100%;
+        }
+        .filter-row.inventory-filters {
+          align-items: stretch;
+        }
+      }
+
+      .responsive-table {
+        overflow-x: auto;
+      }
+
+      .stats {
+        display: grid;
+        gap: 0.75rem;
+      }
+
+      @media (min-width: 640px) {
+        .stats {
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        }
+      }
+    `}</style>
+    </>
   );
 }
