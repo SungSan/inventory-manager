@@ -28,7 +28,7 @@ export async function POST(req: Request) {
 
     const trimmedArtist = String(artist ?? '').trim();
     const trimmedAlbum = String(album_version ?? '').trim();
-    const normalizedQuantity = Number(quantity);
+    const normalizedQuantity = parseInt(quantity, 10);
     const normalizedMemo = String(memo ?? '').trim();
     const normalizedDirection = String(direction ?? '').toUpperCase();
     const normalizedCategory = String(category ?? '').trim();
@@ -55,6 +55,12 @@ export async function POST(req: Request) {
     if (!Number.isFinite(normalizedQuantity) || normalizedQuantity <= 0) {
       const error = 'quantity must be a positive number';
       console.error({ step: 'validation', error, payload: { quantity } });
+      return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
+    }
+
+    if (normalizedDirection !== 'IN' && normalizedDirection !== 'OUT') {
+      const error = 'direction must be IN or OUT';
+      console.error({ step: 'validation', error, payload: { direction } });
       return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
 
@@ -110,7 +116,15 @@ export async function POST(req: Request) {
         );
       }
 
-      const result = (data as any) || {};
+      if (!data) {
+        console.error({ step: 'record_movement_rpc', error: 'empty response', payload });
+        return NextResponse.json(
+          { ok: false, step: 'record_movement_rpc', error: 'empty response from record_movement' },
+          { status: 500 }
+        );
+      }
+
+      const result = data as any;
       return NextResponse.json({ ok: true, result });
     } catch (error: any) {
       console.error({ step: 'record_movement_unexpected', payload, error });
