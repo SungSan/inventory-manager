@@ -553,22 +553,20 @@ export default function Home() {
       });
 
       const payload = await res.json().catch(() => null);
-      const idempotent = payload?.idempotent === true;
-      const hasFlags = payload ? 'movement_inserted' in payload || 'inventory_updated' in payload : false;
-      const movementInserted = payload?.movement_inserted === true;
-      const inventoryUpdated = payload?.inventory_updated === true;
-      const legacyOk = payload?.ok === true && !hasFlags;
+      const ok = payload?.ok === true;
+      const duplicated = payload?.duplicated === true;
 
-      if (!res.ok || (!idempotent && !legacyOk && !(movementInserted && inventoryUpdated))) {
+      if (!res.ok || !ok) {
         const message = payload?.error || payload?.message || `입출고 실패 (${res.status})`;
-        console.error('movement submit error:', { message, payload });
-        alert(message);
-        setStatus(message);
+        const stepMessage = payload?.step ? `${message} [${payload.step}]` : message;
+        console.error('movement submit error:', { message: stepMessage, payload });
+        alert(stepMessage);
+        setStatus(stepMessage);
         return;
       }
 
       await Promise.all([reloadInventory(), reloadHistory()]);
-      setStatus('기록 완료');
+      setStatus(duplicated ? '중복 요청으로 기존 결과 유지' : '기록 완료');
       setMovement((prev) => ({ ...EMPTY_MOVEMENT, direction: prev.direction }));
     } catch (err: any) {
       const message = err?.message || '요청 중 오류가 발생했습니다.';
