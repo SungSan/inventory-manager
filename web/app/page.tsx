@@ -880,6 +880,12 @@ export default function Home() {
   }, [activePanel, history.length, stock.length]);
 
   useEffect(() => {
+    if (activePanel === 'history') {
+      reloadHistory();
+    }
+  }, [activePanel]);
+
+  useEffect(() => {
     if (!focusedStockKey) {
       setEditDraft(null);
       return;

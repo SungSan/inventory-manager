@@ -25,7 +25,10 @@ export async function GET(req: Request) {
     }
     return NextResponse.json(data || [], {
       headers: {
-        'Cache-Control': 'no-store, max-age=0',
+        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+        Pragma: 'no-cache',
+        Expires: '0',
+        'Surrogate-Control': 'no-store',
       },
     });
   });
