@@ -137,6 +137,21 @@ function formatDate(value: string) {
   return kstFormatter.format(new Date(value));
 }
 
+function kstDate(offsetDays = 0) {
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+  now.setDate(now.getDate() + offsetDays);
+  return now;
+}
+
+function toKstDateInput(date: Date) {
+  const y = date.getFullYear();
+  const m = `${date.getMonth() + 1}`.padStart(2, '0');
+  const d = `${date.getDate()}`.padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+const parseKstDate = (value: string) => Date.parse(`${value}T00:00:00+09:00`);
+
 function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
   const grouped = new Map<string, InventoryRow>();
 
@@ -224,18 +239,14 @@ export default function Home() {
     contact: '',
     purpose: '',
   });
-  const today = useMemo(() => new Date(), []);
-  const sevenDaysAgo = useMemo(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 7);
-    return d;
-  }, []);
+  const defaultHistoryTo = useMemo(() => toKstDateInput(kstDate(0)), []);
+  const defaultHistoryFrom = useMemo(() => toKstDateInput(kstDate(-15)), []);
   const [historyFilters, setHistoryFilters] = useState({
     search: '',
     direction: '',
     category: '',
-    from: sevenDaysAgo.toISOString().slice(0, 10),
-    to: today.toISOString().slice(0, 10)
+    from: defaultHistoryFrom,
+    to: defaultHistoryTo
   });
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
@@ -585,7 +596,12 @@ export default function Home() {
   }
 
   async function reloadHistory() {
-    const histRes = await fetch('/api/history', { cache: 'no-store' });
+    const params = new URLSearchParams();
+    if (historyFilters.from) params.set('startDate', historyFilters.from);
+    if (historyFilters.to) params.set('endDate', historyFilters.to);
+
+    const qs = params.toString();
+    const histRes = await fetch(qs ? `/api/history?${qs}` : '/api/history', { cache: 'no-store' });
     if (histRes.ok) {
       const payload = await histRes.json();
       const list = Array.isArray(payload)
@@ -956,9 +972,8 @@ export default function Home() {
   );
 
   const filteredHistory = useMemo(() => {
-    const parseKst = (value: string) => Date.parse(`${value}T00:00:00+09:00`);
-    const fromDateMs = historyFilters.from ? parseKst(historyFilters.from) : null;
-    const toDateMs = historyFilters.to ? parseKst(historyFilters.to) + 24 * 60 * 60 * 1000 : null;
+    const fromDateMs = historyFilters.from ? parseKstDate(historyFilters.from) : null;
+    const toDateMs = historyFilters.to ? parseKstDate(historyFilters.to) + 24 * 60 * 60 * 1000 : null;
     return history.filter((row) => {
       const matchesDirection = !historyFilters.direction || row.direction === historyFilters.direction;
       const matchesCategory = !historyFilters.category || row.category === historyFilters.category;
@@ -1011,7 +1026,7 @@ export default function Home() {
       option: h.option ?? '',
       location: h.location,
       quantity: h.quantity,
-      created_by_name: h.created_by_name ?? h.created_by ?? '',
+      created_by_name: h.created_by_name || '-',
       created_by_department: h.created_by_department ?? '',
       memo: h.memo ?? ''
     }));
@@ -1841,7 +1856,7 @@ export default function Home() {
         }
       >
         <p className="muted" style={{ margin: '0 0 0.5rem' }}>
-          기본적으로 최근 7일 데이터를 보여주며, 달력으로 기간을 직접 선택하고 유형으로 필터링할 수 있습니다.
+          기본적으로 최근 15일 데이터를 한국시간 기준으로 보여주며, 달력으로 기간을 직접 선택하고 유형으로 필터링할 수 있습니다.
         </p>
         <div className="table-wrapper">
           <table className="table">
@@ -1874,7 +1889,7 @@ export default function Home() {
                 <td className="align-right">{h.quantity.toLocaleString()}</td>
                 <td className="align-center">
                   <div className="stacked-label">
-                    <strong>{h.created_by_name || h.created_by || '-'}</strong>
+                    <strong>{h.created_by_name || '-'}</strong>
                     <span className="muted small-text">{h.created_by_department || '부서 정보 없음'}</span>
                   </div>
                 </td>

@@ -14,20 +14,20 @@ export async function GET(req: Request) {
     const [summaryRes, anomalyRes, artistsRes, locationsRes, categoriesRes] = await Promise.all([
       supabaseAdmin.rpc('get_inventory_summary_v2', {
         p_artist: artist ?? null,
-        p_location: location ?? null,
         p_category: category ?? null,
+        p_location: location ?? null,
         p_q: q ?? null,
       }),
       supabaseAdmin.rpc('get_inventory_anomaly_count', {
         p_artist: artist ?? null,
-        p_location: location ?? null,
         p_category: category ?? null,
+        p_location: location ?? null,
         p_q: q ?? null,
       }),
       supabaseAdmin.rpc('get_inventory_artists', {
         p_prefix: prefix ?? null,
-        p_location: location ?? null,
         p_category: category ?? null,
+        p_location: location ?? null,
         p_q: q ?? null,
       }),
       supabaseAdmin.rpc('get_inventory_locations', {
