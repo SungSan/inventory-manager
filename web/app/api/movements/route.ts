@@ -66,22 +66,22 @@ export async function POST(req: Request) {
     const idempotencyRaw = idempotency_key ?? idempotencyKey ?? randomUUID();
     const idempotency = idempotencyRaw ? String(idempotencyRaw).trim() : randomUUID();
     const payload = {
-      p_artist: trimmedArtist,
-      p_category: normalizedCategory,
-      p_album_version: trimmedAlbum,
-      p_option: normalizedOption,
-      p_location: effectiveLocation,
-      p_quantity: normalizedQuantity,
-      p_direction: normalizedDirection,
-      p_memo: normalizedMemo,
-      p_created_by: session.userId,
-      p_idempotency_key: idempotency
+      album_version: trimmedAlbum,
+      artist: trimmedArtist,
+      category: normalizedCategory,
+      created_by: session.userId,
+      direction: normalizedDirection,
+      idempotency_key: idempotency,
+      location: effectiveLocation,
+      memo: normalizedMemo,
+      option: normalizedOption || '',
+      quantity: normalizedQuantity
     };
 
     try {
-      const { data, error } = await supabaseAdmin.rpc('apply_movement', payload);
+      const { data, error } = await supabaseAdmin.rpc('record_movement', payload);
       if (error) {
-        console.error('apply_movement rpc failed:', {
+        console.error('record_movement rpc failed:', {
           message: error.message,
           details: (error as any)?.details,
           hint: (error as any)?.hint,
@@ -91,7 +91,7 @@ export async function POST(req: Request) {
         return NextResponse.json(
           {
             ok: false,
-            step: 'apply_movement_rpc',
+            step: 'record_movement_rpc',
             error: error.message,
             details: (error as any)?.details ?? null,
             hint: (error as any)?.hint ?? null,
@@ -102,43 +102,9 @@ export async function POST(req: Request) {
       }
 
       const result = (data as any) || {};
-      const ok = result.ok === true;
-      const duplicated = result.duplicated === true;
-
-      if (!ok) {
-        const message = result.message || '입출고 처리 결과가 반영되지 않았습니다.';
-        console.error({ step: 'apply_movement_result_invalid', payload, result });
-        return NextResponse.json(
-          { ok: false, step: 'apply_movement_result', error: message },
-          { status: 500 }
-        );
-      }
-
-      if (duplicated) {
-        return NextResponse.json({
-          ok: true,
-          duplicated: true,
-          movement_inserted: false,
-          inventory_updated: false,
-          movement_id: result.movement_id ?? null,
-          item_id: result.item_id ?? null,
-          inventory_quantity: result.inventory_quantity ?? null,
-          message: result.message ?? 'duplicate request ignored'
-        });
-      }
-
-      return NextResponse.json({
-        ok: true,
-        duplicated: false,
-        movement_inserted: true,
-        inventory_updated: true,
-        movement_id: result.movement_id ?? null,
-        item_id: result.item_id ?? null,
-        inventory_quantity: result.inventory_quantity ?? null,
-        message: result.message ?? 'ok'
-      });
+      return NextResponse.json({ ok: true, result });
     } catch (error: any) {
-      console.error({ step: 'apply_movement_unexpected', payload, error });
+      console.error({ step: 'record_movement_unexpected', payload, error });
       const message = error?.message || '입출고 처리 중 오류가 발생했습니다.';
       return NextResponse.json({ ok: false, error: message, step: 'exception' }, { status: 500 });
     }
