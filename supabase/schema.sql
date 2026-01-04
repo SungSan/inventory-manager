@@ -254,7 +254,7 @@ end;
 $$ language plpgsql security definer;
 
 -- movement recording with idempotency that allows negative stock
-create or replace function public.record_movement(
+create or replace function public.record_movement_v2(
   album_version text,
   artist text,
   category text,
@@ -391,6 +391,44 @@ exception
     raise;
 end;
 $$ language plpgsql security definer;
+
+grant execute on function public.record_movement_v2(
+  text, text, text, uuid, text, text, text, text, text, int
+) to authenticated, service_role;
+
+create or replace function public.record_movement(
+  artist text,
+  category text,
+  album_version text,
+  option text,
+  location text,
+  quantity integer,
+  direction text,
+  memo text,
+  created_by uuid,
+  idempotency_key text
+) returns json
+language sql
+security definer
+set search_path = public
+as $$
+  select public.record_movement_v2(
+    album_version,
+    artist,
+    category,
+    created_by,
+    direction,
+    idempotency_key,
+    location,
+    memo,
+    option,
+    quantity
+  );
+$$;
+
+grant execute on function public.record_movement(
+  text, text, text, text, text, integer, text, text, uuid, text
+) to authenticated, service_role;
 
 -- smoke test
 -- select * from public.inventory_view limit 1;

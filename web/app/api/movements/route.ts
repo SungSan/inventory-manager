@@ -3,8 +3,28 @@ import { NextResponse } from 'next/server';
 import { withAuth } from '../../../lib/auth';
 import { supabaseAdmin } from '../../../lib/supabase';
 
+const supabaseUrl = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
+const supabaseProjectRef = (() => {
+  try {
+    const hostname = new URL(supabaseUrl).hostname;
+    return hostname.split('.')[0];
+  } catch (error) {
+    console.warn('[movements] unable to parse supabase project ref', { error: (error as any)?.message });
+    return '';
+  }
+})();
+
+let supabaseRefLogged = false;
+function logSupabaseRef() {
+  if (!supabaseRefLogged) {
+    console.info('[movements] supabase project ref detected', { ref: supabaseProjectRef || 'unknown' });
+    supabaseRefLogged = true;
+  }
+}
+
 export async function POST(req: Request) {
   return withAuth(['admin', 'operator'], async (session) => {
+    logSupabaseRef();
     let body: any;
     try {
       body = await req.json();
