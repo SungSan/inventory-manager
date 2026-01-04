@@ -107,7 +107,7 @@ export async function PATCH(req: Request) {
       .from('users')
       .update(updates)
       .eq('id', id)
-      .select('id,email,full_name,department,contact,purpose,role,approved,active,created_at')
+      .select('id,email,role,approved,active,created_at')
       .single();
 
     if (updateUsersError) {
