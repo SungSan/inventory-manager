@@ -33,27 +33,11 @@ end $$;
 create table if not exists public.users (
   id uuid primary key default gen_random_uuid(),
   email text unique not null,
-  password_hash text,
   role public.user_role not null default 'viewer',
   approved boolean not null default false,
   active boolean not null default true,
   created_at timestamptz not null default now()
 );
-
--- user profile extensions (idempotent)
-alter table public.users add column if not exists full_name text default '';
-alter table public.users add column if not exists department text default '';
-alter table public.users add column if not exists contact text default '';
-alter table public.users add column if not exists purpose text default '';
-update public.users set full_name = coalesce(nullif(full_name, ''), email) where full_name is null or full_name = '';
-update public.users set department = coalesce(department, '');
-update public.users set contact = coalesce(contact, '');
-update public.users set purpose = coalesce(purpose, '');
-alter table public.users alter column full_name set not null;
-alter table public.users alter column department set not null;
-alter table public.users alter column role set default 'viewer';
-alter table public.users alter column password_hash drop not null;
-alter table public.users add column if not exists approved boolean not null default false;
 
 create table if not exists public.user_profiles (
   user_id uuid primary key references public.users(id) on delete cascade,
@@ -407,93 +391,6 @@ exception
     raise;
 end;
 $$ language plpgsql security definer;
-
--- credential verification via database-side crypt
-create extension if not exists pgcrypto;
-
-create or replace function public.verify_login(
-  p_email text,
-  p_password text
-) returns table(
-  id uuid,
-  email text,
-  role public.user_role
-)
-language sql
-security definer
-set search_path = public
-as $$
-  select u.id, u.email, u.role
-  from public.users u
-  where lower(u.email) = lower(p_email)
-    and u.active = true
-    and u.password_hash = crypt(p_password, u.password_hash)
-  limit 1;
-$$;
-
-revoke all on function public.verify_login(text, text) from public;
-grant execute on function public.verify_login(text, text) to service_role;
-
--- admin user provisioning with database-side hashing
-create or replace function public.create_user(
-  p_email text,
-  p_password text,
-  p_role public.user_role default 'operator',
-  p_full_name text default '',
-  p_department text default '',
-  p_contact text default '',
-  p_purpose text default ''
-) returns table(
-  id uuid,
-  email text,
-  role public.user_role,
-  full_name text,
-  department text
-) 
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  normalized_email text := lower(trim(p_email));
-  selected_role public.user_role := coalesce(p_role, 'operator');
-  normalized_name text := coalesce(nullif(trim(p_full_name), ''), normalized_email);
-  normalized_department text := coalesce(nullif(trim(p_department), ''), '');
-  normalized_contact text := coalesce(nullif(trim(p_contact), ''), '');
-  normalized_purpose text := coalesce(nullif(trim(p_purpose), ''), '');
-begin
-  if coalesce(p_email, '') = '' or coalesce(p_password, '') = '' then
-    raise exception 'login id and password are required';
-  end if;
-
-  insert into public.users(email, password_hash, role, active, full_name, department, contact, purpose)
-  values(
-    normalized_email,
-    crypt(p_password, gen_salt('bf')),
-    selected_role,
-    true,
-    normalized_name,
-    normalized_department,
-    normalized_contact,
-    normalized_purpose
-  )
-  on conflict (email) do update
-    set password_hash = excluded.password_hash,
-        role = excluded.role,
-        active = true,
-        full_name = excluded.full_name,
-        department = excluded.department,
-        contact = excluded.contact,
-        purpose = excluded.purpose
-  returning users.id, users.email, users.role, users.full_name, users.department
-  into id, email, role, full_name, department;
-
-  return next;
-end;
-$$;
-
-revoke all on function public.create_user(text, text, public.user_role) from public;
-grant execute on function public.create_user(text, text, public.user_role) to service_role;
 
 -- smoke test
 -- select * from public.inventory_view limit 1;

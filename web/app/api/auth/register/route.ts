@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../../../../lib/supabase';
 
 const CORPORATE_DOMAIN = 'sound-wave.co.kr';
@@ -54,15 +53,12 @@ export async function POST(req: Request) {
       throw new Error('auth user id 생성에 실패했습니다.');
     }
 
-    const passwordHash = await bcrypt.hash(password.toString(), 10);
-
     const { error: userError } = await supabaseAdmin.from('users').upsert({
       id: authId,
       email,
       role: 'viewer',
       approved: false,
       active: false,
-      password_hash: passwordHash,
     });
 
     if (userError) {
