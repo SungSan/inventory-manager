@@ -1,8 +1,6 @@
 import { NextResponse } from 'next/server';
 import { withAuth } from '../../../../lib/auth';
 import { supabaseAdmin } from '../../../../lib/supabase';
-import { recordAdminLog } from '../../../../lib/admin-log';
-import { createUserWithProfile } from '../../../../lib/create-user';
 import type { Role } from '../../../../lib/session';
 
 export async function GET() {
@@ -33,43 +31,6 @@ export async function GET() {
   });
 }
 
-export async function POST(req: Request) {
-  return withAuth(['admin'], async (session) => {
-    const { username, password, role, full_name, department, contact, purpose } = await req.json();
-
-    if (!username || !full_name || !department) {
-      return NextResponse.json({ error: 'ID/성함/부서를 모두 입력하세요.' }, { status: 400 });
-    }
-
-    const userRole: Role = (role as Role) || 'viewer';
-
-    try {
-      const result = await createUserWithProfile({
-        username: String(username).toLowerCase().trim(),
-        password: password ? String(password) : undefined,
-        role: userRole,
-        active: true,
-        approved: true,
-        approved_by: session.userId,
-        full_name: String(full_name ?? ''),
-        department: String(department ?? ''),
-        contact: String(contact ?? ''),
-        purpose: String(purpose ?? ''),
-      });
-
-      await recordAdminLog(
-        session,
-        'create_user',
-        `${username} (${result.role}) / ${full_name ?? ''}`
-      );
-
-      return NextResponse.json({ ok: true, role: result.role, user_id: result.userId });
-    } catch (err: any) {
-      return NextResponse.json({ error: err?.message || '계정 생성 실패' }, { status: 400 });
-    }
-  });
-}
-
 export async function PATCH(req: Request) {
   return withAuth(['admin'], async (session) => {
     const { id, role, approved } = await req.json();
@@ -95,13 +56,34 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: 'no updates provided' }, { status: 400 });
     }
 
-    const { error } = await supabaseAdmin.from('users').update(updates).eq('id', id);
+    const { data: updatedUser, error } = await supabaseAdmin
+      .from('users')
+      .update(updates)
+      .eq('id', id)
+      .select('id,email,full_name,department,contact,purpose,role,approved,created_at')
+      .single();
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+      return NextResponse.json({ error: error.message, step: 'update_users' }, { status: 400 });
     }
 
-    await recordAdminLog(session, 'update_user', `${id} ${role ?? ''} ${approved ?? ''}`.trim());
+    if (typeof approved === 'boolean') {
+      const { error: profileError } = await supabaseAdmin
+        .from('user_profiles')
+        .update({
+          approved,
+          approved_at: approved ? new Date().toISOString() : null,
+          approved_by: approved ? session.userId : null,
+        })
+        .eq('user_id', id);
 
-    return NextResponse.json({ ok: true });
+      if (profileError) {
+        return NextResponse.json(
+          { error: profileError.message, step: 'update_user_profiles' },
+          { status: 400 }
+        );
+      }
+    }
+
+    return NextResponse.json({ ok: true, user: updatedUser });
   });
 }

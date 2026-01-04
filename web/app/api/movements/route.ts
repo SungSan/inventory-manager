@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import { withAuth } from '../../../lib/auth';
 import { supabaseAdmin } from '../../../lib/supabase';
@@ -27,52 +28,69 @@ export async function POST(req: Request) {
 
     const trimmedArtist = String(artist ?? '').trim();
     const trimmedAlbum = String(album_version ?? '').trim();
-    const effectiveLocation = String(location ?? '').trim() || String(option ?? '').trim();
-    const normalizedQuantity = Number(quantity);
+    const normalizedQuantity = parseInt(quantity, 10);
     const normalizedMemo = String(memo ?? '').trim();
     const normalizedDirection = String(direction ?? '').toUpperCase();
+    const normalizedCategory = String(category ?? '').trim();
+    const normalizedOption = String(option ?? '').trim();
+    const rawLocation = String(location ?? '').trim();
+    const effectiveLocation = rawLocation || normalizedOption;
 
-    if (!trimmedArtist || !category || !trimmedAlbum || !effectiveLocation || !normalizedDirection) {
+    if (!trimmedArtist || !normalizedCategory || !trimmedAlbum || !effectiveLocation || !normalizedDirection) {
       const error = 'missing fields';
       console.error({
         step: 'validation',
         error,
         payload: {
           artist: trimmedArtist,
-          category,
+          category: normalizedCategory,
           album_version: trimmedAlbum,
           location: effectiveLocation,
           direction: normalizedDirection
         }
       });
-      return NextResponse.json({ ok: false, error }, { status: 400 });
+      return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
 
     if (!Number.isFinite(normalizedQuantity) || normalizedQuantity <= 0) {
       const error = 'quantity must be a positive number';
       console.error({ step: 'validation', error, payload: { quantity } });
-      return NextResponse.json({ ok: false, error }, { status: 400 });
+      return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
+    }
+
+    if (normalizedDirection !== 'IN' && normalizedDirection !== 'OUT') {
+      const error = 'direction must be IN or OUT';
+      console.error({ step: 'validation', error, payload: { direction } });
+      return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
 
     if (normalizedDirection === 'OUT' && !normalizedMemo) {
       const error = 'memo is required for outbound movements';
       console.error({ step: 'validation', error });
-      return NextResponse.json({ ok: false, error }, { status: 400 });
+      return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
 
-    const idempotencyRaw = idempotency_key ?? idempotencyKey ?? null;
-    const idempotency = idempotencyRaw ? String(idempotencyRaw).trim() : null;
+    const idempotencyRaw = idempotency_key ?? idempotencyKey ?? randomUUID();
+    const idempotency = idempotencyRaw ? String(idempotencyRaw).trim() : randomUUID();
+    const createdBy = session.userId ?? (session as any)?.user?.id ?? (session as any)?.user_id ?? null;
+
+    if (!createdBy) {
+      return NextResponse.json(
+        { ok: false, step: 'validation', error: 'missing created_by' },
+        { status: 401 }
+      );
+    }
     const payload = {
-      artist: trimmedArtist,
-      category,
       album_version: trimmedAlbum,
-      option: String(option ?? '').trim() || '',
-      location: effectiveLocation,
-      quantity: normalizedQuantity,
+      artist: trimmedArtist,
+      category: normalizedCategory,
+      created_by: createdBy,
       direction: normalizedDirection,
+      idempotency_key: idempotency,
+      location: effectiveLocation,
       memo: normalizedMemo,
-      created_by: session.userId,
-      idempotency_key: idempotency || null
+      option: normalizedOption || '',
+      quantity: normalizedQuantity
     };
 
     try {
@@ -94,60 +112,24 @@ export async function POST(req: Request) {
             hint: (error as any)?.hint ?? null,
             code: (error as any)?.code ?? null
           },
-          { status: 400 }
+          { status: 500 }
         );
       }
 
-      const result = (data as any) || {};
-      const idempotent = result.idempotent === true;
-      const hasFlags = 'movement_inserted' in result || 'inventory_updated' in result;
-      const movementInserted = result.movement_inserted === true;
-      const inventoryUpdated = result.inventory_updated === true;
-
-      if (idempotent) {
-        return NextResponse.json({
-          ok: true,
-          idempotent: true,
-          movement_inserted: false,
-          inventory_updated: false,
-          message: result.message ?? 'idempotent'
-        });
+      if (!data) {
+        console.error({ step: 'record_movement_rpc', error: 'empty response', payload });
+        return NextResponse.json(
+          { ok: false, step: 'record_movement_rpc', error: 'empty response from record_movement' },
+          { status: 500 }
+        );
       }
 
-      if (result.ok === true && !hasFlags) {
-        return NextResponse.json({ ok: true, idempotent: false, message: result.message ?? 'ok' });
-      }
-
-      if (movementInserted && inventoryUpdated) {
-        return NextResponse.json({
-          ok: true,
-          idempotent: false,
-          movement_inserted: true,
-          inventory_updated: true,
-          opening: result.opening,
-          closing: result.closing,
-          item_id: result.item_id,
-          movement_id: result.movement_id,
-          message: result.message ?? 'ok'
-        });
-      }
-
-      const message = result.message || '입출고 처리 결과가 반영되지 않았습니다.';
-      console.error({ step: 'movement_result_incomplete', payload, result });
-      return NextResponse.json(
-        {
-          ok: false,
-          idempotent,
-          movement_inserted: movementInserted,
-          inventory_updated: inventoryUpdated,
-          error: message
-        },
-        { status: 400 }
-      );
+      const result = data as any;
+      return NextResponse.json({ ok: true, result });
     } catch (error: any) {
       console.error({ step: 'record_movement_unexpected', payload, error });
       const message = error?.message || '입출고 처리 중 오류가 발생했습니다.';
-      return NextResponse.json({ ok: false, error: message }, { status: 500 });
+      return NextResponse.json({ ok: false, error: message, step: 'exception' }, { status: 500 });
     }
   });
 }
