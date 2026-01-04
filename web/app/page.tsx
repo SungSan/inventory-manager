@@ -50,15 +50,6 @@ type AccountRow = {
   approved_at?: string | null;
 };
 
-type AdminLog = {
-  id: string;
-  action: string;
-  detail: string | null;
-  actor_email: string | null;
-  actor_id: string | null;
-  created_at: string;
-};
-
 type MovementPayload = {
   artist: string;
   category: 'album' | 'md';
@@ -159,7 +150,6 @@ export default function Home() {
     username: '',
     password: '',
     confirm: '',
-    otp: '',
     name: '',
     department: '',
     contact: '',
@@ -178,24 +168,10 @@ export default function Home() {
     from: sevenDaysAgo.toISOString().slice(0, 10),
     to: today.toISOString().slice(0, 10)
   });
-  const [newUser, setNewUser] = useState<{ username: string; password: string; role: Role; full_name: string; department: string; contact: string; purpose: string }>(
-    {
-      username: '',
-      password: '',
-      role: 'operator',
-      full_name: '',
-      department: '',
-      contact: '',
-      purpose: ''
-    }
-  );
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [accountsStatus, setAccountsStatus] = useState('');
   const [registerStatus, setRegisterStatus] = useState('');
-  const [registerOtpStatus, setRegisterOtpStatus] = useState('');
-  const [otpEnabled, setOtpEnabled] = useState(false);
-  const [otpExpiry, setOtpExpiry] = useState<number | null>(null);
   const [adminStatus, setAdminStatus] = useState('');
   const [sessionRole, setSessionRole] = useState<Role | null>(null);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
@@ -204,10 +180,7 @@ export default function Home() {
   const [idleDeadline, setIdleDeadline] = useState<number | null>(null);
   const [pendingBlock, setPendingBlock] = useState<string | null>(null);
   const [importStatus, setImportStatus] = useState('');
-  const [logStatus, setLogStatus] = useState('');
-  const [adminLogs, setAdminLogs] = useState<AdminLog[]>([]);
   const [newLocation, setNewLocation] = useState('');
-  const [createUserStatus, setCreateUserStatus] = useState('');
   const [inventoryActionStatus, setInventoryActionStatus] = useState('');
   const logoutTimeout = useRef<NodeJS.Timeout | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -292,17 +265,6 @@ export default function Home() {
     }
   }
 
-  async function loadAdminLogs() {
-    setLogStatus('로그 불러오는 중...');
-    const res = await fetch('/api/admin/logs');
-    if (res.ok) {
-      setAdminLogs(await res.json());
-      setLogStatus('');
-    } else {
-      setLogStatus('로그 불러오기 실패');
-    }
-  }
-
   async function uploadInventoryFromFile() {
     const file = fileInputRef.current?.files?.[0];
     if (!file) {
@@ -324,7 +286,6 @@ export default function Home() {
       setImportStatus(`업로드 완료: 재고 ${data.stockCount}건, 이력 ${data.historyCount}건`);
       await refresh();
       await fetchLocations();
-      await loadAdminLogs();
     } else {
       const text = await res.text();
       setImportStatus(`실패: ${text || res.status}`);
@@ -405,9 +366,6 @@ export default function Home() {
         setLoginPassword('');
         markActivity();
         const sessionInfo = await fetchSessionInfo();
-        if (sessionInfo?.role === 'admin') {
-          await loadAdminLogs();
-        }
         await refresh();
       } else {
         const text = await res.text();
@@ -429,7 +387,6 @@ export default function Home() {
     setShowAdmin(false);
     setStock([]);
     setHistory([]);
-    setAdminLogs([]);
     setLocationPresets([]);
     setSelectedStockKeys([]);
     setFocusedStockKey(null);
@@ -577,34 +534,6 @@ export default function Home() {
     }
   }
 
-  async function createUser() {
-    setCreateUserStatus('계정 생성 중...');
-    if (!newUser.username || !newUser.full_name || !newUser.department) {
-      setCreateUserStatus('ID, 성함, 부서를 모두 입력하세요.');
-      return;
-    }
-    const res = await fetch('/api/admin/create-user', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: newUser.username,
-        password: newUser.password,
-        role: newUser.role,
-        full_name: newUser.full_name,
-        department: newUser.department,
-        contact: newUser.contact,
-        purpose: newUser.purpose,
-      })
-    });
-    if (res.ok) {
-      setCreateUserStatus('새 계정 생성 완료');
-      setNewUser({ username: '', password: '', role: 'operator', full_name: '', department: '', contact: '', purpose: '' });
-    } else {
-      const text = await res.text();
-      setCreateUserStatus(`생성 실패: ${text || res.status}`);
-    }
-  }
-
   async function registerAccount() {
     setRegisterStatus('계정 생성 중...');
     try {
@@ -621,47 +550,6 @@ export default function Home() {
         setRegisterStatus('ID, 비밀번호, 성함, 부서, 연락처, 사용 목적을 모두 입력하세요.');
         return;
       }
-
-      if (!otpEnabled) {
-        setRegisterStatus('OTP 발송 중...');
-        const res = await fetch('/api/auth/request-otp', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: normalized })
-        });
-
-        const payload = await res.json().catch(() => null);
-
-        if (!res.ok) {
-          const message = payload?.error || payload?.message || `OTP 요청 실패 (${res.status})`;
-          throw new Error(message);
-        }
-        setRegisterOtpStatus(payload.message || 'OTP 전송 완료. 메일함을 확인하세요.');
-        if (payload.otp) {
-          setRegisterForm((prev) => ({ ...prev, otp: payload.otp }));
-        }
-        const expiry = Date.now() + 180_000;
-        setOtpEnabled(true);
-        setOtpExpiry(expiry);
-        setRegisterStatus('이메일로 받은 OTP 코드를 입력하세요. (3분 이내)');
-        return;
-      }
-
-      if (!registerForm.otp.trim()) {
-        setRegisterStatus('이메일로 받은 OTP 코드를 입력하세요.');
-        return;
-      }
-
-      const supabase = requireSupabase();
-      if (!supabase) {
-        return;
-      }
-      const email = deriveEmail(normalized);
-      const { data, error } = await supabase.auth.verifyOtp({ email, token: registerForm.otp.trim(), type: 'signup' });
-      if (error || !data?.session?.access_token) {
-        throw new Error(error?.message || 'OTP 인증에 실패했습니다.');
-      }
-
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -672,17 +560,12 @@ export default function Home() {
           department: registerForm.department,
           contact: registerForm.contact,
           purpose: registerForm.purpose,
-          access_token: data.session.access_token,
         })
       });
 
       if (res.ok) {
         setRegisterStatus('계정 생성 완료! 관리자 승인 후 사용 가능합니다.');
-        setRegisterForm({ username: '', password: '', confirm: '', otp: '', name: '', department: '', contact: '', purpose: '' });
-        setOtpEnabled(false);
-        setOtpExpiry(null);
-        setRegisterOtpStatus('');
-        await supabase.auth.signOut();
+        setRegisterForm({ username: '', password: '', confirm: '', name: '', department: '', contact: '', purpose: '' });
       } else {
         const text = await res.text();
         setRegisterStatus(`생성 실패: ${text || res.status}`);
@@ -709,6 +592,8 @@ export default function Home() {
 
   async function updateAccountApproval(id: string, approved: boolean) {
     setAccountsStatus('승인 상태 저장 중...');
+    const previous = accounts;
+    setAccounts((prev) => prev.map((acc) => (acc.id === id ? { ...acc, approved } : acc)));
     const res = await fetch('/api/admin/users', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -716,11 +601,17 @@ export default function Home() {
     });
 
     if (res.ok) {
-      await loadAccounts();
+      const payload = await res.json().catch(() => null);
+      const updated: AccountRow | undefined = payload?.user;
+      if (updated) {
+        setAccounts((prev) => prev.map((acc) => (acc.id === updated.id ? { ...acc, ...updated } : acc)));
+      }
       setAccountsStatus('저장 완료');
     } else {
       const text = await res.text();
+      setAccounts(previous);
       setAccountsStatus(`저장 실패: ${text || res.status}`);
+      alert(text || '승인 변경 실패');
     }
   }
 
@@ -984,27 +875,6 @@ export default function Home() {
   }, [isLoggedIn]);
 
   useEffect(() => {
-    if (!otpExpiry) return;
-    const remaining = otpExpiry - Date.now();
-    if (remaining <= 0) {
-      setOtpEnabled(false);
-      setRegisterForm((prev) => ({ ...prev, otp: '' }));
-      setRegisterOtpStatus('OTP가 만료되었습니다. 계정 생성 버튼을 눌러 다시 요청하세요.');
-      setOtpExpiry(null);
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      setOtpEnabled(false);
-      setRegisterForm((prev) => ({ ...prev, otp: '' }));
-      setRegisterOtpStatus('OTP가 만료되었습니다. 계정 생성 버튼을 눌러 다시 요청하세요.');
-      setOtpExpiry(null);
-    }, remaining);
-
-    return () => clearTimeout(timer);
-  }, [otpExpiry]);
-
-  useEffect(() => {
     setShowAdmin(activePanel === 'admin' && sessionRole === 'admin');
   }, [activePanel, sessionRole]);
 
@@ -1119,11 +989,11 @@ export default function Home() {
                 <button onClick={handleAuthToggle}>로그인</button>
                 <button className="ghost" onClick={refresh}>세션 확인</button>
               </div>
-              <div className="muted">최초 회원가입만 OTP 인증, 이후 로그인은 ID + 비밀번호로 진행됩니다.</div>
+              <div className="muted">ID + 비밀번호로 로그인합니다.</div>
               <div className="muted">{status}</div>
             </div>
             <div className="card-subpanel">
-              <p className="mini-label">새 계정 만들기 (OTP + 관리자 승인)</p>
+              <p className="mini-label">새 계정 만들기 (관리자 승인 필요)</p>
               <div className="form-grid two">
                 <label>
                   <span>ID</span>
@@ -1149,15 +1019,6 @@ export default function Home() {
                     value={registerForm.confirm}
                     onChange={(e) => setRegisterForm({ ...registerForm, confirm: e.target.value })}
                     placeholder="비밀번호 재입력"
-                  />
-                </label>
-                <label>
-                  <span>이메일 OTP 코드</span>
-                  <input
-                    value={registerForm.otp}
-                    onChange={(e) => setRegisterForm({ ...registerForm, otp: e.target.value })}
-                    placeholder="이메일로 받은 숫자 코드"
-                    disabled={!otpEnabled}
                   />
                 </label>
                 <label>
@@ -1195,7 +1056,7 @@ export default function Home() {
               </div>
               <div className="actions-row">
                 <button onClick={registerAccount}>계정 생성</button>
-                <span className="muted">{registerStatus || registerOtpStatus || '모든 정보를 입력한 뒤 계정 생성 버튼을 누르면 OTP가 자동으로 전송됩니다. 관리자 승인 후 사용 가능합니다.'}</span>
+                <span className="muted">{registerStatus || '모든 정보를 입력하면 계정이 생성되며, 관리자 승인 후 사용 가능합니다.'}</span>
               </div>
             </div>
           </div>
@@ -1240,90 +1101,10 @@ export default function Home() {
         >
           <div className="guide-grid">
             <div className="guide-card">
-              <p className="mini-label">레거시 데이터 이관</p>
-              <ul>
-                <li>`inventory_data.json`을 최신으로 준비합니다.</li>
-                <li>Supabase SQL Editor에서 `supabase/schema.sql` 실행 후 비워진 테이블을 생성합니다.</li>
-                <li>`scripts/migrate_json.py`를 실행해 JSON 재고를 Supabase로 업서트합니다.</li>
-                <li>완료 후 아래 새로고침 → 재고/이력 테이블에서 반영 여부를 확인합니다.</li>
-              </ul>
-            </div>
-            <div className="guide-card">
-              <p className="mini-label">신규 계정 발급</p>
-              <p className="muted">관리자가 직접 ID와 권한을 생성합니다. 비밀번호는 선택 입력이며 이메일은 자동으로 @sound-wave.co.kr 도메인을 사용합니다.</p>
-              <div className="form-grid two">
-                <label>
-                  <span>계정 ID</span>
-                  <input
-                    value={newUser.username}
-                    onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
-                    placeholder="@ 없이 사내 ID"
-                  />
-                </label>
-                <label>
-                  <span>비밀번호 (선택)</span>
-                  <input
-                    type="password"
-                    value={newUser.password}
-                    onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-                    placeholder="미입력 시 자동 생성"
-                  />
-                </label>
-                <label>
-                  <span>성함</span>
-                  <input
-                    value={newUser.full_name}
-                    onChange={(e) => setNewUser({ ...newUser, full_name: e.target.value })}
-                    placeholder="홍길동"
-                  />
-                </label>
-                <label>
-                  <span>부서</span>
-                  <input
-                    value={newUser.department}
-                    onChange={(e) => setNewUser({ ...newUser, department: e.target.value })}
-                    placeholder="물류팀"
-                  />
-                </label>
-                <label>
-                  <span>연락처</span>
-                  <input
-                    value={newUser.contact}
-                    onChange={(e) => setNewUser({ ...newUser, contact: e.target.value })}
-                    placeholder="010-0000-0000"
-                  />
-                </label>
-                <label>
-                  <span>사용 목적</span>
-                  <input
-                    value={newUser.purpose}
-                    onChange={(e) => setNewUser({ ...newUser, purpose: e.target.value })}
-                    placeholder="예: 물류 창고 운영"
-                  />
-                </label>
-                <label>
-                  <span>역할</span>
-                  <select
-                    value={newUser.role}
-                    onChange={(e) => setNewUser({ ...newUser, role: e.target.value as Role })}
-                  >
-                    <option value="admin">admin (전체 권한)</option>
-                    <option value="operator">operator (입/출고)</option>
-                    <option value="viewer">viewer (조회 전용)</option>
-                  </select>
-                </label>
-              </div>
-              <div className="actions-row">
-                <button onClick={createUser}>계정 생성</button>
-                <span className="muted">{createUserStatus || '로그인한 admin만 실행 가능'}</span>
-              </div>
-            </div>
-            <div className="guide-card">
-              <p className="mini-label">작업 순서 요약</p>
+              <p className="mini-label">관리자 안내</p>
               <ol className="muted">
-                <li>관리자 계정으로 로그인 후 세션 확인</li>
-                <li>필요시 위에서 신규 계정 발급</li>
-                <li>입/출고 기록 → 재고/이력/엑셀로 검증</li>
+                <li>관리자 계정으로 로그인 후 세션을 확인하세요.</li>
+                <li>입/출고 기록 후 재고와 이력 화면에서 결과를 검증하세요.</li>
               </ol>
             </div>
             <div className="guide-card">
@@ -1366,45 +1147,6 @@ export default function Home() {
               <div className="actions-row">
                 <button onClick={uploadInventoryFromFile}>업로드</button>
                 <span className="muted">{importStatus || 'JSON/엑셀 파일 선택 후 실행'}</span>
-              </div>
-            </div>
-            <div className="guide-card full-span">
-              <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
-                <div>
-                  <p className="mini-label">관리자 로그</p>
-                  <p className="muted">계정 생성, 업로드, 로케이션 변경 이력 등 관리 작업을 확인합니다.</p>
-                </div>
-                <div className="actions-row">
-                  <button className="ghost" onClick={loadAdminLogs}>새로고침</button>
-                  <span className="muted">{logStatus || ''}</span>
-                </div>
-              </div>
-              <div className="table-wrapper">
-                <table className="table compact-table">
-                  <thead>
-                    <tr>
-                      <th>일시</th>
-                      <th>작업</th>
-                      <th>세부 정보</th>
-                      <th>실행자</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {adminLogs.length === 0 && (
-                      <tr>
-                        <td colSpan={4}>로그가 없습니다. 새로고침을 눌러 확인하세요.</td>
-                      </tr>
-                    )}
-                    {adminLogs.map((log) => (
-                      <tr key={log.id}>
-                        <td>{formatDate(log.created_at)}</td>
-                        <td>{log.action}</td>
-                        <td>{log.detail || '-'}</td>
-                        <td>{log.actor_email || log.actor_id || '-'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
               </div>
             </div>
           </div>
