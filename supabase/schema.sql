@@ -189,22 +189,29 @@ declare
   v_option text := coalesce(option, '');
   v_memo text := nullif(btrim(memo), '');
   v_qty int := quantity;
+  v_existing_opening integer;
+  v_existing_closing integer;
 begin
   if v_direction not in ('IN','OUT','ADJUST') then
     raise exception 'invalid direction';
   end if;
 
   if v_idem is not null then
-    insert into public.idempotency_keys(key, created_by)
-    values (v_idem, created_by)
-    on conflict do nothing;
+    select id, item_id, opening, closing
+      into v_movement_id, v_item_id, v_existing_opening, v_existing_closing
+      from public.movements
+     where idempotency_key = v_idem;
 
-    if not found then
+    if found then
       return json_build_object(
         'ok', true,
         'idempotent', true,
         'movement_inserted', false,
         'inventory_updated', false,
+        'movement_id', v_movement_id,
+        'item_id', v_item_id,
+        'opening', v_existing_opening,
+        'closing', v_existing_closing,
         'message', 'idempotent hit'
       );
     end if;
@@ -272,7 +279,13 @@ begin
     v_existing,
     v_new,
     now()
-  ) returning id into v_movement_id;
+  )
+  on conflict (idempotency_key) do nothing
+  returning id into v_movement_id;
+
+  if v_movement_id is null then
+    raise exception 'idempotency conflict';
+  end if;
 
   return json_build_object(
     'ok', true,

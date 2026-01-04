@@ -471,7 +471,7 @@ export default function Home() {
   }
 
   async function reloadHistory() {
-    const histRes = await fetch('/api/history');
+    const histRes = await fetch('/api/history', { cache: 'no-store' });
     if (histRes.ok) {
       const payload = await histRes.json();
       const rows = Array.isArray(payload)
