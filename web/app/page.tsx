@@ -1118,6 +1118,16 @@ export default function Home() {
     setInventoryActionStatus('');
   }, [selectedStockKeys, focusedStockKey]);
 
+  const selectionDisabled = sessionRole === 'operator';
+
+  useEffect(() => {
+    if (selectionDisabled) {
+      setEditPanelEnabled(false);
+      setSelectedStockKeys([]);
+      setFocusedStockKey(null);
+    }
+  }, [selectionDisabled]);
+
   useEffect(() => {
     fetchSessionInfo();
     refresh();
@@ -1155,7 +1165,9 @@ export default function Home() {
         </button>
         <button
           className={editPanelEnabled ? 'tab active' : 'tab disabled'}
+          disabled={selectionDisabled}
           onClick={() => {
+            if (selectionDisabled) return;
             setEditPanelEnabled((prev) => {
               const next = !prev;
               if (!next) {
@@ -1594,20 +1606,21 @@ export default function Home() {
                                   className="ghost small"
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  if (selectionDisabled) return;
                                   setSelectedStockKeys((prev) =>
                                     prev.includes(row.key) ? prev : [...prev, row.key]
                                   );
                                   setFocusedStockKey(row.key);
                                   setEditDraft({
-                                      id: loc.editableId ?? loc.id,
-                                      artist: row.artist,
-                                      category: row.category,
-                                      album_version: row.album_version,
-                                      option: row.option,
-                                      location: loc.location,
-                                      quantity: loc.quantity,
-                                    });
-                                  }}
+                                    id: loc.editableId ?? loc.id,
+                                    artist: row.artist,
+                                    category: row.category,
+                                    album_version: row.album_version,
+                                    option: row.option,
+                                    location: loc.location,
+                                    quantity: loc.quantity,
+                                  });
+                                }}
                                 >
                                   {loc.location}: {loc.quantity.toLocaleString()}
                                 </button>
@@ -1618,6 +1631,8 @@ export default function Home() {
                           <td>
                             {sessionRole === 'viewer' ? (
                               <span className="muted">읽기 전용</span>
+                            ) : selectionDisabled ? (
+                              <span className="muted">선택 편집 불가</span>
                             ) : (
                               <div className="row-actions">
                                 <button
@@ -1663,7 +1678,8 @@ export default function Home() {
                             )}
                           </td>
                         </tr>
-                        {editPanelEnabled && sessionRole !== 'viewer' && editDraft && focusedStockKey === row.key && (
+                        {editPanelEnabled && !selectionDisabled && sessionRole !== 'viewer' && editDraft &&
+                          focusedStockKey === row.key && (
                           <tr className="inline-editor-row">
                             <td colSpan={7}>
                               <div className="inline-editor">
