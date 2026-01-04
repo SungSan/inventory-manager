@@ -97,6 +97,9 @@ create table if not exists public.movements (
   closing integer
 );
 
+create unique index if not exists movements_idempotency_key_uniq
+  on public.movements (idempotency_key) where idempotency_key is not null;
+
 -- idempotency guard
 create table if not exists public.idempotency_keys (
   key text primary key,
@@ -161,133 +164,103 @@ left join public.users u on u.id = m.created_by
 left join public.user_profiles up on up.user_id = u.id
 order by m.created_at desc;
 
--- transactional movement function
-create or replace function public.record_movement(
-  artist text,
-  category text,
-  album_version text,
-  option text,
-  location text,
-  quantity int,
-  direction text,
-  memo text default '',
-  created_by uuid default null,
-  idempotency_key text default null
+-- transactional movement function with idempotency and negative stock allowance
+create or replace function public.apply_movement(
+  p_artist text,
+  p_category text,
+  p_album_version text,
+  p_option text default '',
+  p_location text,
+  p_quantity int,
+  p_direction text,
+  p_memo text default '',
+  p_created_by uuid,
+  p_idempotency_key text
 ) returns json as $$
-#variable_conflict use_variable
 declare
   v_item_id uuid;
-  v_existing int;
-  v_new int;
   v_movement_id uuid;
-  v_rowcount int;
-  v_idem text := nullif(btrim(idempotency_key), '');
-  v_location text := btrim(location);
-  v_direction text := upper(direction);
-  v_artist text := btrim(artist);
-  v_album text := btrim(album_version);
-  v_option text := coalesce(option, '');
-  v_memo text := nullif(btrim(memo), '');
-  v_qty int := quantity;
+  v_inventory_qty int;
+  v_direction text := upper(coalesce(p_direction, ''));
+  v_location text := btrim(coalesce(p_location, ''));
+  v_qty int := p_quantity;
+  v_memo text := coalesce(p_memo, '');
+  v_idem text := nullif(btrim(coalesce(p_idempotency_key, '')), '');
+  v_option text := coalesce(p_option, '');
+  v_delta int;
 begin
-  if v_direction not in ('IN','OUT','ADJUST') then
+  if v_direction not in ('IN','OUT') then
     raise exception 'invalid direction';
   end if;
 
-  if v_idem is not null then
-    insert into public.idempotency_keys(key, created_by)
-    values (v_idem, created_by)
-    on conflict do nothing;
-
-    if not found then
-      return json_build_object(
-        'ok', true,
-        'idempotent', true,
-        'movement_inserted', false,
-        'inventory_updated', false,
-        'message', 'idempotent hit'
-      );
-    end if;
+  if v_qty is null or v_qty <= 0 then
+    raise exception 'quantity must be positive';
   end if;
 
+  if v_location is null or v_location = '' then
+    raise exception 'location required';
+  end if;
+
+  v_delta := case when v_direction = 'IN' then v_qty else -v_qty end;
+
   insert into public.items as i (artist, category, album_version, option)
-  values (v_artist, category, v_album, v_option)
+  values (p_artist, p_category, p_album_version, v_option)
   on conflict (artist, category, album_version, option)
   do update set artist = excluded.artist
   returning i.id into v_item_id;
 
-  insert into public.inventory(item_id, location, quantity)
-  values (v_item_id, v_location, 0)
-  on conflict (item_id, location) do nothing;
+  insert into public.movements(item_id, location, direction, quantity, memo, created_by, idempotency_key)
+  values (v_item_id, v_location, v_direction, v_qty, v_memo, p_created_by, v_idem)
+  on conflict (idempotency_key) do nothing
+  returning id into v_movement_id;
 
-  select quantity
-    into v_existing
-    from public.inventory
-   where item_id = v_item_id
-     and location = v_location
-   for update;
+  if v_movement_id is null then
+    select id, item_id
+      into v_movement_id, v_item_id
+      from public.movements
+     where idempotency_key = v_idem;
 
-  if v_direction = 'OUT' and v_existing < v_qty then
-    raise exception 'insufficient stock';
-  end if;
+    select quantity
+      into v_inventory_qty
+      from public.inventory
+     where item_id = v_item_id
+       and location = v_location;
 
-  if v_direction = 'IN' then
-    v_new := v_existing + v_qty;
-  elsif v_direction = 'OUT' then
-    v_new := v_existing - v_qty;
-  else
-    v_new := v_qty;
+    return json_build_object(
+      'ok', true,
+      'duplicated', true,
+      'movement_id', v_movement_id,
+      'item_id', v_item_id,
+      'inventory_quantity', coalesce(v_inventory_qty, 0),
+      'message', 'duplicate request ignored'
+    );
   end if;
 
   update public.inventory
-     set quantity = v_new,
+     set quantity = quantity + v_delta,
          updated_at = now()
    where item_id = v_item_id
-     and location = v_location;
+     and location = v_location
+  returning quantity into v_inventory_qty;
 
-  get diagnostics v_rowcount = row_count;
-  if v_rowcount <= 0 then
+  if v_inventory_qty is null then
+    insert into public.inventory(item_id, location, quantity)
+    values (v_item_id, v_location, v_delta)
+    returning quantity into v_inventory_qty;
+  end if;
+
+  if v_inventory_qty is null then
     raise exception 'inventory update failed';
   end if;
 
-  insert into public.movements(
-    item_id,
-    location,
-    direction,
-    quantity,
-    memo,
-    created_by,
-    idempotency_key,
-    opening,
-    closing,
-    created_at
-  ) values (
-    v_item_id,
-    v_location,
-    v_direction,
-    v_qty,
-    v_memo,
-    created_by,
-    v_idem,
-    v_existing,
-    v_new,
-    now()
-  ) returning id into v_movement_id;
-
   return json_build_object(
     'ok', true,
-    'idempotent', false,
-    'movement_inserted', true,
-    'inventory_updated', true,
-    'opening', v_existing,
-    'closing', v_new,
-    'item_id', v_item_id,
+    'duplicated', false,
     'movement_id', v_movement_id,
+    'item_id', v_item_id,
+    'inventory_quantity', v_inventory_qty,
     'message', 'ok'
   );
-exception
-  when others then
-    raise;
 end;
 $$ language plpgsql security definer;
 
@@ -381,3 +354,59 @@ grant execute on function public.create_user(text, text, public.user_role) to se
 -- smoke test
 -- select * from public.inventory_view limit 1;
 -- select public.record_movement('A','album','v1','', 'loc1', 1, 'IN', 'test', null, 'k1');
+
+-- admin update user with transactional consistency across users and user_profiles
+create or replace function public.admin_update_user(
+  p_id uuid,
+  p_approved boolean default null,
+  p_role public.user_role default null,
+  p_actor_id uuid default null
+) returns admin_users_view as $$
+declare
+  v_row admin_users_view%rowtype;
+  v_count int;
+begin
+  if p_id is null then
+    raise exception 'id is required';
+  end if;
+
+  update public.users
+     set approved = coalesce(p_approved, approved),
+         role = coalesce(p_role, role)
+   where id = p_id;
+
+  get diagnostics v_count = row_count;
+  if v_count = 0 then
+    raise exception 'user not found';
+  end if;
+
+  update public.user_profiles
+     set approved = coalesce(p_approved, approved),
+         approved_at = case
+           when p_approved is true then now()
+           when p_approved is false then null
+           else approved_at
+         end,
+         approved_by = case
+           when p_approved is true then p_actor_id
+           when p_approved is false then null
+           else approved_by
+         end
+   where user_id = p_id;
+
+  get diagnostics v_count = row_count;
+  if v_count = 0 then
+    raise exception 'user profile not found';
+  end if;
+
+  select * into v_row from public.admin_users_view where id = p_id;
+  if not found then
+    raise exception 'user not found in admin_users_view';
+  end if;
+
+  return v_row;
+exception
+  when others then
+    raise;
+end;
+$$ language plpgsql security definer;

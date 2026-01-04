@@ -6,7 +6,6 @@ const publicPaths = [
   '/api/auth/logout',
   '/api/auth/register',
   '/api/auth/me',
-  '/api/auth/request-otp',
   '/auth/callback',
   '/',
 ];

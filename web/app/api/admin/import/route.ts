@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import { read, utils } from 'xlsx';
 import { withAuth } from '../../../../lib/auth';
 import { supabaseAdmin } from '../../../../lib/supabase';
-import { recordAdminLog } from '../../../../lib/admin-log';
 
 export const runtime = 'nodejs';
 
@@ -177,12 +176,6 @@ export async function POST(req: Request) {
 
       historyCount += 1;
     }
-
-    await recordAdminLog(
-      session,
-      'upload_inventory',
-      `재고 ${stockCount}건, 이력 ${historyCount}건 업로드`
-    );
 
     return NextResponse.json({ ok: true, stockCount, historyCount });
   });

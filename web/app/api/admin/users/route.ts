@@ -1,9 +1,34 @@
 import { NextResponse } from 'next/server';
 import { withAuth } from '../../../../lib/auth';
 import { supabaseAdmin } from '../../../../lib/supabase';
-import { recordAdminLog } from '../../../../lib/admin-log';
-import { createUserWithProfile } from '../../../../lib/create-user';
 import type { Role } from '../../../../lib/session';
+
+type AdminUserRow = {
+  id: string;
+  email: string;
+  full_name?: string | null;
+  department?: string | null;
+  contact?: string | null;
+  purpose?: string | null;
+  role: Role;
+  approved: boolean;
+  created_at: string;
+};
+
+function mapAdminUser(row: AdminUserRow) {
+  return {
+    id: row.id,
+    username: (row.email ?? '').split('@')[0] || row.email || '',
+    approved: Boolean(row.approved),
+    role: (row.role as Role | undefined) ?? 'viewer',
+    email: row.email ?? '',
+    full_name: row.full_name ?? '',
+    department: row.department ?? '',
+    contact: row.contact ?? '',
+    purpose: row.purpose ?? '',
+    created_at: row.created_at ?? '',
+  };
+}
 
 export async function GET() {
   return withAuth(['admin'], async () => {
@@ -16,57 +41,9 @@ export async function GET() {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const mapped = (data || []).map((row: any) => ({
-      id: row.id,
-      username: (row.email ?? '').split('@')[0] || row.email || '',
-      approved: Boolean(row.approved),
-      role: (row.role as Role | undefined) ?? 'viewer',
-      email: row.email ?? '',
-      full_name: row.full_name ?? '',
-      department: row.department ?? '',
-      contact: row.contact ?? '',
-      purpose: row.purpose ?? '',
-      created_at: row.created_at ?? '',
-    }));
+    const mapped = (data || []).map((row: AdminUserRow) => mapAdminUser(row));
 
     return NextResponse.json(mapped);
-  });
-}
-
-export async function POST(req: Request) {
-  return withAuth(['admin'], async (session) => {
-    const { username, password, role, full_name, department, contact, purpose } = await req.json();
-
-    if (!username || !full_name || !department) {
-      return NextResponse.json({ error: 'ID/성함/부서를 모두 입력하세요.' }, { status: 400 });
-    }
-
-    const userRole: Role = (role as Role) || 'viewer';
-
-    try {
-      const result = await createUserWithProfile({
-        username: String(username).toLowerCase().trim(),
-        password: password ? String(password) : undefined,
-        role: userRole,
-        active: true,
-        approved: true,
-        approved_by: session.userId,
-        full_name: String(full_name ?? ''),
-        department: String(department ?? ''),
-        contact: String(contact ?? ''),
-        purpose: String(purpose ?? ''),
-      });
-
-      await recordAdminLog(
-        session,
-        'create_user',
-        `${username} (${result.role}) / ${full_name ?? ''}`
-      );
-
-      return NextResponse.json({ ok: true, role: result.role, user_id: result.userId });
-    } catch (err: any) {
-      return NextResponse.json({ error: err?.message || '계정 생성 실패' }, { status: 400 });
-    }
   });
 }
 
@@ -75,6 +52,14 @@ export async function PATCH(req: Request) {
     const { id, role, approved } = await req.json();
     if (!id) {
       return NextResponse.json({ error: 'id is required' }, { status: 400 });
+    }
+
+    const actorId = session.userId ?? (session as any)?.user?.id ?? (session as any)?.user_id ?? null;
+    if (!actorId) {
+      return NextResponse.json(
+        { ok: false, step: 'validation', error: 'missing actor id' },
+        { status: 401 }
+      );
     }
 
     const updates: Record<string, any> = {};
@@ -95,13 +80,35 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: 'no updates provided' }, { status: 400 });
     }
 
-    const { error } = await supabaseAdmin.from('users').update(updates).eq('id', id);
+    const { data, error } = await supabaseAdmin.rpc('admin_update_user', {
+      id,
+      approved,
+      role,
+      actor_id: actorId,
+    });
+
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+      return NextResponse.json(
+        {
+          ok: false,
+          step: 'admin_update_user_rpc',
+          error: error.message,
+          details: (error as any)?.details ?? null,
+          hint: (error as any)?.hint ?? null,
+          code: (error as any)?.code ?? null,
+        },
+        { status: 500 }
+      );
     }
 
-    await recordAdminLog(session, 'update_user', `${id} ${role ?? ''} ${approved ?? ''}`.trim());
+    if (!data) {
+      return NextResponse.json(
+        { ok: false, step: 'admin_update_user_rpc', error: 'no data returned' },
+        { status: 500 }
+      );
+    }
 
-    return NextResponse.json({ ok: true });
+    const row = Array.isArray(data) ? data[0] : data;
+    return NextResponse.json({ ok: true, user: mapAdminUser(row as AdminUserRow) });
   });
 }

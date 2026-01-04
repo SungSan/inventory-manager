@@ -1,8 +1,13 @@
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
+import { unstable_noStore as noStore } from 'next/cache';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../lib/supabase';
 import { withAuth } from '../../../lib/auth';
 
 export async function GET(req: Request) {
+  noStore();
   return withAuth(['admin', 'operator', 'viewer'], async () => {
     const { data, error } = await supabaseAdmin
       .from('movements_view')
