@@ -161,6 +161,7 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
     const album_version = row.album_version ?? '';
     const option = row.option ?? '';
     const key = `${artist}|${category}|${album_version}|${option}`;
+    const qty = Number(row.quantity ?? 0);
 
     if (!grouped.has(key)) {
       grouped.set(key, {
@@ -175,12 +176,12 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
     }
 
     const entry = grouped.get(key)!;
-    entry.total_quantity += row.quantity ?? 0;
+    entry.total_quantity += qty;
     entry.locations.push({
       id: `${key}|${row.location}|${idx}`,
       editableId: null,
       location: row.location,
-      quantity: row.quantity ?? 0,
+      quantity: qty,
     });
   });
 
@@ -944,12 +945,11 @@ export default function Home() {
     return stock.filter((row) => row.album_version.toLowerCase().includes(albumVersionFilter));
   }, [albumVersionFilter, stock]);
 
-  const anomalousStock = useMemo(
-    () => baseStock.filter((row) => row.locations.some((loc) => loc.quantity < 0)),
-    [baseStock]
-  );
+  const anomalousStock = useMemo(() => {
+    return baseStock.filter((row) => row.locations.some((loc) => Number(loc.quantity) < 0));
+  }, [baseStock]);
 
-  const anomalyCount = anomalousStock.length;
+  const anomalyCount = Math.max(anomalousStock.length, Number(inventoryMeta.anomalyCount ?? 0));
 
   const filteredStock = useMemo(() => {
     if (showAnomalies) {
@@ -1047,10 +1047,20 @@ export default function Home() {
 
   const totalQuantity = inventoryMeta.summary.totalQuantity;
   const distinctItems = inventoryMeta.summary.uniqueItems;
-  const locationBreakdown = useMemo(
-    () => Object.entries(inventoryMeta.summary.byLocation || {}).sort((a, b) => Number(b[1]) - Number(a[1])),
-    [inventoryMeta.summary.byLocation]
-  );
+  const locationBreakdown = useMemo(() => {
+    const fromSummary = Object.entries(inventoryMeta.summary.byLocation || {}).sort(
+      (a, b) => Number(b[1]) - Number(a[1])
+    );
+    if (fromSummary.length > 0) return fromSummary;
+
+    const aggregate = new Map<string, number>();
+    filteredStock.forEach((row) => {
+      row.locations.forEach((loc) => {
+        aggregate.set(loc.location, (aggregate.get(loc.location) ?? 0) + Number(loc.quantity ?? 0));
+      });
+    });
+    return Array.from(aggregate.entries()).sort((a, b) => Number(b[1]) - Number(a[1]));
+  }, [filteredStock, inventoryMeta.summary.byLocation]);
   const totalPages = Math.max(1, Math.ceil((inventoryPage.totalRows || 0) / inventoryPage.limit));
   const currentPage = Math.min(totalPages, Math.floor(inventoryPage.offset / inventoryPage.limit) + 1);
   const canPrevPage = inventoryPage.offset > 0;
@@ -1510,7 +1520,7 @@ export default function Home() {
               actions={
                 <div className="filter-row">
                   <form className="filter-row inventory-filters" onSubmit={handleInventorySearchSubmit}>
-                    <div className="filter-stack">
+                    <div className="filter-stack primary-stack">
                       <input
                         className="inline-input"
                         placeholder="검색 (아티스트/버전/옵션/위치)"
@@ -1530,7 +1540,7 @@ export default function Home() {
                         초기화
                       </button>
                     </div>
-                    <div className="filter-stack wrap">
+                    <div className="filter-stack wrap secondary-stack">
                       <select
                         className="scroll-select"
                         value={stockFilters.artist}
@@ -2034,9 +2044,9 @@ export default function Home() {
     </main>
     <style jsx global>{`
       .inventory-filters {
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 0.75rem;
         align-items: stretch;
       }
 
@@ -2047,17 +2057,22 @@ export default function Home() {
         align-items: center;
       }
 
+      .primary-stack {
+        width: 100%;
+      }
+
       .filter-stack.wrap {
         justify-content: flex-start;
       }
 
       @media (min-width: 768px) {
         .inventory-filters {
-          flex-direction: column;
-          gap: 0.75rem;
+          grid-template-columns: 2fr 1fr;
+          align-items: flex-start;
         }
-        .filter-stack {
-          flex-wrap: wrap;
+        .primary-stack,
+        .secondary-stack {
+          width: 100%;
         }
       }
 
@@ -2079,11 +2094,30 @@ export default function Home() {
       .stats {
         display: grid;
         gap: 0.75rem;
+        grid-template-columns: 1fr;
       }
 
       @media (min-width: 640px) {
         .stats {
           grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        }
+      }
+
+      @media (max-width: 480px) {
+        .filter-row .filter-stack button,
+        .filter-row .filter-stack .inline-input,
+        .filter-row .filter-stack select {
+          flex: 1 1 100%;
+        }
+
+        .filter-row .filter-stack {
+          justify-content: stretch;
+        }
+
+        .alert-row {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 0.5rem;
         }
       }
     `}</style>
