@@ -66,6 +66,10 @@ export async function GET() {
       locations: row.locations.sort((a, b) => a.location.localeCompare(b.location)),
     }));
 
-    return NextResponse.json(rows);
+    return NextResponse.json(rows, {
+      headers: {
+        'Cache-Control': 'no-store',
+      },
+    });
   });
 }

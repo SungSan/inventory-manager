@@ -443,6 +443,7 @@ export default function Home() {
       const payload = await histRes.json().catch(() => null);
       const message = payload?.error || payload?.message || '입출고 이력 불러오기 실패';
       setStatus(message);
+      alert(message);
     }
   }
 

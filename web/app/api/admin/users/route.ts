@@ -49,9 +49,16 @@ export async function GET() {
 
 export async function PATCH(req: Request) {
   return withAuth(['admin'], async (session) => {
-    const { id, role, approved } = await req.json();
+    let body: any;
+    try {
+      body = await req.json();
+    } catch (error) {
+      return NextResponse.json({ ok: false, step: 'parse_body', error: 'invalid json body' }, { status: 400 });
+    }
+
+    const { id, role, approved } = body ?? {};
     if (!id) {
-      return NextResponse.json({ error: 'id is required' }, { status: 400 });
+      return NextResponse.json({ ok: false, step: 'validation', error: 'id is required' }, { status: 400 });
     }
 
     const actorId = session.userId ?? (session as any)?.user?.id ?? (session as any)?.user_id ?? null;
@@ -68,47 +75,113 @@ export async function PATCH(req: Request) {
       updates.approved = approved;
     }
 
-    if (role) {
+    if (typeof role !== 'undefined') {
       const allowed: Role[] = ['admin', 'operator', 'viewer'];
       if (!allowed.includes(role as Role)) {
-        return NextResponse.json({ error: 'invalid role' }, { status: 400 });
+        return NextResponse.json({ ok: false, step: 'validation', error: 'invalid role' }, { status: 400 });
       }
       updates.role = role as Role;
     }
 
     if (Object.keys(updates).length === 0) {
-      return NextResponse.json({ error: 'no updates provided' }, { status: 400 });
+      return NextResponse.json({ ok: false, step: 'validation', error: 'no updates provided' }, { status: 400 });
     }
 
-    const { data, error } = await supabaseAdmin.rpc('admin_update_user', {
-      id,
-      approved,
-      role,
-      actor_id: actorId,
-    });
+    const { data: existingUser, error: fetchUserError } = await supabaseAdmin
+      .from('users')
+      .select('approved, role')
+      .eq('id', id)
+      .single();
 
-    if (error) {
+    if (fetchUserError) {
+      return NextResponse.json(
+        { ok: false, step: 'fetch_user', error: fetchUserError.message },
+        { status: 500 }
+      );
+    }
+
+    const { data: updatedUser, error: updateUsersError } = await supabaseAdmin
+      .from('users')
+      .update(updates)
+      .eq('id', id)
+      .select('id,email,full_name,department,contact,purpose,role,approved,created_at')
+      .single();
+
+    if (updateUsersError) {
       return NextResponse.json(
         {
           ok: false,
-          step: 'admin_update_user_rpc',
-          error: error.message,
-          details: (error as any)?.details ?? null,
-          hint: (error as any)?.hint ?? null,
-          code: (error as any)?.code ?? null,
+          step: 'update_users',
+          error: updateUsersError.message,
+          details: (updateUsersError as any)?.details ?? null,
+          hint: (updateUsersError as any)?.hint ?? null,
+          code: (updateUsersError as any)?.code ?? null,
         },
         { status: 500 }
       );
     }
 
-    if (!data) {
+    if (!updatedUser) {
       return NextResponse.json(
-        { ok: false, step: 'admin_update_user_rpc', error: 'no data returned' },
+        { ok: false, step: 'update_users', error: 'no user row returned' },
         { status: 500 }
       );
     }
 
-    const row = Array.isArray(data) ? data[0] : data;
-    return NextResponse.json({ ok: true, user: mapAdminUser(row as AdminUserRow) });
+    if (typeof approved === 'boolean') {
+      const profileUpdates = {
+        approved,
+        approved_at: approved ? new Date().toISOString() : null,
+        approved_by: approved ? actorId : null,
+      };
+
+      const { data: profileRow, error: profileError } = await supabaseAdmin
+        .from('user_profiles')
+        .update(profileUpdates)
+        .eq('user_id', id)
+        .select('user_id')
+        .single();
+
+      if (profileError || !profileRow) {
+        await supabaseAdmin
+          .from('users')
+          .update({ approved: existingUser?.approved, role: existingUser?.role })
+          .eq('id', id);
+
+        return NextResponse.json(
+          {
+            ok: false,
+            step: 'update_user_profiles',
+            error: profileError?.message || 'failed to update user_profiles',
+            details: (profileError as any)?.details ?? null,
+            hint: (profileError as any)?.hint ?? null,
+            code: (profileError as any)?.code ?? null,
+          },
+          { status: 500 }
+        );
+      }
+    }
+
+    const { data: viewRow, error: viewError } = await supabaseAdmin
+      .from('admin_users_view')
+      .select('id,email,full_name,department,contact,purpose,role,approved,created_at')
+      .eq('id', id)
+      .single();
+
+    if (viewError || !viewRow) {
+      return NextResponse.json(
+        {
+          ok: false,
+          step: 'admin_users_view',
+          error: viewError?.message || 'failed to load admin_users_view',
+          details: (viewError as any)?.details ?? null,
+          hint: (viewError as any)?.hint ?? null,
+          code: (viewError as any)?.code ?? null,
+        },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ ok: true, user: mapAdminUser(viewRow as AdminUserRow) });
   });
 }
