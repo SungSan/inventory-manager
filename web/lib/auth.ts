@@ -77,23 +77,52 @@ export async function loginWithUsername(rawUsername: string, password: string) {
     throw new Error('인증 정보를 확인할 수 없습니다.');
   }
 
-  const { data: userRowById, error: userError } = await supabaseAdmin
-    .from('users')
-    .select('id, email, role, active, approved')
+  const { data: adminViewRow, error: adminViewError } = await supabaseAdmin
+    .from('admin_users_view')
+    .select('id, email, role, active, approved, full_name, department, contact, purpose')
     .eq('id', authUser.id)
-    .single();
+    .maybeSingle();
 
-  if (userError && userError.code !== 'PGRST116') {
-    throw new Error(userError.message);
+  if (adminViewError && adminViewError.code !== 'PGRST116') {
+    throw new Error(adminViewError.message);
   }
 
-  const userRow = userRowById ?? (await supabaseAdmin
-    .from('users')
-    .select('id, email, role, active, approved')
-    .eq('email', email)
-    .maybeSingle()).data;
+  let viewRow = adminViewRow ?? null;
 
-  const approvedFlag = special ? true : userRow?.approved ?? false;
+  if (!viewRow) {
+    const usernameForProfile = normalizedUsername;
+    await supabaseAdmin.from('users').upsert({
+      id: authUser.id,
+      email,
+      role: 'viewer',
+      approved: false,
+      active: false,
+    });
+
+    await supabaseAdmin.from('user_profiles').upsert({
+      user_id: authUser.id,
+      username: usernameForProfile,
+      role: 'viewer',
+      approved: false,
+      full_name: (authUser.user_metadata as any)?.full_name ?? '',
+      department: (authUser.user_metadata as any)?.department ?? '',
+      contact: (authUser.user_metadata as any)?.contact ?? '',
+      purpose: (authUser.user_metadata as any)?.purpose ?? '',
+      requested_at: new Date().toISOString(),
+      approved_at: null,
+      approved_by: null,
+    });
+
+    const { data: refreshedRow } = await supabaseAdmin
+      .from('admin_users_view')
+      .select('id, email, role, active, approved, full_name, department, contact, purpose')
+      .eq('id', authUser.id)
+      .maybeSingle();
+
+    viewRow = refreshedRow ?? null;
+  }
+
+  const approvedFlag = special ? true : viewRow?.approved ?? false;
 
   if (!approvedFlag) {
     const err = new Error('관리자 승인 대기 중입니다. 관리자에게 승인 요청하세요.');
@@ -101,24 +130,24 @@ export async function loginWithUsername(rawUsername: string, password: string) {
     throw err;
   }
 
-  if (userRow && userRow.active === false) {
+  if (viewRow && viewRow.active === false) {
     throw new Error('비활성화된 계정입니다. 관리자에게 문의하세요.');
   }
 
-  const role: Role = (userRow?.role as Role) ?? (special ? 'admin' : 'viewer');
+  const role: Role = (viewRow?.role as Role) ?? (special ? 'admin' : 'viewer');
 
   await supabaseAdmin
     .from('users')
     .upsert({
-      id: userRow?.id ?? authUser.id,
+      id: viewRow?.id ?? authUser.id,
       email,
       role,
       approved: approvedFlag,
-      active: userRow?.active ?? true,
+      active: viewRow?.active ?? true,
     });
 
   return {
-    id: userRow?.id ?? authUser.id,
+    id: viewRow?.id ?? authUser.id,
     email,
     role,
   };
@@ -145,18 +174,52 @@ export async function loginWithAccessToken(
     throw new Error('ID와 이메일이 일치하지 않습니다. @ 문자를 포함하지 않는 사내 ID만 입력하세요.');
   }
 
-  const { data: userRow, error: userError } = await supabaseAdmin
-    .from('users')
-    .select('id, email, role, active, approved')
+  const { data: adminViewRow, error: adminViewError } = await supabaseAdmin
+    .from('admin_users_view')
+    .select('id, email, role, active, approved, full_name, department, contact, purpose')
     .eq('id', authUser.user.id)
-    .single();
+    .maybeSingle();
 
-  if (userError && userError.code !== 'PGRST116') {
-    throw new Error(userError.message);
+  if (adminViewError && adminViewError.code !== 'PGRST116') {
+    throw new Error(adminViewError.message);
+  }
+
+  let viewRow = adminViewRow ?? null;
+
+  if (!viewRow) {
+    await supabaseAdmin.from('users').upsert({
+      id: authUser.user.id,
+      email,
+      role: 'viewer',
+      approved: false,
+      active: false,
+    });
+
+    await supabaseAdmin.from('user_profiles').upsert({
+      user_id: authUser.user.id,
+      username: username,
+      role: 'viewer',
+      approved: false,
+      full_name: (authUser.user_metadata as any)?.full_name ?? '',
+      department: (authUser.user_metadata as any)?.department ?? '',
+      contact: (authUser.user_metadata as any)?.contact ?? '',
+      purpose: (authUser.user_metadata as any)?.purpose ?? '',
+      requested_at: new Date().toISOString(),
+      approved_at: null,
+      approved_by: null,
+    });
+
+    const { data: refreshedRow } = await supabaseAdmin
+      .from('admin_users_view')
+      .select('id, email, role, active, approved, full_name, department, contact, purpose')
+      .eq('id', authUser.user.id)
+      .maybeSingle();
+
+    viewRow = refreshedRow ?? null;
   }
 
   const bypassApproval = authUser.user.email?.toLowerCase() === SPECIAL_EMAIL || special;
-  const approvedFlag = bypassApproval ? true : userRow?.approved ?? false;
+  const approvedFlag = bypassApproval ? true : viewRow?.approved ?? false;
 
   if (!approvedFlag) {
     const err = new Error('관리자 승인 대기 중입니다. 관리자에게 승인 요청하세요.');
@@ -164,20 +227,24 @@ export async function loginWithAccessToken(
     throw err;
   }
 
-  const nextRole: Role = (userRow?.role as Role) ?? (bypassApproval ? 'admin' : 'viewer');
+  if (viewRow && viewRow.active === false) {
+    throw new Error('비활성화된 계정입니다. 관리자에게 문의하세요.');
+  }
+
+  const nextRole: Role = (viewRow?.role as Role) ?? (bypassApproval ? 'admin' : 'viewer');
 
   await supabaseAdmin
     .from('users')
     .upsert({
-      id: authUser.user.id,
+      id: viewRow?.id ?? authUser.user.id,
       email,
       role: nextRole,
       approved: approvedFlag,
-      active: userRow?.active ?? true,
+      active: viewRow?.active ?? true,
     });
 
   return {
-    id: authUser.user.id,
+    id: viewRow?.id ?? authUser.user.id,
     email,
     role: nextRole,
   };
