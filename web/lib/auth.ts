@@ -279,8 +279,41 @@ export async function clearSession(req: NextRequest) {
 
 export async function withAuth(roles: Role[], handler: (session: SessionData) => Promise<NextResponse>) {
   const session = await getSession();
-  if (!session.userId || !session.role || !roles.includes(session.role as Role)) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+  if (!session.userId) {
+    return NextResponse.json({ error: 'forbidden', step: 'missing_session_user' }, { status: 403 });
   }
+
+  const { data: userRow, error } = await supabaseAdmin
+    .from('users')
+    .select('id, role, approved, active')
+    .eq('id', session.userId)
+    .maybeSingle();
+
+  if (error) {
+    return NextResponse.json(
+      { error: error.message, step: 'load_user', details: (error as any)?.details ?? null },
+      { status: 500 }
+    );
+  }
+
+  if (!userRow) {
+    return NextResponse.json({ error: 'forbidden', step: 'missing_user' }, { status: 403 });
+  }
+
+  const role: Role = (userRow.role as Role) ?? (session.role as Role);
+
+  if (userRow.approved === false) {
+    return NextResponse.json({ error: 'forbidden', step: 'not_approved' }, { status: 403 });
+  }
+
+  if (userRow.active === false) {
+    return NextResponse.json({ error: 'forbidden', step: 'inactive' }, { status: 403 });
+  }
+
+  if (!roles.includes(role)) {
+    return NextResponse.json({ error: 'forbidden', step: 'insufficient_role' }, { status: 403 });
+  }
+
+  session.role = role;
   return handler(session);
 }
