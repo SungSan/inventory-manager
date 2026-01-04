@@ -28,12 +28,13 @@ export async function POST(req: Request) {
 
     const trimmedArtist = String(artist ?? '').trim();
     const trimmedAlbum = String(album_version ?? '').trim();
-    const effectiveLocation = String(location ?? '').trim();
     const normalizedQuantity = Number(quantity);
     const normalizedMemo = String(memo ?? '').trim();
     const normalizedDirection = String(direction ?? '').toUpperCase();
     const normalizedCategory = String(category ?? '').trim();
     const normalizedOption = String(option ?? '').trim();
+    const rawLocation = String(location ?? '').trim();
+    const effectiveLocation = rawLocation || normalizedOption;
 
     if (!trimmedArtist || !normalizedCategory || !trimmedAlbum || !effectiveLocation || !normalizedDirection) {
       const error = 'missing fields';
@@ -65,11 +66,19 @@ export async function POST(req: Request) {
 
     const idempotencyRaw = idempotency_key ?? idempotencyKey ?? randomUUID();
     const idempotency = idempotencyRaw ? String(idempotencyRaw).trim() : randomUUID();
+    const createdBy = session.userId ?? (session as any)?.user?.id ?? (session as any)?.user_id ?? null;
+
+    if (!createdBy) {
+      return NextResponse.json(
+        { ok: false, step: 'validation', error: 'missing created_by' },
+        { status: 401 }
+      );
+    }
     const payload = {
       album_version: trimmedAlbum,
       artist: trimmedArtist,
       category: normalizedCategory,
-      created_by: session.userId,
+      created_by: createdBy,
       direction: normalizedDirection,
       idempotency_key: idempotency,
       location: effectiveLocation,
