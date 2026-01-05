@@ -8,6 +8,8 @@ type InventoryLocation = {
   location: string;
   quantity: number;
   editableId?: string | null;
+  item_id?: string | null;
+  inventory_id?: string | null;
 };
 
 type InventoryRow = {
@@ -18,6 +20,8 @@ type InventoryRow = {
   option: string;
   total_quantity: number;
   locations: InventoryLocation[];
+  inventory_id?: string | null;
+  item_id?: string | null;
 };
 
 type InventoryApiRow = {
@@ -157,8 +161,8 @@ const parseKstDate = (value: string) => Date.parse(`${value}T00:00:00+09:00`);
 function normalizeStockToApiRows(rows: InventoryRow[]): InventoryApiRow[] {
   return rows.flatMap((row, idx) =>
     row.locations.map((loc, locIdx) => ({
-      inventory_id: loc.editableId ?? loc.id ?? `${row.key}|${loc.location}|${idx}|${locIdx}`,
-      item_id: undefined,
+      inventory_id: loc.editableId ?? loc.inventory_id ?? loc.id ?? `${row.key}|${loc.location}|${idx}|${locIdx}`,
+      item_id: loc.item_id ?? row.item_id ?? undefined,
       artist: row.artist,
       category: row.category,
       album_version: row.album_version,
@@ -189,14 +193,24 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
         option,
         total_quantity: 0,
         locations: [],
+        inventory_id: row.inventory_id ?? null,
+        item_id: row.item_id ?? null,
       });
     }
 
     const entry = grouped.get(key)!;
     entry.total_quantity += qty;
+    if (!entry.item_id && row.item_id) {
+      entry.item_id = row.item_id;
+    }
+    if (!entry.inventory_id && row.inventory_id) {
+      entry.inventory_id = row.inventory_id;
+    }
     entry.locations.push({
       id: row.inventory_id || `${key}|${row.location}|${idx}`,
       editableId: row.inventory_id ?? null,
+      inventory_id: row.inventory_id ?? null,
+      item_id: row.item_id ?? null,
       location: row.location,
       quantity: qty,
     });
