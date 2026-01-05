@@ -64,6 +64,7 @@ type HistoryRow = {
   location: string;
   from_location?: string | null;
   to_location?: string | null;
+  transfer_group_id?: string | null;
   quantity: number;
   created_by: string;
   created_by_name?: string;
@@ -719,6 +720,7 @@ export default function Home() {
         created_by_department: row.created_by_department ?? '',
         from_location: row.from_location ?? '',
         to_location: row.to_location ?? '',
+        transfer_group_id: row.transfer_group_id ?? null,
       }));
       setHistory(rows);
     } else {

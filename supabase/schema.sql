@@ -129,7 +129,8 @@ create table if not exists public.movements (
   created_at timestamptz not null default now(),
   idempotency_key text unique,
   opening integer,
-  closing integer
+  closing integer,
+  barcode text
 );
 
 create unique index if not exists movements_idempotency_key_uniq
