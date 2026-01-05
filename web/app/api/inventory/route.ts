@@ -17,10 +17,23 @@ export async function GET(req: Request) {
   const limit = Number.isFinite(limitParam) ? Math.min(Math.max(1, limitParam), MAX_LIMIT) : DEFAULT_LIMIT;
   const offset = Number.isFinite(offsetParam) && offsetParam > 0 ? offsetParam : 0;
 
-  return withAuth(['admin', 'operator', 'viewer'], async () => {
+  return withAuth(['admin', 'operator', 'viewer', 'l_operator'], async (session) => {
+    let enforcedLocation = location || undefined;
+    if (session.role === 'l_operator') {
+      const { data: scope, error: scopeError } = await supabaseAdmin
+        .from('user_location_permissions')
+        .select('primary_location')
+        .eq('user_id', session.userId)
+        .maybeSingle();
+      if (scopeError || !scope?.primary_location) {
+        return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
+      }
+      enforcedLocation = scope.primary_location;
+    }
+
     let query = supabaseAdmin
       .from('inventory_view')
-      .select('inventory_id,item_id,artist,category,album_version,option,location,quantity', { count: 'exact' })
+      .select('inventory_id,item_id,artist,category,album_version,option,barcode,location,quantity', { count: 'exact' })
       .order('artist', { ascending: true })
       .order('album_version', { ascending: true })
       .order('option', { ascending: true })
@@ -28,7 +41,7 @@ export async function GET(req: Request) {
       .range(offset, offset + limit - 1);
 
     if (artist) query = query.eq('artist', artist);
-    if (location) query = query.eq('location', location);
+    if (enforcedLocation) query = query.eq('location', enforcedLocation);
     if (category) query = query.eq('category', category);
     if (albumVersion) {
       const term = `%${albumVersion}%`;
@@ -38,7 +51,9 @@ export async function GET(req: Request) {
     if (q) {
       const term = `%${q}%`;
       query = query.or(
-        ['artist', 'album_version', 'option', 'location'].map((col) => `${col}.ilike.${term}`).join(',')
+        ['artist', 'album_version', 'option', 'location', 'barcode']
+          .map((col) => `${col}.ilike.${term}`)
+          .join(',')
       );
     }
 

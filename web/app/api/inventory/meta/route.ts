@@ -13,24 +13,36 @@ export async function GET(req: Request) {
 
   const qTerm = albumVersion || q || undefined;
 
-  return withAuth(['admin', 'operator', 'viewer'], async () => {
+  return withAuth(['admin', 'operator', 'viewer', 'l_operator'], async (session) => {
+    let enforcedLocation = location || undefined;
+    if (session.role === 'l_operator') {
+      const { data: scope, error: scopeError } = await supabaseAdmin
+        .from('user_location_permissions')
+        .select('primary_location')
+        .eq('user_id', session.userId)
+        .maybeSingle();
+      if (scopeError || !scope?.primary_location) {
+        return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
+      }
+      enforcedLocation = scope.primary_location;
+    }
     const [summaryRes, anomalyRes, artistsRes, locationsRes, categoriesRes] = await Promise.all([
       supabaseAdmin.rpc('get_inventory_summary_v2', {
         p_artist: artist ?? null,
         p_category: category ?? null,
-        p_location: location ?? null,
+        p_location: enforcedLocation ?? null,
         p_q: qTerm ?? null,
       }),
       supabaseAdmin.rpc('get_inventory_anomaly_count', {
         p_artist: artist ?? null,
         p_category: category ?? null,
-        p_location: location ?? null,
+        p_location: enforcedLocation ?? null,
         p_q: qTerm ?? null,
       }),
       supabaseAdmin.rpc('get_inventory_artists', {
         p_prefix: prefix ?? null,
         p_category: category ?? null,
-        p_location: location ?? null,
+        p_location: enforcedLocation ?? null,
         p_q: qTerm ?? null,
       }),
       supabaseAdmin.rpc('get_inventory_locations', {
@@ -40,7 +52,7 @@ export async function GET(req: Request) {
       }),
       supabaseAdmin.rpc('get_inventory_categories', {
         p_artist: artist ?? null,
-        p_location: location ?? null,
+        p_location: enforcedLocation ?? null,
         p_q: qTerm ?? null,
       }),
     ]);

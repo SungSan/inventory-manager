@@ -28,6 +28,20 @@ begin
   ) then
     create type public.user_role as enum ('admin','operator','viewer');
   end if;
+
+  if exists (
+    select 1 from pg_type t
+    join pg_enum e on t.oid = e.enumtypid
+    where t.typname = 'user_role'
+      and e.enumlabel = 'l_operator'
+  ) is false then
+    begin
+      alter type public.user_role add value 'l_operator';
+    exception when duplicate_object then
+      -- ignore if added concurrently
+      null;
+    end;
+  end if;
 end $$;
 
 create table if not exists public.users (
@@ -54,12 +68,41 @@ create table if not exists public.user_profiles (
 );
 create unique index if not exists user_profiles_user_id_ux on public.user_profiles(user_id);
 
+create table if not exists public.user_location_permissions (
+  user_id uuid primary key references public.users(id) on delete cascade,
+  primary_location text not null,
+  sub_locations text[] not null default '{}',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create or replace function public.touch_user_location_permissions()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+do $$
+begin
+  if not exists (select 1 from pg_trigger where tgname = 'trg_touch_user_location_permissions') then
+    create trigger trg_touch_user_location_permissions
+    before update on public.user_location_permissions
+    for each row
+    execute function public.touch_user_location_permissions();
+  end if;
+end$$;
+
 create table if not exists public.items (
   id uuid primary key default gen_random_uuid(),
   artist text not null,
   category text not null,
   album_version text not null,
-  option text not null default ''
+  option text not null default '',
+  barcode text
 );
 create unique index if not exists items_unique on public.items(artist, category, album_version, option);
 
@@ -76,7 +119,10 @@ create table if not exists public.movements (
   id uuid primary key default gen_random_uuid(),
   item_id uuid not null references public.items(id) on delete cascade,
   location text not null,
-  direction text not null check (direction in ('IN','OUT','ADJUST')),
+  direction text not null check (direction in ('IN','OUT','ADJUST','TRANSFER')),
+  from_location text,
+  to_location text,
+  transfer_group_id uuid,
   quantity integer not null,
   memo text default '',
   created_by uuid references public.users(id),
@@ -136,6 +182,7 @@ select
   i.category,
   i.album_version,
   i.option,
+  i.barcode,
   inv.location,
   inv.quantity
 from public.inventory inv
@@ -150,11 +197,15 @@ select
   i.category,
   i.album_version,
   i.option,
+  i.barcode,
   m.location,
+  m.from_location,
+  m.to_location,
   m.quantity,
   m.memo,
   m.item_id,
   m.created_by,
+  m.transfer_group_id,
   coalesce(p.full_name, u.email, m.created_by::text, '') as created_by_name,
   coalesce(p.department, '') as created_by_department
 from public.movements m
@@ -278,7 +329,8 @@ create or replace function public.record_movement_v2(
   location text,
   memo text default '',
   option text default '',
-  quantity int
+  quantity int,
+  barcode text default null
 ) returns json as $$
 #variable_conflict use_variable
 declare
@@ -323,10 +375,11 @@ begin
     end if;
   end if;
 
-  insert into public.items as i (artist, category, album_version, option)
-  values (v_artist, category, v_album, v_option)
+  insert into public.items as i (artist, category, album_version, option, barcode)
+  values (v_artist, category, v_album, v_option, barcode)
   on conflict (artist, category, album_version, option)
-  do update set artist = excluded.artist
+  do update set artist = excluded.artist,
+    barcode = coalesce(excluded.barcode, i.barcode)
   returning i.id into v_item_id;
 
   insert into public.inventory(item_id, location, quantity)
@@ -407,20 +460,21 @@ end;
 $$ language plpgsql security definer;
 
 grant execute on function public.record_movement_v2(
-  text, text, text, uuid, text, text, text, text, text, int
+  text, text, text, uuid, text, text, text, text, text, int, text
 ) to authenticated, service_role;
 
 create or replace function public.record_movement(
+  album_version text,
   artist text,
   category text,
-  album_version text,
-  option text,
-  location text,
-  quantity integer,
-  direction text,
-  memo text,
   created_by uuid,
-  idempotency_key text
+  direction text,
+  idempotency_key text,
+  location text,
+  memo text,
+  option text,
+  quantity integer,
+  barcode text default null
 ) returns json
 language sql
 security definer
@@ -436,12 +490,105 @@ as $$
     location,
     memo,
     option,
-    quantity
+    quantity,
+    barcode
   );
 $$;
 
 grant execute on function public.record_movement(
-  text, text, text, text, text, integer, text, text, uuid, text
+  text, text, text, uuid, text, text, text, text, text, integer, text
+) to authenticated, service_role;
+
+create or replace function public.record_transfer(
+  artist text,
+  category text,
+  album_version text,
+  option text,
+  from_location text,
+  to_location text,
+  quantity integer,
+  memo text default '',
+  created_by uuid default null,
+  idempotency_key text default null,
+  barcode text default null
+) returns json as $$
+#variable_conflict use_variable
+declare
+  v_item_id uuid;
+  v_group uuid := gen_random_uuid();
+  v_idem text := nullif(btrim(idempotency_key), '');
+  v_qty int := quantity;
+  v_from_qty int := 0;
+  v_to_qty int := 0;
+  v_from_new int := 0;
+  v_to_new int := 0;
+  v_out_id uuid;
+  v_in_id uuid;
+begin
+  if v_idem is not null then
+    select transfer_group_id
+      into v_group
+      from public.movements
+     where idempotency_key = v_idem
+       and direction = 'TRANSFER'
+     limit 1;
+    if found then
+      return json_build_object('ok', true, 'idempotent', true, 'transfer_group_id', v_group);
+    end if;
+  end if;
+
+  insert into public.items as i (artist, category, album_version, option, barcode)
+  values (artist, category, album_version, option, barcode)
+  on conflict (artist, category, album_version, option)
+  do update set barcode = coalesce(excluded.barcode, i.barcode)
+  returning i.id into v_item_id;
+
+  insert into public.inventory(item_id, location, quantity)
+  values (v_item_id, from_location, 0)
+  on conflict (item_id, location) do nothing;
+
+  insert into public.inventory(item_id, location, quantity)
+  values (v_item_id, to_location, 0)
+  on conflict (item_id, location) do nothing;
+
+  select quantity into v_from_qty from public.inventory where item_id = v_item_id and location = from_location for update;
+  select quantity into v_to_qty from public.inventory where item_id = v_item_id and location = to_location for update;
+
+  v_from_new := v_from_qty - v_qty;
+  v_to_new := v_to_qty + v_qty;
+
+  update public.inventory set quantity = v_from_new, updated_at = now() where item_id = v_item_id and location = from_location;
+  update public.inventory set quantity = v_to_new, updated_at = now() where item_id = v_item_id and location = to_location;
+
+  insert into public.movements(
+    item_id, location, direction, quantity, memo, created_by, idempotency_key, transfer_group_id, from_location, to_location, opening, closing, created_at
+  ) values (
+    v_item_id, from_location, 'TRANSFER', v_qty, memo, created_by, v_idem || '-out', v_group, from_location, to_location, v_from_qty, v_from_new, now()
+  ) returning id into v_out_id;
+
+  insert into public.movements(
+    item_id, location, direction, quantity, memo, created_by, idempotency_key, transfer_group_id, from_location, to_location, opening, closing, created_at
+  ) values (
+    v_item_id, to_location, 'TRANSFER', v_qty, memo, created_by, v_idem || '-in', v_group, from_location, to_location, v_to_qty, v_to_new, now()
+  ) returning id into v_in_id;
+
+  return json_build_object(
+    'ok', true,
+    'transfer_group_id', v_group,
+    'item_id', v_item_id,
+    'from_quantity', v_from_new,
+    'to_quantity', v_to_new,
+    'out_movement_id', v_out_id,
+    'in_movement_id', v_in_id
+  );
+exception
+  when others then
+    raise;
+end;
+$$ language plpgsql security definer;
+
+grant execute on function public.record_transfer(
+  text, text, text, text, text, text, integer, text, uuid, text, text
 ) to authenticated, service_role;
 
 -- diagnostics helper to confirm connected database and counts

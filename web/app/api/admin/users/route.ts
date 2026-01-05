@@ -14,6 +14,8 @@ type AdminUserRow = {
   approved: boolean;
   active: boolean;
   created_at: string;
+  primary_location?: string | null;
+  sub_locations?: string[] | null;
 };
 
 function mapAdminUser(row: AdminUserRow) {
@@ -29,6 +31,8 @@ function mapAdminUser(row: AdminUserRow) {
     contact: row.contact ?? '',
     purpose: row.purpose ?? '',
     created_at: row.created_at ?? '',
+    primary_location: row.primary_location ?? '',
+    sub_locations: row.sub_locations ?? [],
   };
 }
 
@@ -43,7 +47,21 @@ export async function GET() {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const mapped = (data || []).map((row: AdminUserRow) => mapAdminUser(row));
+    const ids = (data || []).map((row) => row.id).filter(Boolean);
+    let scopeMap: Record<string, { primary_location?: string | null; sub_locations?: string[] | null }> = {};
+    if (ids.length > 0) {
+      const { data: scopes } = await supabaseAdmin
+        .from('user_location_permissions')
+        .select('user_id, primary_location, sub_locations')
+        .in('user_id', ids);
+      scopeMap = Object.fromEntries(
+        (scopes || []).map((row: any) => [row.user_id, { primary_location: row.primary_location, sub_locations: row.sub_locations }])
+      );
+    }
+
+    const mapped = (data || []).map((row: AdminUserRow) =>
+      mapAdminUser({ ...row, primary_location: scopeMap[row.id]?.primary_location ?? null, sub_locations: scopeMap[row.id]?.sub_locations ?? [] })
+    );
 
     return NextResponse.json(mapped);
   });
@@ -58,7 +76,7 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ ok: false, step: 'parse_body', error: 'invalid json body' }, { status: 400 });
     }
 
-    const { id, role, approved } = body ?? {};
+    const { id, role, approved, primary_location, sub_locations } = body ?? {};
     if (!id) {
       return NextResponse.json({ ok: false, step: 'validation', error: 'id is required' }, { status: 400 });
     }
@@ -73,20 +91,22 @@ export async function PATCH(req: Request) {
 
     const updates: Record<string, any> = {};
 
+    const hasScope = typeof primary_location === 'string' || Array.isArray(sub_locations);
+
     if (typeof approved === 'boolean') {
       updates.approved = approved;
       updates.active = approved;
     }
 
     if (typeof role !== 'undefined') {
-      const allowed: Role[] = ['admin', 'operator', 'viewer'];
+      const allowed: Role[] = ['admin', 'operator', 'viewer', 'l_operator'];
       if (!allowed.includes(role as Role)) {
         return NextResponse.json({ ok: false, step: 'validation', error: 'invalid role' }, { status: 400 });
       }
       updates.role = role as Role;
     }
 
-    if (Object.keys(updates).length === 0) {
+    if (Object.keys(updates).length === 0 && !hasScope) {
       return NextResponse.json({ ok: false, step: 'validation', error: 'no updates provided' }, { status: 400 });
     }
 
@@ -103,32 +123,29 @@ export async function PATCH(req: Request) {
       );
     }
 
-    const { data: updatedUser, error: updateUsersError } = await supabaseAdmin
-      .from('users')
-      .update(updates)
-      .eq('id', id)
-      .select('id,email,role,approved,active,created_at')
-      .single();
+    let updatedUser = existingUser;
+    if (Object.keys(updates).length > 0) {
+      const response = await supabaseAdmin
+        .from('users')
+        .update(updates)
+        .eq('id', id)
+        .select('id,email,role,approved,active,created_at')
+        .single();
 
-    if (updateUsersError) {
-      return NextResponse.json(
-        {
-          ok: false,
-          step: 'update_users',
-          error: updateUsersError.message,
-          details: (updateUsersError as any)?.details ?? null,
-          hint: (updateUsersError as any)?.hint ?? null,
-          code: (updateUsersError as any)?.code ?? null,
-        },
-        { status: 500 }
-      );
-    }
-
-    if (!updatedUser) {
-      return NextResponse.json(
-        { ok: false, step: 'update_users', error: 'no user row returned' },
-        { status: 500 }
-      );
+      if (response.error) {
+        return NextResponse.json(
+          {
+            ok: false,
+            step: 'update_users',
+            error: response.error.message,
+            details: (response.error as any)?.details ?? null,
+            hint: (response.error as any)?.hint ?? null,
+            code: (response.error as any)?.code ?? null,
+          },
+          { status: 500 }
+        );
+      }
+      updatedUser = response.data as any;
     }
 
     if (typeof approved === 'boolean') {
@@ -160,6 +177,30 @@ export async function PATCH(req: Request) {
             hint: (profileError as any)?.hint ?? null,
             code: (profileError as any)?.code ?? null,
           },
+          { status: 500 }
+        );
+      }
+    }
+
+    if (hasScope) {
+      const primary = typeof primary_location === 'string' ? primary_location.trim() : '';
+      const subs = Array.isArray(sub_locations) ? sub_locations.filter(Boolean) : [];
+      if (!primary) {
+        return NextResponse.json(
+          { ok: false, step: 'location_scope', error: 'primary_location is required for l-operator' },
+          { status: 400 }
+        );
+      }
+
+      const { error: scopeError } = await supabaseAdmin
+        .from('user_location_permissions')
+        .upsert({ user_id: id, primary_location: primary, sub_locations: subs })
+        .select('user_id')
+        .single();
+
+      if (scopeError) {
+        return NextResponse.json(
+          { ok: false, step: 'location_scope', error: scopeError.message },
           { status: 500 }
         );
       }

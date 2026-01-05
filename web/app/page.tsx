@@ -22,11 +22,13 @@ type InventoryRow = {
   locations: InventoryLocation[];
   inventory_id?: string | null;
   item_id?: string | null;
+  barcode?: string | null;
 };
 
 type InventoryApiRow = {
   inventory_id?: string;
   item_id?: string;
+  barcode?: string | null;
   artist: string;
   category: string;
   album_version: string;
@@ -53,12 +55,14 @@ type InventoryEditDraft = InventoryLocation & Omit<InventoryRow, 'locations' | '
 
 type HistoryRow = {
   created_at: string;
-  direction: 'IN' | 'OUT' | 'ADJUST';
+  direction: 'IN' | 'OUT' | 'ADJUST' | 'TRANSFER';
   artist: string;
   category: string;
   album_version: string;
   option?: string;
   location: string;
+  from_location?: string | null;
+  to_location?: string | null;
   quantity: number;
   created_by: string;
   created_by_name?: string;
@@ -79,6 +83,8 @@ type AccountRow = {
   created_at: string;
   requested_at?: string;
   approved_at?: string | null;
+  primary_location?: string | null;
+  sub_locations?: string[];
 };
 
 type MovementPayload = {
@@ -87,12 +93,15 @@ type MovementPayload = {
   album_version: string;
   option: string;
   location: string;
+  from_location?: string;
+  to_location?: string;
   quantity: number;
-  direction: 'IN' | 'OUT';
+  direction: 'IN' | 'OUT' | 'TRANSFER';
   memo: string;
+  barcode?: string;
 };
 
-type Role = 'admin' | 'operator' | 'viewer';
+type Role = 'admin' | 'operator' | 'viewer' | 'l_operator';
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes of inactivity triggers logout
 const CORPORATE_DOMAIN = 'sound-wave.co.kr';
@@ -103,9 +112,12 @@ const EMPTY_MOVEMENT: MovementPayload = {
   album_version: '',
   option: '',
   location: '',
+  from_location: '',
+  to_location: '',
   quantity: 0,
   direction: 'IN',
-  memo: ''
+  memo: '',
+  barcode: ''
 };
 
 function deriveStockKey(target?: InventoryRow | InventoryEditDraft | null) {
@@ -163,6 +175,7 @@ function normalizeStockToApiRows(rows: InventoryRow[]): InventoryApiRow[] {
     row.locations.map((loc, locIdx) => ({
       inventory_id: loc.editableId ?? loc.inventory_id ?? loc.id ?? `${row.key}|${loc.location}|${idx}|${locIdx}`,
       item_id: loc.item_id ?? row.item_id ?? undefined,
+      barcode: row.barcode ?? undefined,
       artist: row.artist,
       category: row.category,
       album_version: row.album_version,
@@ -195,6 +208,7 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
         locations: [],
         inventory_id: row.inventory_id ?? null,
         item_id: row.item_id ?? null,
+        barcode: row.barcode ?? null,
       });
     }
 
@@ -205,6 +219,9 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
     }
     if (!entry.inventory_id && row.inventory_id) {
       entry.inventory_id = row.inventory_id;
+    }
+    if (!entry.barcode && row.barcode) {
+      entry.barcode = row.barcode;
     }
     entry.locations.push({
       id: row.inventory_id || `${key}|${row.location}|${idx}`,
@@ -286,6 +303,7 @@ export default function Home() {
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [accountsStatus, setAccountsStatus] = useState('');
+  const [locationScopes, setLocationScopes] = useState<Record<string, { primary: string; subs: string }>>({});
   const [registerStatus, setRegisterStatus] = useState('');
   const [adminStatus, setAdminStatus] = useState('');
   const [sessionRole, setSessionRole] = useState<Role | null>(null);
@@ -656,6 +674,8 @@ export default function Home() {
         option: row.option ?? '',
         created_by_name: row.created_by_name ?? '',
         created_by_department: row.created_by_department ?? '',
+        from_location: row.from_location ?? '',
+        to_location: row.to_location ?? '',
       }));
       setHistory(rows);
     } else {
@@ -682,17 +702,20 @@ export default function Home() {
     }
   }
 
-  async function submitMovement(direction: 'IN' | 'OUT') {
+  async function submitMovement(direction: MovementPayload['direction']) {
     const artistValue = movement.artist.trim();
     const albumVersion = movement.album_version.trim();
     const locationValue = movement.location.trim();
+    const fromLocation = movement.from_location?.trim() || '';
+    const toLocation = movement.to_location?.trim() || '';
     const quantityValue = Number(movement.quantity);
     const memoValue = movement.memo.trim();
     const optionValue = movement.option;
     const categoryValue = movement.category;
+    const barcodeValue = movement.barcode?.trim() || '';
 
-    if (!artistValue || !albumVersion || !locationValue || !quantityValue) {
-      alert('아티스트, 앨범/버전, 로케이션, 수량(1 이상)을 모두 입력해야 합니다.');
+    if (!artistValue || !albumVersion || (!locationValue && direction !== 'TRANSFER') || !quantityValue) {
+      alert('아티스트, 앨범/버전, 로케이션/이관 정보를 모두 입력해야 합니다.');
       return;
     }
 
@@ -703,6 +726,18 @@ export default function Home() {
 
     if (direction === 'OUT' && !memoValue) {
       alert('출고 시 메모를 입력해야 합니다.');
+      return;
+    }
+
+    if (direction === 'TRANSFER') {
+      if (!fromLocation || !toLocation) {
+        alert('이관은 보내는 곳과 받는 곳을 모두 입력해야 합니다.');
+        return;
+      }
+    }
+
+    if (categoryValue === 'md' && !barcodeValue) {
+      alert('MD 카테고리는 바코드 입력이 필요합니다.');
       return;
     }
 
@@ -721,10 +756,13 @@ export default function Home() {
           category: categoryValue,
           album_version: albumVersion,
           option: optionValue ?? '',
-          location: locationValue,
+          location: direction === 'TRANSFER' ? '' : locationValue,
+          from_location: direction === 'TRANSFER' ? fromLocation : undefined,
+          to_location: direction === 'TRANSFER' ? toLocation : undefined,
           quantity: Number(quantityValue),
           direction,
           memo: memoValue ?? '',
+          barcode: barcodeValue || undefined,
           idempotency_key,
         })
       });
@@ -801,6 +839,14 @@ export default function Home() {
     if (res.ok) {
       const data = await res.json();
       setAccounts(data || []);
+      const scopeMap: Record<string, { primary: string; subs: string }> = {};
+      (data || []).forEach((row: AccountRow) => {
+        scopeMap[row.id] = {
+          primary: row.primary_location || '',
+          subs: (row.sub_locations || []).join(', '),
+        };
+      });
+      setLocationScopes(scopeMap);
       setAccountsStatus('불러오기 완료');
       markActivity();
     } else {
@@ -831,6 +877,33 @@ export default function Home() {
       setAccounts(previous);
       setAccountsStatus(`저장 실패: ${text || res.status}`);
       alert(text || '승인 변경 실패');
+    }
+  }
+
+  async function saveAccountScope(id: string) {
+    const scope = locationScopes[id] || { primary: '', subs: '' };
+    const payload = {
+      id,
+      primary_location: scope.primary.trim(),
+      sub_locations: scope.subs
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    };
+
+    setAccountsStatus('로케이션 범위 저장 중...');
+    const res = await fetch('/api/admin/users', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (res.ok) {
+      setAccountsStatus('저장 완료');
+      await loadAccounts();
+    } else {
+      const text = await res.text();
+      setAccountsStatus(`저장 실패: ${text || res.status}`);
     }
   }
 
@@ -1030,6 +1103,8 @@ export default function Home() {
         row.album_version,
         row.option,
         row.location,
+        row.from_location ?? '',
+        row.to_location ?? '',
         row.created_by,
         row.created_by_name ?? '',
         row.created_by_department ?? '',
@@ -1081,6 +1156,7 @@ export default function Home() {
       category: row.category,
       album_version: row.album_version,
       option: row.option,
+      barcode: row.barcode ?? '',
       locations: row.locations.map((loc) => `${loc.location}: ${loc.quantity}`).join(', '),
       total_quantity: row.total_quantity
     }));
@@ -1096,7 +1172,10 @@ export default function Home() {
       category: h.category,
       album_version: h.album_version,
       option: h.option ?? '',
-      location: h.location,
+      location:
+        h.direction === 'TRANSFER'
+          ? `${h.from_location || h.location || ''} → ${h.to_location || ''}`
+          : h.location,
       quantity: h.quantity,
       created_by_name: h.created_by_name || '-',
       created_by_department: h.created_by_department ?? '',
@@ -1480,8 +1559,7 @@ export default function Home() {
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  const direction: 'IN' | 'OUT' = movement.direction === 'OUT' ? 'OUT' : 'IN';
-                  submitMovement(direction);
+                  submitMovement(movement.direction);
                 }}
               >
                 <div className="form-row">
@@ -1520,6 +1598,14 @@ export default function Home() {
                     />
                   </label>
                   <label>
+                    <span>바코드</span>
+                    <input
+                      value={movement.barcode || ''}
+                      onChange={(e) => setMovement({ ...movement, barcode: e.target.value })}
+                      placeholder="바코드 (MD 필수)"
+                    />
+                  </label>
+                  <label>
                     <span>로케이션</span>
                     <input
                       list="location-options"
@@ -1543,6 +1629,28 @@ export default function Home() {
                     />
                   </label>
                 </div>
+                {movement.direction === 'TRANSFER' && (
+                  <div className="form-row">
+                    <label>
+                      <span>보내는 곳</span>
+                      <input
+                        list="location-options"
+                        value={movement.from_location}
+                        onChange={(e) => setMovement({ ...movement, from_location: e.target.value })}
+                        placeholder="출발 로케이션"
+                      />
+                    </label>
+                    <label>
+                      <span>받는 곳</span>
+                      <input
+                        list="location-options"
+                        value={movement.to_location}
+                        onChange={(e) => setMovement({ ...movement, to_location: e.target.value })}
+                        placeholder="도착 로케이션"
+                      />
+                    </label>
+                  </div>
+                )}
                 <div className="form-row">
                   <label className="wide">
                     <span>메모</span>
@@ -1557,19 +1665,38 @@ export default function Home() {
                   <button
                     type="button"
                     disabled={isSubmitting}
-                    onClick={() => submitMovement('IN')}
+                    onClick={() => {
+                      setMovement((prev) => ({ ...prev, direction: 'IN' }));
+                      submitMovement('IN');
+                    }}
                   >
-                    {isSubmitting ? '처리 중...' : '입고'}
+                    {isSubmitting && movement.direction === 'IN' ? '처리 중...' : '입고'}
                   </button>
                   <button
                     type="button"
                     disabled={isSubmitting}
                     className="secondary"
-                    onClick={() => submitMovement('OUT')}
+                    onClick={() => {
+                      setMovement((prev) => ({ ...prev, direction: 'OUT' }));
+                      submitMovement('OUT');
+                    }}
                   >
-                    {isSubmitting ? '처리 중...' : '출고'}
+                    {isSubmitting && movement.direction === 'OUT' ? '처리 중...' : '출고'}
                   </button>
-                  <p className="muted">입고/출고를 버튼으로 나눠 Python GUI와 동일한 동선을 제공합니다.</p>
+                  <button
+                    type="button"
+                    disabled={isSubmitting}
+                    className="secondary"
+                    onClick={() => {
+                      if (movement.direction !== 'TRANSFER') {
+                        setMovement((prev) => ({ ...prev, direction: 'TRANSFER' }));
+                        return;
+                      }
+                      submitMovement('TRANSFER');
+                    }}
+                  >
+                    {isSubmitting && movement.direction === 'TRANSFER' ? '처리 중...' : '전산이관'}
+                  </button>
                 </div>
               </form>
             </Section>
@@ -1911,6 +2038,7 @@ export default function Home() {
               <option value="IN">입고</option>
               <option value="OUT">출고</option>
               <option value="ADJUST">조정</option>
+              <option value="TRANSFER">전산이관</option>
             </select>
             <select
               className="compact"
@@ -1969,27 +2097,33 @@ export default function Home() {
               </tr>
             </thead>
             <tbody>
-              {filteredHistory.map((h, idx) => (
-                <tr key={`${h.created_at}-${idx}`}>
-                  <td>{formatDate(h.created_at)}</td>
-                  <td>
-                    <Pill>{h.direction}</Pill>
-                  </td>
-                  <td>{h.artist}</td>
-                  <td>{h.category}</td>
-                  <td>{h.album_version}</td>
-                <td>{h.option}</td>
-                <td>{h.location}</td>
-                <td className="align-right">{h.quantity.toLocaleString()}</td>
-                <td className="align-center">
-                  <div className="stacked-label">
-                    <strong>{h.created_by_name || h.created_by || '-'}</strong>
-                    <span className="muted small-text">{h.created_by_department || '부서 정보 없음'}</span>
-                  </div>
-                </td>
-                <td>{h.memo || '-'}</td>
-              </tr>
-            ))}
+              {filteredHistory.map((h, idx) => {
+                const displayLocation =
+                  h.direction === 'TRANSFER'
+                    ? `${h.from_location || h.location || ''} → ${h.to_location || ''}`
+                    : h.location;
+                return (
+                  <tr key={`${h.created_at}-${idx}`}>
+                    <td>{formatDate(h.created_at)}</td>
+                    <td>
+                      <Pill>{h.direction}</Pill>
+                    </td>
+                    <td>{h.artist}</td>
+                    <td>{h.category}</td>
+                    <td>{h.album_version}</td>
+                    <td>{h.option}</td>
+                    <td>{displayLocation}</td>
+                    <td className="align-right">{h.quantity.toLocaleString()}</td>
+                    <td className="align-center">
+                      <div className="stacked-label">
+                        <strong>{h.created_by_name || h.created_by || '-'}</strong>
+                        <span className="muted small-text">{h.created_by_department || '부서 정보 없음'}</span>
+                      </div>
+                    </td>
+                    <td>{h.memo || '-'}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -2053,6 +2187,9 @@ export default function Home() {
                     <th>연락처</th>
                     <th>사용 목적</th>
                     <th>권한</th>
+                    <th>담당 로케이션</th>
+                    <th>서브 로케이션</th>
+                    <th>로케이션 저장</th>
                     <th>승인</th>
                     <th>생성일</th>
                   </tr>
@@ -2060,7 +2197,7 @@ export default function Home() {
                 <tbody>
                   {accounts.length === 0 && (
                     <tr>
-                      <td colSpan={9}>계정 정보가 없습니다.</td>
+                      <td colSpan={12}>계정 정보가 없습니다.</td>
                     </tr>
                   )}
                   {accounts.map((acc) => (
@@ -2078,8 +2215,52 @@ export default function Home() {
                         >
                           <option value="admin">admin</option>
                           <option value="operator">operator</option>
+                          <option value="l_operator">l-operator</option>
                           <option value="viewer">viewer</option>
                         </select>
+                      </td>
+                      <td>
+                        {acc.role === 'l_operator' ? (
+                          <input
+                            className="inline-input"
+                            placeholder="주 로케이션"
+                            value={locationScopes[acc.id]?.primary ?? ''}
+                            onChange={(e) =>
+                              setLocationScopes((prev) => ({
+                                ...prev,
+                                [acc.id]: { ...prev[acc.id], primary: e.target.value, subs: prev[acc.id]?.subs ?? '' },
+                              }))
+                            }
+                          />
+                        ) : (
+                          <span className="muted">-</span>
+                        )}
+                      </td>
+                      <td>
+                        {acc.role === 'l_operator' ? (
+                          <input
+                            className="inline-input"
+                            placeholder="쉼표로 구분"
+                            value={locationScopes[acc.id]?.subs ?? ''}
+                            onChange={(e) =>
+                              setLocationScopes((prev) => ({
+                                ...prev,
+                                [acc.id]: { ...prev[acc.id], subs: e.target.value, primary: prev[acc.id]?.primary ?? '' },
+                              }))
+                            }
+                          />
+                        ) : (
+                          <span className="muted">-</span>
+                        )}
+                      </td>
+                      <td>
+                        {acc.role === 'l_operator' ? (
+                          <button className="ghost" type="button" onClick={() => saveAccountScope(acc.id)}>
+                            저장
+                          </button>
+                        ) : (
+                          <span className="muted">-</span>
+                        )}
                       </td>
                       <td>
                         <label className="muted small-text" style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}>

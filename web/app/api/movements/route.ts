@@ -22,8 +22,18 @@ function logSupabaseRef() {
   }
 }
 
+async function loadLocationScope(userId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('user_location_permissions')
+    .select('primary_location, sub_locations')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data;
+}
+
 export async function POST(req: Request) {
-  return withAuth(['admin', 'operator'], async (session) => {
+  return withAuth(['admin', 'operator', 'l_operator'], async (session) => {
     logSupabaseRef();
     let body: any;
     try {
@@ -39,9 +49,12 @@ export async function POST(req: Request) {
       album_version,
       option,
       location,
+      from_location,
+      to_location,
       quantity,
       direction,
       memo,
+      barcode,
       idempotencyKey,
       idempotency_key
     } = body ?? {};
@@ -54,9 +67,12 @@ export async function POST(req: Request) {
     const normalizedCategory = String(category ?? '').trim();
     const normalizedOption = String(option ?? '').trim();
     const rawLocation = String(location ?? '').trim();
+    const fromLocation = String(from_location ?? '').trim();
+    const toLocation = String(to_location ?? '').trim();
     const effectiveLocation = rawLocation || normalizedOption;
+    const normalizedBarcode = String(barcode ?? '').trim() || null;
 
-    if (!trimmedArtist || !normalizedCategory || !trimmedAlbum || !effectiveLocation || !normalizedDirection) {
+    if (!trimmedArtist || !normalizedCategory || !trimmedAlbum || (!effectiveLocation && normalizedDirection !== 'TRANSFER') || !normalizedDirection) {
       const error = 'missing fields';
       console.error({
         step: 'validation',
@@ -78,8 +94,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
 
-    if (normalizedDirection !== 'IN' && normalizedDirection !== 'OUT') {
-      const error = 'direction must be IN or OUT';
+    if (!['IN', 'OUT', 'TRANSFER'].includes(normalizedDirection)) {
+      const error = 'direction must be IN, OUT or TRANSFER';
       console.error({ step: 'validation', error, payload: { direction } });
       return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
@@ -88,6 +104,18 @@ export async function POST(req: Request) {
       const error = 'memo is required for outbound movements';
       console.error({ step: 'validation', error });
       return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
+    }
+
+    if (normalizedDirection === 'TRANSFER' && (!fromLocation || !toLocation)) {
+      const error = 'from_location and to_location are required for transfers';
+      return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
+    }
+
+    if (normalizedCategory.toLowerCase() === 'md' && !normalizedBarcode) {
+      return NextResponse.json(
+        { ok: false, step: 'validation', error: 'MD 카테고리는 바코드가 필요합니다.' },
+        { status: 400 }
+      );
     }
 
     const idempotencyRaw = idempotency_key ?? idempotencyKey ?? randomUUID();
@@ -100,23 +128,45 @@ export async function POST(req: Request) {
         { status: 401 }
       );
     }
-    const payload = {
+    const scope = session.role === 'l_operator' ? await loadLocationScope(createdBy) : null;
+    if (session.role === 'l_operator') {
+      if (!scope?.primary_location) {
+        return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
+      }
+      if (normalizedDirection === 'TRANSFER') {
+        if (fromLocation !== scope.primary_location || (scope.sub_locations || []).indexOf(toLocation) === -1) {
+          return NextResponse.json({ ok: false, error: 'transfer not allowed for this location', step: 'location_scope' }, { status: 403 });
+        }
+      } else if (effectiveLocation !== scope.primary_location) {
+        return NextResponse.json({ ok: false, error: 'location not allowed', step: 'location_scope' }, { status: 403 });
+      }
+    }
+
+    const payload: Record<string, any> = {
       album_version: trimmedAlbum,
       artist: trimmedArtist,
       category: normalizedCategory,
       created_by: createdBy,
       direction: normalizedDirection,
       idempotency_key: idempotency,
-      location: effectiveLocation,
       memo: normalizedMemo,
       option: normalizedOption || '',
-      quantity: normalizedQuantity
+      quantity: normalizedQuantity,
+      barcode: normalizedBarcode,
     };
 
+    if (normalizedDirection === 'TRANSFER') {
+      payload.from_location = fromLocation;
+      payload.to_location = toLocation;
+    } else {
+      payload.location = effectiveLocation;
+    }
+
     try {
-      const { data, error } = await supabaseAdmin.rpc('record_movement', payload);
+      const rpcName = normalizedDirection === 'TRANSFER' ? 'record_transfer' : 'record_movement';
+      const { data, error } = await supabaseAdmin.rpc(rpcName, payload);
       if (error) {
-        console.error('record_movement rpc failed:', {
+        console.error(`${rpcName} rpc failed:`, {
           message: error.message,
           details: (error as any)?.details,
           hint: (error as any)?.hint,
@@ -126,7 +176,7 @@ export async function POST(req: Request) {
         return NextResponse.json(
           {
             ok: false,
-            step: 'record_movement_rpc',
+            step: `${rpcName}_rpc`,
             error: error.message,
             details: (error as any)?.details ?? null,
             hint: (error as any)?.hint ?? null,
@@ -137,9 +187,9 @@ export async function POST(req: Request) {
       }
 
       if (!data) {
-        console.error({ step: 'record_movement_rpc', error: 'empty response', payload });
+        console.error({ step: `${rpcName}_rpc`, error: 'empty response', payload });
         return NextResponse.json(
-          { ok: false, step: 'record_movement_rpc', error: 'empty response from record_movement' },
+          { ok: false, step: `${rpcName}_rpc`, error: 'empty response from rpc' },
           { status: 500 }
         );
       }
