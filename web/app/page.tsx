@@ -827,11 +827,6 @@ export default function Home() {
     const fromLocation = transferPayload.from_location.trim();
     const toLocation = transferPayload.to_location.trim();
     const quantityValue = Number(transferPayload.quantity);
-    const memoValue = transferPayload.memo.trim();
-    const optionValue = transferPayload.option;
-    const categoryValue = transferPayload.category;
-    const barcodeValue = transferPayload.barcode?.trim() || '';
-
     if (!artistValue || !albumVersion || !fromLocation || !toLocation || !quantityValue) {
       alert('전산이관은 품목, 보낸/받는 로케이션, 수량을 모두 입력해야 합니다.');
       return;
@@ -842,61 +837,7 @@ export default function Home() {
       return;
     }
 
-    const matchingStock = findMatchingStock(stock, artistValue, categoryValue, albumVersion, optionValue);
-    const effectiveBarcode = barcodeValue || matchingStock?.barcode || '';
-
-    if (categoryValue === 'md' && !effectiveBarcode && !matchingStock) {
-      alert('MD 카테고리 신규 등록에는 바코드가 필요합니다.');
-      return;
-    }
-
-    setIsSubmitting(true);
-    setStatus('이관 처리 중...');
-    markActivity();
-
-    try {
-      const idempotency_key = `transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      const res = await fetch('/api/transfer', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          artist: artistValue,
-          category: categoryValue,
-          album_version: albumVersion,
-          option: optionValue ?? '',
-          from_location: fromLocation,
-          to_location: toLocation,
-          quantity: quantityValue,
-          memo: memoValue ?? '',
-          barcode: effectiveBarcode || undefined,
-          idempotency_key,
-        }),
-      });
-
-      const payload = await res.json().catch(() => null);
-      const ok = payload?.ok === true;
-      const duplicated = payload?.duplicated === true;
-
-      if (!res.ok || !ok) {
-        const message = payload?.error || payload?.message || `전산이관 실패 (${res.status})`;
-        const stepMessage = payload?.step ? `${message} [${payload.step}]` : message;
-        console.error('transfer submit error:', { message: stepMessage, payload });
-        alert(stepMessage);
-        setStatus(stepMessage);
-        return;
-      }
-
-      await Promise.all([reloadInventory(), reloadHistory()]);
-      setStatus(duplicated ? '중복 요청으로 기존 결과 유지' : '이관 기록 완료');
-      setTransferPayload(EMPTY_TRANSFER);
-      setMovementMode('movement');
-    } catch (err: any) {
-      const message = err?.message || '요청 중 오류가 발생했습니다.';
-      setStatus(`이관 실패: ${message}`);
-      alert(message);
-    } finally {
-      setIsSubmitting(false);
-    }
+    alert('전산이관은 현재 배포본에서 비활성화되어 있습니다. 일반 입/출고를 사용해 주세요.');
   }
 
   async function registerAccount() {
