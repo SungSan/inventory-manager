@@ -28,49 +28,81 @@ begin
   ) then
     create type public.user_role as enum ('admin','operator','viewer');
   end if;
+
+  if exists (
+    select 1 from pg_type t
+    join pg_enum e on t.oid = e.enumtypid
+    where t.typname = 'user_role'
+      and e.enumlabel = 'l_operator'
+  ) is false then
+    begin
+      alter type public.user_role add value 'l_operator';
+    exception when duplicate_object then
+      -- ignore if added concurrently
+      null;
+    end;
+  end if;
 end $$;
 
 create table if not exists public.users (
   id uuid primary key default gen_random_uuid(),
   email text unique not null,
-  password_hash text,
   role public.user_role not null default 'viewer',
   approved boolean not null default false,
   active boolean not null default true,
   created_at timestamptz not null default now()
 );
 
--- user profile extensions (idempotent)
-alter table public.users add column if not exists full_name text default '';
-alter table public.users add column if not exists department text default '';
-alter table public.users add column if not exists contact text default '';
-alter table public.users add column if not exists purpose text default '';
-update public.users set full_name = coalesce(nullif(full_name, ''), email) where full_name is null or full_name = '';
-update public.users set department = coalesce(department, '');
-update public.users set contact = coalesce(contact, '');
-update public.users set purpose = coalesce(purpose, '');
-alter table public.users alter column full_name set not null;
-alter table public.users alter column department set not null;
-alter table public.users alter column role set default 'viewer';
-alter table public.users alter column password_hash drop not null;
-alter table public.users add column if not exists approved boolean not null default false;
-
 create table if not exists public.user_profiles (
   user_id uuid primary key references public.users(id) on delete cascade,
   username text not null unique,
+  full_name text not null default '',
+  department text not null default '',
+  contact text not null default '',
+  purpose text not null default '',
   approved boolean not null default false,
   role public.user_role not null default 'viewer',
   requested_at timestamptz not null default now(),
   approved_at timestamptz,
   approved_by uuid references public.users(id)
 );
+create unique index if not exists user_profiles_user_id_ux on public.user_profiles(user_id);
+
+create table if not exists public.user_location_permissions (
+  user_id uuid primary key references public.users(id) on delete cascade,
+  primary_location text not null,
+  sub_locations text[] not null default '{}',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create or replace function public.touch_user_location_permissions()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+do $$
+begin
+  if not exists (select 1 from pg_trigger where tgname = 'trg_touch_user_location_permissions') then
+    create trigger trg_touch_user_location_permissions
+    before update on public.user_location_permissions
+    for each row
+    execute function public.touch_user_location_permissions();
+  end if;
+end$$;
 
 create table if not exists public.items (
   id uuid primary key default gen_random_uuid(),
   artist text not null,
   category text not null,
   album_version text not null,
-  option text not null default ''
+  option text not null default '',
+  barcode text
 );
 create unique index if not exists items_unique on public.items(artist, category, album_version, option);
 
@@ -87,15 +119,22 @@ create table if not exists public.movements (
   id uuid primary key default gen_random_uuid(),
   item_id uuid not null references public.items(id) on delete cascade,
   location text not null,
-  direction text not null check (direction in ('IN','OUT','ADJUST')),
+  direction text not null check (direction in ('IN','OUT','ADJUST','TRANSFER')),
+  from_location text,
+  to_location text,
+  transfer_group_id uuid,
   quantity integer not null,
   memo text default '',
   created_by uuid references public.users(id),
   created_at timestamptz not null default now(),
   idempotency_key text unique,
   opening integer,
-  closing integer
+  closing integer,
+  barcode text
 );
+
+create unique index if not exists movements_idempotency_key_uniq
+  on public.movements (idempotency_key) where idempotency_key is not null;
 
 -- idempotency guard
 create table if not exists public.idempotency_keys (
@@ -131,48 +170,168 @@ select
   coalesce(p.purpose, '') as purpose,
   u.role,
   coalesce(u.approved, false) as approved,
+  u.active,
   u.created_at
 from public.users u
 left join public.user_profiles p on p.user_id = u.id;
 
 create or replace view public.inventory_view as
-select i.artist, i.category, i.album_version, i.option, inv.location, inv.quantity
+select
+  inv.id as inventory_id,
+  inv.item_id,
+  i.artist,
+  i.category,
+  i.album_version,
+  i.option,
+  i.barcode,
+  inv.location,
+  inv.quantity
 from public.inventory inv
 join public.items i on inv.item_id = i.id;
 
-drop view if exists public.movements_view;
-create view public.movements_view as
+create or replace view public.movements_view as
 select
+  m.id,
   m.created_at,
   m.direction,
-  coalesce(i.artist, '') as artist,
-  coalesce(i.category, '') as category,
-  coalesce(i.album_version, '') as album_version,
-  coalesce(i.option, '') as option,
+  i.artist,
+  i.category,
+  i.album_version,
+  i.option,
+  i.barcode,
   m.location,
+  m.from_location,
+  m.to_location,
   m.quantity,
   m.memo,
   m.item_id,
   m.created_by,
-  coalesce(up.full_name, u.email, m.created_by::text, '') as created_by_name
+  m.transfer_group_id,
+  coalesce(p.full_name, u.email, m.created_by::text, '') as created_by_name,
+  coalesce(p.department, '') as created_by_department
 from public.movements m
-left join public.items i on i.id = m.item_id
-left join public.users u on u.id = m.created_by
-left join public.user_profiles up on up.user_id = u.id
-order by m.created_at desc;
+join public.items i
+  on i.id = m.item_id
+left join public.users u
+  on u.id = m.created_by
+left join public.user_profiles p
+  on p.user_id = m.created_by;
 
--- transactional movement function
-create or replace function public.record_movement(
+grant select on public.movements_view to authenticated, anon;
+
+-- transactional movement function with idempotency and negative stock allowance
+create or replace function public.apply_movement(
+  p_artist text,
+  p_category text,
+  p_album_version text,
+  p_option text default '',
+  p_location text,
+  p_quantity int,
+  p_direction text,
+  p_memo text default '',
+  p_created_by uuid,
+  p_idempotency_key text
+) returns json as $$
+declare
+  v_item_id uuid;
+  v_movement_id uuid;
+  v_inventory_qty int;
+  v_direction text := upper(coalesce(p_direction, ''));
+  v_location text := btrim(coalesce(p_location, ''));
+  v_qty int := p_quantity;
+  v_memo text := coalesce(p_memo, '');
+  v_idem text := nullif(btrim(coalesce(p_idempotency_key, '')), '');
+  v_option text := coalesce(p_option, '');
+  v_delta int;
+begin
+  if v_direction not in ('IN','OUT') then
+    raise exception 'invalid direction';
+  end if;
+
+  if v_qty is null or v_qty <= 0 then
+    raise exception 'quantity must be positive';
+  end if;
+
+  if v_location is null or v_location = '' then
+    raise exception 'location required';
+  end if;
+
+  v_delta := case when v_direction = 'IN' then v_qty else -v_qty end;
+
+  insert into public.items as i (artist, category, album_version, option)
+  values (p_artist, p_category, p_album_version, v_option)
+  on conflict (artist, category, album_version, option)
+  do update set artist = excluded.artist
+  returning i.id into v_item_id;
+
+  insert into public.movements(item_id, location, direction, quantity, memo, created_by, idempotency_key)
+  values (v_item_id, v_location, v_direction, v_qty, v_memo, p_created_by, v_idem)
+  on conflict (idempotency_key) do nothing
+  returning id into v_movement_id;
+
+  if v_movement_id is null then
+    select id, item_id
+      into v_movement_id, v_item_id
+      from public.movements
+     where idempotency_key = v_idem;
+
+    select quantity
+      into v_inventory_qty
+      from public.inventory
+     where item_id = v_item_id
+       and location = v_location;
+
+    return json_build_object(
+      'ok', true,
+      'duplicated', true,
+      'movement_id', v_movement_id,
+      'item_id', v_item_id,
+      'inventory_quantity', coalesce(v_inventory_qty, 0),
+      'message', 'duplicate request ignored'
+    );
+  end if;
+
+  update public.inventory
+     set quantity = quantity + v_delta,
+         updated_at = now()
+   where item_id = v_item_id
+     and location = v_location
+  returning quantity into v_inventory_qty;
+
+  if v_inventory_qty is null then
+    insert into public.inventory(item_id, location, quantity)
+    values (v_item_id, v_location, v_delta)
+    returning quantity into v_inventory_qty;
+  end if;
+
+  if v_inventory_qty is null then
+    raise exception 'inventory update failed';
+  end if;
+
+  return json_build_object(
+    'ok', true,
+    'duplicated', false,
+    'movement_id', v_movement_id,
+    'item_id', v_item_id,
+    'inventory_quantity', v_inventory_qty,
+    'message', 'ok'
+  );
+end;
+$$ language plpgsql security definer;
+
+-- movement recording with idempotency that allows negative stock
+create or replace function public.record_movement_v2(
+  album_version text,
   artist text,
   category text,
-  album_version text,
-  option text,
-  location text,
-  quantity int,
-  direction text,
-  memo text default '',
   created_by uuid default null,
-  idempotency_key text default null
+  direction text,
+  idempotency_key text default null,
+  location text,
+  memo text default '',
+  option text default '',
+  quantity int,
+  barcode text default null
 ) returns json as $$
 #variable_conflict use_variable
 declare
@@ -189,31 +348,39 @@ declare
   v_option text := coalesce(option, '');
   v_memo text := nullif(btrim(memo), '');
   v_qty int := quantity;
+  v_existing_opening integer;
+  v_existing_closing integer;
 begin
   if v_direction not in ('IN','OUT','ADJUST') then
     raise exception 'invalid direction';
   end if;
 
   if v_idem is not null then
-    insert into public.idempotency_keys(key, created_by)
-    values (v_idem, created_by)
-    on conflict do nothing;
+    select id, item_id, opening, closing
+      into v_movement_id, v_item_id, v_existing_opening, v_existing_closing
+      from public.movements
+     where idempotency_key = v_idem;
 
-    if not found then
+    if found then
       return json_build_object(
         'ok', true,
         'idempotent', true,
         'movement_inserted', false,
         'inventory_updated', false,
+        'movement_id', v_movement_id,
+        'item_id', v_item_id,
+        'opening', v_existing_opening,
+        'closing', v_existing_closing,
         'message', 'idempotent hit'
       );
     end if;
   end if;
 
-  insert into public.items as i (artist, category, album_version, option)
-  values (v_artist, category, v_album, v_option)
+  insert into public.items as i (artist, category, album_version, option, barcode)
+  values (v_artist, category, v_album, v_option, barcode)
   on conflict (artist, category, album_version, option)
-  do update set artist = excluded.artist
+  do update set artist = excluded.artist,
+    barcode = coalesce(excluded.barcode, i.barcode)
   returning i.id into v_item_id;
 
   insert into public.inventory(item_id, location, quantity)
@@ -226,10 +393,6 @@ begin
    where item_id = v_item_id
      and location = v_location
    for update;
-
-  if v_direction = 'OUT' and v_existing < v_qty then
-    raise exception 'insufficient stock';
-  end if;
 
   if v_direction = 'IN' then
     v_new := v_existing + v_qty;
@@ -272,7 +435,13 @@ begin
     v_existing,
     v_new,
     now()
-  ) returning id into v_movement_id;
+  )
+  on conflict (idempotency_key) do nothing
+  returning id into v_movement_id;
+
+  if v_movement_id is null then
+    raise exception 'idempotency conflict';
+  end if;
 
   return json_build_object(
     'ok', true,
@@ -291,93 +460,248 @@ exception
 end;
 $$ language plpgsql security definer;
 
--- credential verification via database-side crypt
-create extension if not exists pgcrypto;
+grant execute on function public.record_movement_v2(
+  text, text, text, uuid, text, text, text, text, text, int, text
+) to authenticated, service_role;
 
-create or replace function public.verify_login(
-  p_email text,
-  p_password text
-) returns table(
-  id uuid,
-  email text,
-  role public.user_role
-)
+create or replace function public.record_movement(
+  album_version text,
+  artist text,
+  category text,
+  created_by uuid,
+  direction text,
+  idempotency_key text,
+  location text,
+  memo text,
+  option text,
+  quantity integer,
+  barcode text default null
+) returns json
 language sql
 security definer
 set search_path = public
 as $$
-  select u.id, u.email, u.role
-  from public.users u
-  where lower(u.email) = lower(p_email)
-    and u.active = true
-    and u.password_hash = crypt(p_password, u.password_hash)
-  limit 1;
+  select public.record_movement_v2(
+    album_version,
+    artist,
+    category,
+    created_by,
+    direction,
+    idempotency_key,
+    location,
+    memo,
+    option,
+    quantity,
+    barcode
+  );
 $$;
 
-revoke all on function public.verify_login(text, text) from public;
-grant execute on function public.verify_login(text, text) to service_role;
+grant execute on function public.record_movement(
+  text, text, text, uuid, text, text, text, text, text, integer, text
+) to authenticated, service_role;
 
--- admin user provisioning with database-side hashing
-create or replace function public.create_user(
-  p_email text,
-  p_password text,
-  p_role public.user_role default 'operator',
-  p_full_name text default '',
-  p_department text default '',
-  p_contact text default '',
-  p_purpose text default ''
-) returns table(
-  id uuid,
-  email text,
-  role public.user_role,
-  full_name text,
-  department text
-) 
-language plpgsql
-security definer
-set search_path = public
-as $$
+create or replace function public.record_transfer(
+  artist text,
+  category text,
+  album_version text,
+  option text,
+  from_location text,
+  to_location text,
+  quantity integer,
+  memo text default '',
+  created_by uuid default null,
+  idempotency_key text default null,
+  barcode text default null
+) returns json as $$
+#variable_conflict use_variable
 declare
-  normalized_email text := lower(trim(p_email));
-  selected_role public.user_role := coalesce(p_role, 'operator');
-  normalized_name text := coalesce(nullif(trim(p_full_name), ''), normalized_email);
-  normalized_department text := coalesce(nullif(trim(p_department), ''), '');
-  normalized_contact text := coalesce(nullif(trim(p_contact), ''), '');
-  normalized_purpose text := coalesce(nullif(trim(p_purpose), ''), '');
+  v_item_id uuid;
+  v_group uuid := gen_random_uuid();
+  v_idem text := nullif(btrim(idempotency_key), '');
+  v_qty int := quantity;
+  v_from_qty int := 0;
+  v_to_qty int := 0;
+  v_from_new int := 0;
+  v_to_new int := 0;
+  v_out_id uuid;
+  v_in_id uuid;
 begin
-  if coalesce(p_email, '') = '' or coalesce(p_password, '') = '' then
-    raise exception 'login id and password are required';
+  if v_idem is not null then
+    select transfer_group_id
+      into v_group
+      from public.movements
+     where idempotency_key = v_idem
+       and direction = 'TRANSFER'
+     limit 1;
+    if found then
+      return json_build_object('ok', true, 'idempotent', true, 'transfer_group_id', v_group);
+    end if;
   end if;
 
-  insert into public.users(email, password_hash, role, active, full_name, department, contact, purpose)
-  values(
-    normalized_email,
-    crypt(p_password, gen_salt('bf')),
-    selected_role,
-    true,
-    normalized_name,
-    normalized_department,
-    normalized_contact,
-    normalized_purpose
-  )
-  on conflict (email) do update
-    set password_hash = excluded.password_hash,
-        role = excluded.role,
-        active = true,
-        full_name = excluded.full_name,
-        department = excluded.department,
-        contact = excluded.contact,
-        purpose = excluded.purpose
-  returning users.id, users.email, users.role, users.full_name, users.department
-  into id, email, role, full_name, department;
+  insert into public.items as i (artist, category, album_version, option, barcode)
+  values (artist, category, album_version, option, barcode)
+  on conflict (artist, category, album_version, option)
+  do update set barcode = coalesce(excluded.barcode, i.barcode)
+  returning i.id into v_item_id;
 
-  return next;
+  insert into public.inventory(item_id, location, quantity)
+  values (v_item_id, from_location, 0)
+  on conflict (item_id, location) do nothing;
+
+  insert into public.inventory(item_id, location, quantity)
+  values (v_item_id, to_location, 0)
+  on conflict (item_id, location) do nothing;
+
+  select quantity into v_from_qty from public.inventory where item_id = v_item_id and location = from_location for update;
+  select quantity into v_to_qty from public.inventory where item_id = v_item_id and location = to_location for update;
+
+  v_from_new := v_from_qty - v_qty;
+  v_to_new := v_to_qty + v_qty;
+
+  update public.inventory set quantity = v_from_new, updated_at = now() where item_id = v_item_id and location = from_location;
+  update public.inventory set quantity = v_to_new, updated_at = now() where item_id = v_item_id and location = to_location;
+
+  insert into public.movements(
+    item_id, location, direction, quantity, memo, created_by, idempotency_key, transfer_group_id, from_location, to_location, opening, closing, created_at
+  ) values (
+    v_item_id, from_location, 'TRANSFER', v_qty, memo, created_by, v_idem || '-out', v_group, from_location, to_location, v_from_qty, v_from_new, now()
+  ) returning id into v_out_id;
+
+  insert into public.movements(
+    item_id, location, direction, quantity, memo, created_by, idempotency_key, transfer_group_id, from_location, to_location, opening, closing, created_at
+  ) values (
+    v_item_id, to_location, 'TRANSFER', v_qty, memo, created_by, v_idem || '-in', v_group, from_location, to_location, v_to_qty, v_to_new, now()
+  ) returning id into v_in_id;
+
+  return json_build_object(
+    'ok', true,
+    'transfer_group_id', v_group,
+    'item_id', v_item_id,
+    'from_quantity', v_from_new,
+    'to_quantity', v_to_new,
+    'out_movement_id', v_out_id,
+    'in_movement_id', v_in_id
+  );
+exception
+  when others then
+    raise;
 end;
-$$;
+$$ language plpgsql security definer;
 
-revoke all on function public.create_user(text, text, public.user_role) from public;
-grant execute on function public.create_user(text, text, public.user_role) to service_role;
+grant execute on function public.record_transfer(
+  text, text, text, text, text, text, integer, text, uuid, text, text
+) to authenticated, service_role;
+
+-- diagnostics helper to confirm connected database and counts
+create or replace function public.diag_db_snapshot()
+returns json as $$
+declare
+  v_db text;
+  v_now timestamptz := now();
+  v_movements_cnt bigint;
+  v_movements_max timestamptz;
+  v_mv_cnt bigint;
+  v_mv_max timestamptz;
+  v_users_cnt bigint;
+  v_profiles_cnt bigint;
+begin
+  select current_database() into v_db;
+  select count(*), max(created_at) into v_movements_cnt, v_movements_max from public.movements;
+  select count(*), max(created_at) into v_mv_cnt, v_mv_max from public.movements_view;
+  select count(*) into v_users_cnt from public.users;
+  select count(*) into v_profiles_cnt from public.user_profiles;
+
+  return json_build_object(
+    'db', v_db,
+    'now_utc', v_now,
+    'movements_cnt', v_movements_cnt,
+    'movements_max', v_movements_max,
+    'movements_view_cnt', v_mv_cnt,
+    'movements_view_max', v_mv_max,
+    'users_cnt', v_users_cnt,
+    'profiles_cnt', v_profiles_cnt
+  );
+end;
+$$ language plpgsql security definer;
+
+grant execute on function public.diag_db_snapshot() to authenticated, service_role;
 
 -- smoke test
 -- select * from public.inventory_view limit 1;
 -- select public.record_movement('A','album','v1','', 'loc1', 1, 'IN', 'test', null, 'k1');
+
+-- admin update user with transactional consistency across users and user_profiles
+create or replace function public.admin_update_user(
+  p_id uuid,
+  p_approved boolean default null,
+  p_role public.user_role default null,
+  p_actor_id uuid default null
+) returns admin_users_view as $$
+declare
+  v_row admin_users_view%rowtype;
+  v_count int;
+begin
+  if p_id is null then
+    raise exception 'id is required';
+  end if;
+
+  update public.users
+     set approved = coalesce(p_approved, approved),
+         role = coalesce(p_role, role)
+   where id = p_id;
+
+  get diagnostics v_count = row_count;
+  if v_count = 0 then
+    raise exception 'user not found';
+  end if;
+
+  update public.user_profiles
+     set approved = coalesce(p_approved, approved),
+         approved_at = case
+           when p_approved is true then now()
+           when p_approved is false then null
+           else approved_at
+         end,
+         approved_by = case
+           when p_approved is true then p_actor_id
+           when p_approved is false then null
+           else approved_by
+         end
+   where user_id = p_id;
+
+  get diagnostics v_count = row_count;
+  if v_count = 0 then
+    raise exception 'user profile not found';
+  end if;
+
+  select * into v_row from public.admin_users_view where id = p_id;
+  if not found then
+    raise exception 'user not found in admin_users_view';
+  end if;
+
+  return v_row;
+exception
+  when others then
+    raise;
+end;
+$$ language plpgsql security definer;
+
+-- RLS safeguards to allow authenticated users to read their own records when client-side checks are used
+alter table if exists public.users enable row level security;
+alter table if exists public.user_profiles enable row level security;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies where schemaname = 'public' and tablename = 'users' and policyname = 'users_select_own'
+  ) then
+    create policy users_select_own on public.users for select to authenticated using (id = auth.uid());
+  end if;
+
+  if not exists (
+    select 1 from pg_policies where schemaname = 'public' and tablename = 'user_profiles' and policyname = 'profiles_select_own'
+  ) then
+    create policy profiles_select_own on public.user_profiles for select to authenticated using (user_id = auth.uid());
+  end if;
+end;
+$$;
