@@ -20,7 +20,7 @@ export async function GET(req: Request) {
   return withAuth(['admin', 'operator', 'viewer'], async () => {
     let query = supabaseAdmin
       .from('inventory_view')
-      .select('artist,category,album_version,option,location,quantity', { count: 'exact' })
+      .select('inventory_id,item_id,artist,category,album_version,option,location,quantity', { count: 'exact' })
       .order('artist', { ascending: true })
       .order('album_version', { ascending: true })
       .order('option', { ascending: true })

@@ -21,6 +21,8 @@ type InventoryRow = {
 };
 
 type InventoryApiRow = {
+  inventory_id?: string;
+  item_id?: string;
   artist: string;
   category: string;
   album_version: string;
@@ -178,8 +180,8 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
     const entry = grouped.get(key)!;
     entry.total_quantity += qty;
     entry.locations.push({
-      id: `${key}|${row.location}|${idx}`,
-      editableId: null,
+      id: row.inventory_id || `${key}|${row.location}|${idx}`,
+      editableId: row.inventory_id ?? null,
       location: row.location,
       quantity: qty,
     });
@@ -528,6 +530,18 @@ export default function Home() {
     setStatus('재고 메타데이터 불러오기 실패');
   }
 
+  function buildInventoryParams(filters: typeof stockFilters, limit?: number, offset?: number) {
+    const params = new URLSearchParams();
+    if (filters.artist) params.set('artist', filters.artist);
+    if (filters.location) params.set('location', filters.location);
+    if (filters.category) params.set('category', filters.category);
+    if (filters.q) params.set('q', filters.q);
+    if (filters.albumVersion) params.set('album_version', filters.albumVersion);
+    if (typeof limit === 'number') params.set('limit', String(limit));
+    if (typeof offset === 'number') params.set('offset', String(Math.max(0, offset)));
+    return params;
+  }
+
   async function reloadInventory(options?: {
     offset?: number;
     limit?: number;
@@ -539,14 +553,7 @@ export default function Home() {
     const nextOffset = options?.offset ?? inventoryPage.offset;
     const nextLimit = options?.limit ?? inventoryPage.limit;
 
-    const params = new URLSearchParams();
-    if (nextFilters.artist) params.set('artist', nextFilters.artist);
-    if (nextFilters.location) params.set('location', nextFilters.location);
-    if (nextFilters.category) params.set('category', nextFilters.category);
-    if (nextFilters.q) params.set('q', nextFilters.q);
-    if (nextFilters.albumVersion) params.set('album_version', nextFilters.albumVersion);
-    params.set('limit', String(nextLimit));
-    params.set('offset', String(Math.max(0, nextOffset)));
+    const params = buildInventoryParams(nextFilters, nextLimit, nextOffset);
 
     const stockRes = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
     if (stockRes.ok) {
@@ -1016,8 +1023,30 @@ export default function Home() {
     writeFile(workbook, filename);
   }
 
-  function exportInventory() {
-    const rows = filteredStock.map((row) => ({
+  async function fetchAllInventoryForExport() {
+    const pageLimit = 200;
+    let offset = 0;
+    let total = Number.MAX_SAFE_INTEGER;
+    const rows: InventoryApiRow[] = [];
+    while (offset < total) {
+      const params = buildInventoryParams(stockFilters, pageLimit, offset);
+      const res = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
+      if (!res.ok) break;
+      const payload = await res.json();
+      if (!payload?.ok) break;
+      rows.push(...(payload.rows || []));
+      total = payload.page?.totalRows ?? rows.length;
+      offset += pageLimit;
+      if (!payload.rows || payload.rows.length < pageLimit) break;
+    }
+    return rows;
+  }
+
+  async function exportInventory() {
+    setInventoryActionStatus('엑셀 내보내는 중...');
+    const allRows = await fetchAllInventoryForExport();
+    const grouped = groupInventoryRows(allRows.length ? allRows : stock);
+    const rows = grouped.map((row) => ({
       artist: row.artist,
       category: row.category,
       album_version: row.album_version,
@@ -1026,6 +1055,7 @@ export default function Home() {
       total_quantity: row.total_quantity
     }));
     exportToExcel(rows, 'inventory.xlsx', 'Inventory');
+    setInventoryActionStatus('');
   }
 
   function exportHistory() {
@@ -2059,6 +2089,7 @@ export default function Home() {
 
       .primary-stack {
         width: 100%;
+        flex-direction: column;
       }
 
       .filter-stack.wrap {
@@ -2073,6 +2104,7 @@ export default function Home() {
         .primary-stack,
         .secondary-stack {
           width: 100%;
+          flex-direction: row;
         }
       }
 
@@ -2083,6 +2115,10 @@ export default function Home() {
           width: 100%;
         }
         .filter-row.inventory-filters {
+          align-items: stretch;
+        }
+        .secondary-stack {
+          flex-direction: column;
           align-items: stretch;
         }
       }
@@ -2100,6 +2136,20 @@ export default function Home() {
       @media (min-width: 640px) {
         .stats {
           grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        }
+      }
+
+      @media (max-width: 640px) {
+        .section-actions {
+          width: 100%;
+        }
+
+        .section-actions .filter-row {
+          width: 100%;
+        }
+
+        .pill-row.wrap {
+          gap: 0.35rem;
         }
       }
 

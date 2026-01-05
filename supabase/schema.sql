@@ -129,7 +129,15 @@ from public.users u
 left join public.user_profiles p on p.user_id = u.id;
 
 create or replace view public.inventory_view as
-select i.artist, i.category, i.album_version, i.option, inv.location, inv.quantity
+select
+  inv.id as inventory_id,
+  inv.item_id,
+  i.artist,
+  i.category,
+  i.album_version,
+  i.option,
+  inv.location,
+  inv.quantity
 from public.inventory inv
 join public.items i on inv.item_id = i.id;
 
