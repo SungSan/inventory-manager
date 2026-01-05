@@ -3,14 +3,26 @@ import { NextResponse } from 'next/server';
 import { withAuth } from '../../../lib/auth';
 import { supabaseAdmin } from '../../../lib/supabase';
 
+function isMissingLocationScopeTable(error: any) {
+  const message = error?.message || '';
+  const code = error?.code || '';
+  return code === '42P01' || message.includes('user_location_permissions');
+}
+
 async function loadLocationScope(userId: string) {
   const { data, error } = await supabaseAdmin
     .from('user_location_permissions')
     .select('primary_location, sub_locations')
     .eq('user_id', userId)
     .maybeSingle();
-  if (error || !data) return null;
-  return data;
+  if (error) {
+    if (isMissingLocationScopeTable(error)) {
+      console.warn('location scope table missing, skipping enforcement');
+      return { scope: null, missing: true };
+    }
+    throw error;
+  }
+  return { scope: data ?? null, missing: false };
 }
 
 export async function POST(req: Request) {
@@ -66,12 +78,24 @@ export async function POST(req: Request) {
       );
     }
 
-    const scope = session.role === 'l_operator' ? await loadLocationScope(createdBy) : null;
+    let scopeResult: { scope: any; missing: boolean } | null = null;
     if (session.role === 'l_operator') {
-      if (!scope?.primary_location) {
-        return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
+      try {
+        scopeResult = await loadLocationScope(createdBy);
+      } catch (error) {
+        console.error({ step: 'location_scope_fetch', error });
+        return NextResponse.json({ ok: false, error: 'location scope lookup failed', step: 'location_scope' }, { status: 500 });
       }
-      if (fromLocation !== scope.primary_location || (scope.sub_locations || []).indexOf(toLocation) === -1) {
+    }
+    if (session.role === 'l_operator') {
+      if (scopeResult?.missing) {
+        console.warn('location scope enforcement skipped (table missing)');
+      } else if (!scopeResult?.scope?.primary_location) {
+        return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
+      } else if (
+        fromLocation !== scopeResult.scope.primary_location ||
+        (scopeResult.scope.sub_locations || []).indexOf(toLocation) === -1
+      ) {
         return NextResponse.json({ ok: false, error: 'transfer not allowed for this location', step: 'location_scope' }, { status: 403 });
       }
     }

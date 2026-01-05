@@ -60,11 +60,7 @@ type HistoryRow = {
   category: string;
   album_version: string;
   option?: string;
-  barcode?: string | null;
   location: string;
-  from_location?: string | null;
-  to_location?: string | null;
-  transfer_group_id?: string | null;
   quantity: number;
   created_by: string;
   created_by_name?: string;
@@ -715,12 +711,8 @@ export default function Home() {
       const rows = list.map((row: any) => ({
         ...row,
         option: row.option ?? '',
-        barcode: row.barcode ?? null,
         created_by_name: row.created_by_name ?? '',
         created_by_department: row.created_by_department ?? '',
-        from_location: row.from_location ?? '',
-        to_location: row.to_location ?? '',
-        transfer_group_id: row.transfer_group_id ?? null,
       }));
       setHistory(rows);
     } else {
@@ -1223,8 +1215,6 @@ export default function Home() {
         row.album_version,
         row.option,
         row.location,
-        row.from_location ?? '',
-        row.to_location ?? '',
         row.created_by,
         row.created_by_name ?? '',
         row.created_by_department ?? '',
@@ -1292,11 +1282,7 @@ export default function Home() {
       category: h.category,
       album_version: h.album_version,
       option: h.option ?? '',
-      barcode: h.barcode ?? '',
-      location:
-        h.direction === 'TRANSFER'
-          ? `${h.from_location || h.location || ''} → ${h.to_location || ''}`
-          : h.location,
+      location: h.location,
       quantity: h.quantity,
       created_by_name: h.created_by_name || '-',
       created_by_department: h.created_by_department ?? '',
@@ -2317,10 +2303,7 @@ export default function Home() {
             </thead>
             <tbody>
               {filteredHistory.map((h, idx) => {
-                const displayLocation =
-                  h.direction === 'TRANSFER'
-                    ? `${h.from_location || h.location || ''} → ${h.to_location || ''}`
-                    : h.location;
+                const displayLocation = h.location;
                 const directionLabel = h.direction === 'TRANSFER' ? '전산이관' : h.direction;
                 return (
                   <tr key={`${h.created_at}-${idx}`}>

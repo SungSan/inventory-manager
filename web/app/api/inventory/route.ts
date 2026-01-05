@@ -5,6 +5,12 @@ import { withAuth } from '../../../lib/auth';
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
 
+function isMissingLocationScopeTable(error: any) {
+  const message = error?.message || '';
+  const code = error?.code || '';
+  return code === '42P01' || message.includes('user_location_permissions');
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const artist = searchParams.get('artist') || undefined;
@@ -25,15 +31,23 @@ export async function GET(req: Request) {
         .select('primary_location')
         .eq('user_id', session.userId)
         .maybeSingle();
-      if (scopeError || !scope?.primary_location) {
+      if (scopeError) {
+        if (isMissingLocationScopeTable(scopeError)) {
+          console.warn('location scope table missing, skipping enforcement');
+        } else {
+          console.error('location scope fetch error:', scopeError);
+          return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
+        }
+      } else if (!scope?.primary_location) {
         return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
+      } else {
+        enforcedLocation = scope.primary_location;
       }
-      enforcedLocation = scope.primary_location;
     }
 
     let query = supabaseAdmin
       .from('inventory_view')
-      .select('inventory_id,item_id,artist,category,album_version,option,barcode,location,quantity', { count: 'exact' })
+      .select('inventory_id,item_id,artist,category,album_version,option,location,quantity', { count: 'exact' })
       .order('artist', { ascending: true })
       .order('album_version', { ascending: true })
       .order('option', { ascending: true })
@@ -51,7 +65,7 @@ export async function GET(req: Request) {
     if (q) {
       const term = `%${q}%`;
       query = query.or(
-        ['artist', 'album_version', 'option', 'location', 'barcode']
+        ['artist', 'album_version', 'option', 'location']
           .map((col) => `${col}.ilike.${term}`)
           .join(',')
       );

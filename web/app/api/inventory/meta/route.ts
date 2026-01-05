@@ -2,6 +2,12 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../../lib/supabase';
 import { withAuth } from '../../../../lib/auth';
 
+function isMissingLocationScopeTable(error: any) {
+  const message = error?.message || '';
+  const code = error?.code || '';
+  return code === '42P01' || message.includes('user_location_permissions');
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const artist = searchParams.get('artist') || undefined;
@@ -21,10 +27,18 @@ export async function GET(req: Request) {
         .select('primary_location')
         .eq('user_id', session.userId)
         .maybeSingle();
-      if (scopeError || !scope?.primary_location) {
+      if (scopeError) {
+        if (isMissingLocationScopeTable(scopeError)) {
+          console.warn('location scope table missing, skipping enforcement');
+        } else {
+          console.error('location scope fetch error:', scopeError);
+          return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
+        }
+      } else if (!scope?.primary_location) {
         return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
+      } else {
+        enforcedLocation = scope.primary_location;
       }
-      enforcedLocation = scope.primary_location;
     }
     const [summaryRes, anomalyRes, artistsRes, locationsRes, categoriesRes] = await Promise.all([
       supabaseAdmin.rpc('get_inventory_summary_v2', {
