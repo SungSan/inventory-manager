@@ -111,13 +111,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
 
-    if (normalizedCategory.toLowerCase() === 'md' && !normalizedBarcode) {
-      return NextResponse.json(
-        { ok: false, step: 'validation', error: 'MD 카테고리는 바코드가 필요합니다.' },
-        { status: 400 }
-      );
-    }
-
     const idempotencyRaw = idempotency_key ?? idempotencyKey ?? randomUUID();
     const idempotency = idempotencyRaw ? String(idempotencyRaw).trim() : randomUUID();
     const createdBy = session.userId ?? (session as any)?.user?.id ?? (session as any)?.user_id ?? null;

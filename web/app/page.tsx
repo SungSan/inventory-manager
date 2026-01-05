@@ -60,6 +60,7 @@ type HistoryRow = {
   category: string;
   album_version: string;
   option?: string;
+  barcode?: string | null;
   location: string;
   from_location?: string | null;
   to_location?: string | null;
@@ -93,12 +94,24 @@ type MovementPayload = {
   album_version: string;
   option: string;
   location: string;
-  from_location?: string;
-  to_location?: string;
   quantity: number;
-  direction: 'IN' | 'OUT' | 'TRANSFER';
+  direction: 'IN' | 'OUT';
   memo: string;
   barcode?: string;
+  item_id?: string | null;
+};
+
+type TransferPayload = {
+  artist: string;
+  category: 'album' | 'md';
+  album_version: string;
+  option: string;
+  from_location: string;
+  to_location: string;
+  quantity: number;
+  memo: string;
+  barcode?: string;
+  item_id?: string | null;
 };
 
 type Role = 'admin' | 'operator' | 'viewer' | 'l_operator';
@@ -112,12 +125,22 @@ const EMPTY_MOVEMENT: MovementPayload = {
   album_version: '',
   option: '',
   location: '',
-  from_location: '',
-  to_location: '',
   quantity: 0,
   direction: 'IN',
   memo: '',
   barcode: ''
+};
+
+const EMPTY_TRANSFER: TransferPayload = {
+  artist: '',
+  category: 'album',
+  album_version: '',
+  option: '',
+  from_location: '',
+  to_location: '',
+  quantity: 0,
+  memo: '',
+  barcode: '',
 };
 
 function deriveStockKey(target?: InventoryRow | InventoryEditDraft | null) {
@@ -169,6 +192,22 @@ function toKstDateInput(date: Date) {
 }
 
 const parseKstDate = (value: string) => Date.parse(`${value}T00:00:00+09:00`);
+
+function findMatchingStock(
+  rows: InventoryRow[],
+  artist: string,
+  category: string,
+  albumVersion: string,
+  option: string
+): InventoryRow | undefined {
+  return rows.find(
+    (row) =>
+      row.artist === artist &&
+      row.category === category &&
+      row.album_version === albumVersion &&
+      row.option === option
+  );
+}
 
 function normalizeStockToApiRows(rows: InventoryRow[]): InventoryApiRow[] {
   return rows.flatMap((row, idx) =>
@@ -260,6 +299,8 @@ export default function Home() {
   const [editPanelEnabled, setEditPanelEnabled] = useState(false);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [movement, setMovement] = useState<MovementPayload>(EMPTY_MOVEMENT);
+  const [transferPayload, setTransferPayload] = useState<TransferPayload>(EMPTY_TRANSFER);
+  const [movementMode, setMovementMode] = useState<'movement' | 'transfer'>('movement');
   const [selectedStockKeys, setSelectedStockKeys] = useState<string[]>([]);
   const [focusedStockKey, setFocusedStockKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<InventoryEditDraft | null>(null);
@@ -672,6 +713,7 @@ export default function Home() {
       const rows = list.map((row: any) => ({
         ...row,
         option: row.option ?? '',
+        barcode: row.barcode ?? null,
         created_by_name: row.created_by_name ?? '',
         created_by_department: row.created_by_department ?? '',
         from_location: row.from_location ?? '',
@@ -706,16 +748,14 @@ export default function Home() {
     const artistValue = movement.artist.trim();
     const albumVersion = movement.album_version.trim();
     const locationValue = movement.location.trim();
-    const fromLocation = movement.from_location?.trim() || '';
-    const toLocation = movement.to_location?.trim() || '';
     const quantityValue = Number(movement.quantity);
     const memoValue = movement.memo.trim();
     const optionValue = movement.option;
     const categoryValue = movement.category;
     const barcodeValue = movement.barcode?.trim() || '';
 
-    if (!artistValue || !albumVersion || (!locationValue && direction !== 'TRANSFER') || !quantityValue) {
-      alert('아티스트, 앨범/버전, 로케이션/이관 정보를 모두 입력해야 합니다.');
+    if (!artistValue || !albumVersion || !locationValue || !quantityValue) {
+      alert('아티스트, 앨범/버전, 로케이션 정보를 모두 입력해야 합니다.');
       return;
     }
 
@@ -729,15 +769,11 @@ export default function Home() {
       return;
     }
 
-    if (direction === 'TRANSFER') {
-      if (!fromLocation || !toLocation) {
-        alert('이관은 보내는 곳과 받는 곳을 모두 입력해야 합니다.');
-        return;
-      }
-    }
+    const matchingStock = findMatchingStock(stock, artistValue, categoryValue, albumVersion, optionValue);
+    const effectiveBarcode = barcodeValue || matchingStock?.barcode || '';
 
-    if (categoryValue === 'md' && !barcodeValue) {
-      alert('MD 카테고리는 바코드 입력이 필요합니다.');
+    if (categoryValue === 'md' && !effectiveBarcode && !matchingStock) {
+      alert('MD 카테고리 신규 등록에는 바코드가 필요합니다.');
       return;
     }
 
@@ -756,13 +792,11 @@ export default function Home() {
           category: categoryValue,
           album_version: albumVersion,
           option: optionValue ?? '',
-          location: direction === 'TRANSFER' ? '' : locationValue,
-          from_location: direction === 'TRANSFER' ? fromLocation : undefined,
-          to_location: direction === 'TRANSFER' ? toLocation : undefined,
+          location: locationValue,
           quantity: Number(quantityValue),
           direction,
           memo: memoValue ?? '',
-          barcode: barcodeValue || undefined,
+          barcode: effectiveBarcode || undefined,
           idempotency_key,
         })
       });
@@ -786,6 +820,84 @@ export default function Home() {
     } catch (err: any) {
       const message = err?.message || '요청 중 오류가 발생했습니다.';
       setStatus(`기록 실패: ${message}`);
+      alert(message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function submitTransfer() {
+    const artistValue = transferPayload.artist.trim();
+    const albumVersion = transferPayload.album_version.trim();
+    const fromLocation = transferPayload.from_location.trim();
+    const toLocation = transferPayload.to_location.trim();
+    const quantityValue = Number(transferPayload.quantity);
+    const memoValue = transferPayload.memo.trim();
+    const optionValue = transferPayload.option;
+    const categoryValue = transferPayload.category;
+    const barcodeValue = transferPayload.barcode?.trim() || '';
+
+    if (!artistValue || !albumVersion || !fromLocation || !toLocation || !quantityValue) {
+      alert('전산이관은 품목, 보낸/받는 로케이션, 수량을 모두 입력해야 합니다.');
+      return;
+    }
+
+    if (!Number.isFinite(quantityValue) || quantityValue <= 0) {
+      alert('수량은 1 이상의 양수만 입력 가능합니다.');
+      return;
+    }
+
+    const matchingStock = findMatchingStock(stock, artistValue, categoryValue, albumVersion, optionValue);
+    const effectiveBarcode = barcodeValue || matchingStock?.barcode || '';
+
+    if (categoryValue === 'md' && !effectiveBarcode && !matchingStock) {
+      alert('MD 카테고리 신규 등록에는 바코드가 필요합니다.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus('이관 처리 중...');
+    markActivity();
+
+    try {
+      const idempotency_key = `transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const res = await fetch('/api/transfer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          artist: artistValue,
+          category: categoryValue,
+          album_version: albumVersion,
+          option: optionValue ?? '',
+          from_location: fromLocation,
+          to_location: toLocation,
+          quantity: quantityValue,
+          memo: memoValue ?? '',
+          barcode: effectiveBarcode || undefined,
+          idempotency_key,
+        }),
+      });
+
+      const payload = await res.json().catch(() => null);
+      const ok = payload?.ok === true;
+      const duplicated = payload?.duplicated === true;
+
+      if (!res.ok || !ok) {
+        const message = payload?.error || payload?.message || `전산이관 실패 (${res.status})`;
+        const stepMessage = payload?.step ? `${message} [${payload.step}]` : message;
+        console.error('transfer submit error:', { message: stepMessage, payload });
+        alert(stepMessage);
+        setStatus(stepMessage);
+        return;
+      }
+
+      await Promise.all([reloadInventory(), reloadHistory()]);
+      setStatus(duplicated ? '중복 요청으로 기존 결과 유지' : '이관 기록 완료');
+      setTransferPayload(EMPTY_TRANSFER);
+      setMovementMode('movement');
+    } catch (err: any) {
+      const message = err?.message || '요청 중 오류가 발생했습니다.';
+      setStatus(`이관 실패: ${message}`);
       alert(message);
     } finally {
       setIsSubmitting(false);
@@ -1146,11 +1258,11 @@ export default function Home() {
     return rows;
   }
 
-    async function exportInventory() {
-      setInventoryActionStatus('엑셀 내보내는 중...');
-      const allRows = await fetchAllInventoryForExport();
-      const sourceRows: InventoryApiRow[] = allRows.length ? allRows : normalizeStockToApiRows(stock);
-      const grouped = groupInventoryRows(sourceRows);
+  async function exportInventory() {
+    setInventoryActionStatus('엑셀 내보내는 중...');
+    const allRows = await fetchAllInventoryForExport();
+    const sourceRows: InventoryApiRow[] = allRows.length ? allRows : normalizeStockToApiRows(stock);
+    const grouped = groupInventoryRows(sourceRows);
     const rows = grouped.map((row) => ({
       artist: row.artist,
       category: row.category,
@@ -1158,7 +1270,7 @@ export default function Home() {
       option: row.option,
       barcode: row.barcode ?? '',
       locations: row.locations.map((loc) => `${loc.location}: ${loc.quantity}`).join(', '),
-      total_quantity: row.total_quantity
+      total_quantity: row.total_quantity,
     }));
     exportToExcel(rows, 'inventory.xlsx', 'Inventory');
     setInventoryActionStatus('');
@@ -1172,6 +1284,7 @@ export default function Home() {
       category: h.category,
       album_version: h.album_version,
       option: h.option ?? '',
+      barcode: h.barcode ?? '',
       location:
         h.direction === 'TRANSFER'
           ? `${h.from_location || h.location || ''} → ${h.to_location || ''}`
@@ -1556,87 +1669,207 @@ export default function Home() {
                 </div>
               }
             >
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  submitMovement(movement.direction);
-                }}
-              >
-                <div className="form-row">
-                  <label>
-                    <span>아티스트</span>
-                    <input
-                      value={movement.artist}
-                      onChange={(e) => setMovement({ ...movement, artist: e.target.value })}
-                      placeholder="예: ARTIST"
-                    />
-                  </label>
-                  <label className="compact">
-                    <span>카테고리</span>
-                    <select
-                      value={movement.category}
-                      onChange={(e) => setMovement({ ...movement, category: e.target.value as MovementPayload['category'] })}
+              <div className="mode-toggle">
+                <button
+                  type="button"
+                  className={movementMode === 'movement' ? 'primary' : 'ghost'}
+                  onClick={() => {
+                    setMovementMode('movement');
+                    setTransferPayload(EMPTY_TRANSFER);
+                  }}
+                >
+                  입/출고
+                </button>
+                <button
+                  type="button"
+                  className={movementMode === 'transfer' ? 'primary' : 'ghost'}
+                  onClick={() => {
+                    setMovementMode('transfer');
+                    setMovement(EMPTY_MOVEMENT);
+                  }}
+                >
+                  전산이관
+                </button>
+              </div>
+
+              {movementMode === 'movement' ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    submitMovement('IN');
+                  }}
+                >
+                  <div className="form-row">
+                    <label>
+                      <span>아티스트</span>
+                      <input
+                        value={movement.artist}
+                        onChange={(e) => setMovement({ ...movement, artist: e.target.value })}
+                        placeholder="예: ARTIST"
+                      />
+                    </label>
+                    <label className="compact">
+                      <span>카테고리</span>
+                      <select
+                        value={movement.category}
+                        onChange={(e) => setMovement({ ...movement, category: e.target.value as MovementPayload['category'] })}
+                      >
+                        <option value="album">앨범</option>
+                        <option value="md">MD</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>앨범/버전</span>
+                      <input
+                        value={movement.album_version}
+                        onChange={(e) => setMovement({ ...movement, album_version: e.target.value })}
+                        placeholder="앨범명/버전"
+                      />
+                    </label>
+                    <label>
+                      <span>옵션</span>
+                      <input
+                        value={movement.option}
+                        onChange={(e) => setMovement({ ...movement, option: e.target.value })}
+                        placeholder="포카/키트 등"
+                      />
+                    </label>
+                    <label>
+                      <span>바코드</span>
+                      <input
+                        value={movement.barcode || ''}
+                        onChange={(e) => setMovement({ ...movement, barcode: e.target.value })}
+                        placeholder="바코드 (MD 권장)"
+                      />
+                    </label>
+                    <label>
+                      <span>로케이션</span>
+                      <input
+                        list="location-options"
+                        value={movement.location}
+                        onChange={(e) => setMovement({ ...movement, location: e.target.value })}
+                        placeholder="창고/선반"
+                      />
+                      <datalist id="location-options">
+                        {locationOptions.map((loc) => (
+                          <option key={loc} value={loc} />
+                        ))}
+                      </datalist>
+                    </label>
+                    <label className="compact">
+                      <span>수량</span>
+                      <input
+                        type="number"
+                        value={movement.quantity}
+                        min={1}
+                        onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
+                      />
+                    </label>
+                  </div>
+                  <div className="form-row">
+                    <label className="wide">
+                      <span>메모</span>
+                      <input
+                        value={movement.memo}
+                        onChange={(e) => setMovement({ ...movement, memo: e.target.value })}
+                        placeholder="작업 사유/비고"
+                      />
+                    </label>
+                  </div>
+                  <div className="actions-row">
+                    <button type="button" disabled={isSubmitting} onClick={() => submitMovement('IN')}>
+                      {isSubmitting && movementMode === 'movement' ? '처리 중...' : '입고'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSubmitting}
+                      className="secondary"
+                      onClick={() => submitMovement('OUT')}
                     >
-                      <option value="album">앨범</option>
-                      <option value="md">MD</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>앨범/버전</span>
-                    <input
-                      value={movement.album_version}
-                      onChange={(e) => setMovement({ ...movement, album_version: e.target.value })}
-                      placeholder="앨범명/버전"
-                    />
-                  </label>
-                  <label>
-                    <span>옵션</span>
-                    <input
-                      value={movement.option}
-                      onChange={(e) => setMovement({ ...movement, option: e.target.value })}
-                      placeholder="포카/키트 등"
-                    />
-                  </label>
-                  <label>
-                    <span>바코드</span>
-                    <input
-                      value={movement.barcode || ''}
-                      onChange={(e) => setMovement({ ...movement, barcode: e.target.value })}
-                      placeholder="바코드 (MD 필수)"
-                    />
-                  </label>
-                  <label>
-                    <span>로케이션</span>
-                    <input
-                      list="location-options"
-                      value={movement.location}
-                      onChange={(e) => setMovement({ ...movement, location: e.target.value })}
-                      placeholder="창고/선반"
-                    />
-                    <datalist id="location-options">
-                      {locationOptions.map((loc) => (
-                        <option key={loc} value={loc} />
-                      ))}
-                    </datalist>
-                  </label>
-                  <label className="compact">
-                    <span>수량</span>
-                    <input
-                      type="number"
-                      value={movement.quantity}
-                      min={1}
-                      onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
-                    />
-                  </label>
-                </div>
-                {movement.direction === 'TRANSFER' && (
+                      {isSubmitting && movementMode === 'movement' ? '처리 중...' : '출고'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSubmitting}
+                      className="ghost"
+                      onClick={() => {
+                        setMovementMode('transfer');
+                        setMovement(EMPTY_MOVEMENT);
+                      }}
+                    >
+                      전산이관으로 전환
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    submitTransfer();
+                  }}
+                >
+                  <div className="form-row">
+                    <label>
+                      <span>아티스트</span>
+                      <input
+                        value={transferPayload.artist}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, artist: e.target.value })}
+                        placeholder="예: ARTIST"
+                      />
+                    </label>
+                    <label className="compact">
+                      <span>카테고리</span>
+                      <select
+                        value={transferPayload.category}
+                        onChange={(e) =>
+                          setTransferPayload({ ...transferPayload, category: e.target.value as TransferPayload['category'] })
+                        }
+                      >
+                        <option value="album">앨범</option>
+                        <option value="md">MD</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>앨범/버전</span>
+                      <input
+                        value={transferPayload.album_version}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, album_version: e.target.value })}
+                        placeholder="앨범명/버전"
+                      />
+                    </label>
+                    <label>
+                      <span>옵션</span>
+                      <input
+                        value={transferPayload.option}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, option: e.target.value })}
+                        placeholder="포카/키트 등"
+                      />
+                    </label>
+                    <label>
+                      <span>바코드</span>
+                      <input
+                        value={transferPayload.barcode || ''}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, barcode: e.target.value })}
+                        placeholder="바코드 (MD 권장)"
+                      />
+                    </label>
+                    <label>
+                      <span>수량</span>
+                      <input
+                        type="number"
+                        value={transferPayload.quantity}
+                        min={1}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, quantity: Number(e.target.value) })}
+                      />
+                    </label>
+                  </div>
                   <div className="form-row">
                     <label>
                       <span>보내는 곳</span>
                       <input
                         list="location-options"
-                        value={movement.from_location}
-                        onChange={(e) => setMovement({ ...movement, from_location: e.target.value })}
+                        value={transferPayload.from_location}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, from_location: e.target.value })}
                         placeholder="출발 로케이션"
                       />
                     </label>
@@ -1644,61 +1877,39 @@ export default function Home() {
                       <span>받는 곳</span>
                       <input
                         list="location-options"
-                        value={movement.to_location}
-                        onChange={(e) => setMovement({ ...movement, to_location: e.target.value })}
+                        value={transferPayload.to_location}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, to_location: e.target.value })}
                         placeholder="도착 로케이션"
                       />
                     </label>
                   </div>
-                )}
-                <div className="form-row">
-                  <label className="wide">
-                    <span>메모</span>
-                    <input
-                      value={movement.memo}
-                      onChange={(e) => setMovement({ ...movement, memo: e.target.value })}
-                      placeholder="작업 사유/비고"
-                    />
-                  </label>
-                </div>
-                <div className="actions-row">
-                  <button
-                    type="button"
-                    disabled={isSubmitting}
-                    onClick={() => {
-                      setMovement((prev) => ({ ...prev, direction: 'IN' }));
-                      submitMovement('IN');
-                    }}
-                  >
-                    {isSubmitting && movement.direction === 'IN' ? '처리 중...' : '입고'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isSubmitting}
-                    className="secondary"
-                    onClick={() => {
-                      setMovement((prev) => ({ ...prev, direction: 'OUT' }));
-                      submitMovement('OUT');
-                    }}
-                  >
-                    {isSubmitting && movement.direction === 'OUT' ? '처리 중...' : '출고'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isSubmitting}
-                    className="secondary"
-                    onClick={() => {
-                      if (movement.direction !== 'TRANSFER') {
-                        setMovement((prev) => ({ ...prev, direction: 'TRANSFER' }));
-                        return;
-                      }
-                      submitMovement('TRANSFER');
-                    }}
-                  >
-                    {isSubmitting && movement.direction === 'TRANSFER' ? '처리 중...' : '전산이관'}
-                  </button>
-                </div>
-              </form>
+                  <div className="form-row">
+                    <label className="wide">
+                      <span>메모</span>
+                      <input
+                        value={transferPayload.memo}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, memo: e.target.value })}
+                        placeholder="작업 사유/비고"
+                      />
+                    </label>
+                  </div>
+                  <div className="actions-row">
+                    <button type="button" disabled={isSubmitting} onClick={submitTransfer}>
+                      {isSubmitting && movementMode === 'transfer' ? '처리 중...' : '전산이관'}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => {
+                        setTransferPayload(EMPTY_TRANSFER);
+                        setMovementMode('movement');
+                      }}
+                    >
+                      취소
+                    </button>
+                  </div>
+                </form>
+              )}
             </Section>
           </div>
           <div className="right-panel">
@@ -2102,11 +2313,12 @@ export default function Home() {
                   h.direction === 'TRANSFER'
                     ? `${h.from_location || h.location || ''} → ${h.to_location || ''}`
                     : h.location;
+                const directionLabel = h.direction === 'TRANSFER' ? '전산이관' : h.direction;
                 return (
                   <tr key={`${h.created_at}-${idx}`}>
                     <td>{formatDate(h.created_at)}</td>
                     <td>
-                      <Pill>{h.direction}</Pill>
+                      <Pill>{directionLabel}</Pill>
                     </td>
                     <td>{h.artist}</td>
                     <td>{h.category}</td>

@@ -18,13 +18,22 @@ type AdminUserRow = {
   sub_locations?: string[] | null;
 };
 
+function normalizeRole(value: any): Role | undefined {
+  if (!value) return undefined;
+  const raw = String(value);
+  if (raw === 'l-operator' || raw === 'L-operator' || raw === 'L_operator') return 'l_operator';
+  if (raw === 'l_operator') return 'l_operator';
+  if (raw === 'operator' || raw === 'admin' || raw === 'viewer') return raw as Role;
+  return undefined;
+}
+
 function mapAdminUser(row: AdminUserRow) {
   return {
     id: row.id,
     username: (row.email ?? '').split('@')[0] || row.email || '',
     approved: Boolean(row.approved),
     active: Boolean(row.active),
-    role: (row.role as Role | undefined) ?? 'viewer',
+    role: normalizeRole(row.role) ?? 'viewer',
     email: row.email ?? '',
     full_name: row.full_name ?? '',
     department: row.department ?? '',
@@ -99,11 +108,12 @@ export async function PATCH(req: Request) {
     }
 
     if (typeof role !== 'undefined') {
+      const normalizedRole = normalizeRole(role);
       const allowed: Role[] = ['admin', 'operator', 'viewer', 'l_operator'];
-      if (!allowed.includes(role as Role)) {
+      if (!normalizedRole || !allowed.includes(normalizedRole)) {
         return NextResponse.json({ ok: false, step: 'validation', error: 'invalid role' }, { status: 400 });
       }
-      updates.role = role as Role;
+      updates.role = normalizedRole;
     }
 
     if (Object.keys(updates).length === 0 && !hasScope) {
