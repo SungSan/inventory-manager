@@ -45,6 +45,12 @@ function mapAdminUser(row: AdminUserRow) {
   };
 }
 
+function isMissingLocationScopeTable(error: any) {
+  const message = error?.message || '';
+  const code = error?.code || '';
+  return code === '42P01' || message.includes('user_location_permissions');
+}
+
 export async function GET() {
   return withAuth(['admin'], async () => {
     const { data, error } = await supabaseAdmin
@@ -58,21 +64,36 @@ export async function GET() {
 
     const ids = (data || []).map((row) => row.id).filter(Boolean);
     let scopeMap: Record<string, { primary_location?: string | null; sub_locations?: string[] | null }> = {};
+    let scopeAvailable = true;
     if (ids.length > 0) {
-      const { data: scopes } = await supabaseAdmin
+      const { data: scopes, error: scopeError } = await supabaseAdmin
         .from('user_location_permissions')
         .select('user_id, primary_location, sub_locations')
         .in('user_id', ids);
-      scopeMap = Object.fromEntries(
-        (scopes || []).map((row: any) => [row.user_id, { primary_location: row.primary_location, sub_locations: row.sub_locations }])
-      );
+
+      if (scopeError) {
+        scopeAvailable = !isMissingLocationScopeTable(scopeError);
+        if (!scopeAvailable) {
+          console.warn('location scope table missing, skipping scopes');
+        } else {
+          console.error('location scope fetch error:', scopeError);
+        }
+      } else {
+        scopeMap = Object.fromEntries(
+          (scopes || []).map((row: any) => [row.user_id, { primary_location: row.primary_location, sub_locations: row.sub_locations }])
+        );
+      }
     }
 
     const mapped = (data || []).map((row: AdminUserRow) =>
       mapAdminUser({ ...row, primary_location: scopeMap[row.id]?.primary_location ?? null, sub_locations: scopeMap[row.id]?.sub_locations ?? [] })
     );
 
-    return NextResponse.json(mapped);
+    return NextResponse.json(mapped, {
+      headers: {
+        'x-location-scope': scopeAvailable ? 'enabled' : 'disabled',
+      },
+    });
   });
 }
 
@@ -195,24 +216,24 @@ export async function PATCH(req: Request) {
     if (hasScope) {
       const primary = typeof primary_location === 'string' ? primary_location.trim() : '';
       const subs = Array.isArray(sub_locations) ? sub_locations.filter(Boolean) : [];
-      if (!primary) {
-        return NextResponse.json(
-          { ok: false, step: 'location_scope', error: 'primary_location is required for l-operator' },
-          { status: 400 }
-        );
-      }
+      const shouldPersistScope = normalizedRole === 'l_operator';
 
-      const { error: scopeError } = await supabaseAdmin
-        .from('user_location_permissions')
-        .upsert({ user_id: id, primary_location: primary, sub_locations: subs })
-        .select('user_id')
-        .single();
+      if (shouldPersistScope && !primary) {
+        console.warn('location scope skipped: missing primary_location for l-operator');
+      } else if (shouldPersistScope) {
+        const { error: scopeError } = await supabaseAdmin
+          .from('user_location_permissions')
+          .upsert({ user_id: id, primary_location: primary, sub_locations: subs })
+          .select('user_id')
+          .single();
 
-      if (scopeError) {
-        return NextResponse.json(
-          { ok: false, step: 'location_scope', error: scopeError.message },
-          { status: 500 }
-        );
+        if (scopeError) {
+          if (isMissingLocationScopeTable(scopeError)) {
+            console.warn('location scope table missing, skipping scope persist');
+          } else {
+            console.error('location scope persist error:', scopeError);
+          }
+        }
       }
     }
 

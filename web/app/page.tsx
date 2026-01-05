@@ -345,6 +345,7 @@ export default function Home() {
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [accountsStatus, setAccountsStatus] = useState('');
   const [locationScopes, setLocationScopes] = useState<Record<string, { primary: string; subs: string }>>({});
+  const [locationScopeAvailable, setLocationScopeAvailable] = useState(true);
   const [registerStatus, setRegisterStatus] = useState('');
   const [adminStatus, setAdminStatus] = useState('');
   const [sessionRole, setSessionRole] = useState<Role | null>(null);
@@ -948,6 +949,7 @@ export default function Home() {
   async function loadAccounts() {
     setAccountsStatus('목록 불러오는 중...');
     const res = await fetch('/api/admin/users');
+    setLocationScopeAvailable(res.headers.get('x-location-scope') !== 'disabled');
     if (res.ok) {
       const data = await res.json();
       setAccounts(data || []);
@@ -993,6 +995,10 @@ export default function Home() {
   }
 
   async function saveAccountScope(id: string) {
+    if (!locationScopeAvailable) {
+      setAccountsStatus('로케이션 범위 저장은 현재 비활성화되어 있습니다.');
+      return;
+    }
     const scope = locationScopes[id] || { primary: '', subs: '' };
     const payload = {
       id,
@@ -2377,8 +2383,8 @@ export default function Home() {
 
       {accountManagerOpen && (
         <div className="modal-backdrop">
-          <div className="modal-card">
-            <div className="section-heading">
+          <div className="modal-card wide-modal">
+            <div className="section-heading sticky-header">
               <h3>계정 관리</h3>
               <div className="section-actions">
                 <button className="ghost" onClick={loadAccounts}>새로고침</button>
@@ -2388,11 +2394,22 @@ export default function Home() {
               <p className="muted" style={{ marginTop: 0 }}>
                 ID, 실명, 부서를 확인하고 권한과 승인 여부를 바로 수정할 수 있습니다.
               </p>
-              <div className="table-wrapper responsive-table">
-                <table className="table compact-table">
-                <thead>
-                  <tr>
-                    <th>ID</th>
+              {!locationScopeAvailable && (
+                <div className="alert-row" style={{ marginBottom: '0.5rem' }}>
+                  <strong>로케이션 범위 기능이 비활성화되었습니다.</strong>
+                  <span className="muted">DB에 user_location_permissions 테이블이 없거나 준비 중입니다.</span>
+                </div>
+              )}
+              <datalist id="locations-list">
+                {locationOptions.map((loc) => (
+                  <option key={loc} value={loc} />
+                ))}
+              </datalist>
+              <div className="table-wrapper responsive-table account-table-wrapper">
+                <table className="table compact-table account-table">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
                     <th>이메일</th>
                     <th>성함</th>
                     <th>부서</th>
@@ -2437,6 +2454,8 @@ export default function Home() {
                             className="inline-input"
                             placeholder="주 로케이션"
                             value={locationScopes[acc.id]?.primary ?? ''}
+                            list="locations-list"
+                            disabled={!locationScopeAvailable}
                             onChange={(e) =>
                               setLocationScopes((prev) => ({
                                 ...prev,
@@ -2454,6 +2473,8 @@ export default function Home() {
                             className="inline-input"
                             placeholder="쉼표로 구분"
                             value={locationScopes[acc.id]?.subs ?? ''}
+                            list="locations-list"
+                            disabled={!locationScopeAvailable}
                             onChange={(e) =>
                               setLocationScopes((prev) => ({
                                 ...prev,
@@ -2467,7 +2488,13 @@ export default function Home() {
                       </td>
                       <td>
                         {acc.role === 'l_operator' ? (
-                          <button className="ghost" type="button" onClick={() => saveAccountScope(acc.id)}>
+                          <button
+                            className="ghost"
+                            type="button"
+                            onClick={() => saveAccountScope(acc.id)}
+                            disabled={!locationScopeAvailable}
+                            title={locationScopeAvailable ? undefined : '로케이션 범위 테이블이 없어 저장을 건너뜁니다'}
+                          >
                             저장
                           </button>
                         ) : (
@@ -2548,6 +2575,35 @@ export default function Home() {
 
       .responsive-table {
         overflow-x: auto;
+      }
+
+      .modal-card.wide-modal {
+        max-width: 90vw;
+        width: 1200px;
+        min-height: 70vh;
+        max-height: 85vh;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .wide-modal .section-heading {
+        position: sticky;
+        top: 0;
+        background: #fff;
+        z-index: 2;
+      }
+
+      .account-table-wrapper {
+        max-height: 60vh;
+        overflow: auto;
+      }
+
+      .account-table thead th {
+        position: sticky;
+        top: 0;
+        background: #f8f8f8;
+        z-index: 1;
       }
 
       .stats {
