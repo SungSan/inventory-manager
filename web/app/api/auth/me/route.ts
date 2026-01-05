@@ -36,6 +36,24 @@ export async function GET() {
   } catch (profileError) {
     console.error('[auth/me] profile lookup failed', profileError);
   }
+
+  let primary_location: string | null = null;
+  let sub_locations: string[] = [];
+  try {
+    const { data: scopeRow, error: scopeError } = await supabaseAdmin
+      .from('user_location_permissions')
+      .select('primary_location, sub_locations')
+      .eq('user_id', session.userId)
+      .maybeSingle();
+
+    if (!scopeError && scopeRow) {
+      primary_location = (scopeRow as any)?.primary_location ?? null;
+      const subs = (scopeRow as any)?.sub_locations;
+      sub_locations = Array.isArray(subs) ? subs.filter(Boolean) : [];
+    }
+  } catch (scopeError) {
+    console.warn('[auth/me] scope lookup skipped', { message: (scopeError as any)?.message });
+  }
   const specialAdmin = session.email?.toLowerCase() === 'tksdlvkxl@gmail.com';
 
   return NextResponse.json({
@@ -46,5 +64,6 @@ export async function GET() {
     expiresAt: session.expiresAt ?? null,
     approved: specialAdmin ? true : userRow.approved ?? false,
     username,
+    locationScope: primary_location || sub_locations.length > 0 ? { primary_location, sub_locations } : null,
   });
 }

@@ -348,6 +348,9 @@ export default function Home() {
   const [sessionRole, setSessionRole] = useState<Role | null>(null);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+  const [sessionScope, setSessionScope] = useState<{ primary_location?: string | null; sub_locations?: string[] } | null>(
+    null
+  );
   const [showAdmin, setShowAdmin] = useState(false);
   const [idleDeadline, setIdleDeadline] = useState<number | null>(null);
   const [pendingBlock, setPendingBlock] = useState<string | null>(null);
@@ -403,6 +406,7 @@ export default function Home() {
       setSessionRole(null);
       setSessionEmail(null);
       setSessionUserId(null);
+      setSessionScope(null);
       setShowAdmin(false);
       setIdleDeadline(null);
       return null;
@@ -415,6 +419,7 @@ export default function Home() {
     setSessionRole(data.role ?? null);
     setSessionEmail(data.email ?? null);
     setSessionUserId(data.userId ?? null);
+    setSessionScope(data.locationScope ?? null);
     markActivity();
     await fetchLocations();
     return data;
@@ -832,6 +837,23 @@ export default function Home() {
       return;
     }
 
+    if (sessionRole === 'l_operator') {
+      const primary = sessionScope?.primary_location?.trim();
+      const subs = (sessionScope?.sub_locations ?? []).map((v) => v.trim()).filter(Boolean);
+      if (!primary) {
+        alert('담당 로케이션이 지정되지 않아 전산이관을 진행할 수 없습니다.');
+        return;
+      }
+      if (fromLocation !== primary) {
+        alert('담당 로케이션에서만 전산이관을 시작할 수 있습니다.');
+        return;
+      }
+      if (subs.length === 0 || !subs.includes(toLocation)) {
+        alert('받는 곳은 서브 로케이션 중에서만 선택할 수 있습니다.');
+        return;
+      }
+    }
+
     if (!Number.isFinite(quantityValue) || quantityValue <= 0) {
       alert('수량은 1 이상의 양수만 입력 가능합니다.');
       return;
@@ -1025,6 +1047,21 @@ export default function Home() {
       option: row.option,
       location: defaultLocation,
       quantity: 0,
+    }));
+
+    setTransferPayload((prev) => ({
+      ...prev,
+      artist: row.artist,
+      category: row.category as TransferPayload['category'],
+      album_version: row.album_version,
+      option: row.option,
+      from_location:
+        sessionRole === 'l_operator' && sessionScope?.primary_location
+          ? sessionScope.primary_location
+          : row.locations[0]?.location ?? prev.from_location,
+      to_location: prev.to_location,
+      quantity: Number.isFinite(prev.quantity) ? prev.quantity : 0,
+      item_id: row.item_id ?? prev.item_id ?? null,
     }));
 
     setStatus(
@@ -1252,6 +1289,8 @@ export default function Home() {
   const currentPage = Math.min(totalPages, Math.floor(inventoryPage.offset / inventoryPage.limit) + 1);
   const canPrevPage = inventoryPage.offset > 0;
   const canNextPage = inventoryPage.offset + inventoryPage.limit < inventoryPage.totalRows;
+  const transferBlockedForScope =
+    sessionRole === 'l_operator' && (!sessionScope?.primary_location || (sessionScope.sub_locations ?? []).length === 0);
 
   useEffect(() => {
     if (logoutTimeout.current) {
@@ -1282,6 +1321,12 @@ export default function Home() {
       setShowAnomalies(false);
     }
   }, [anomalyCount, showAnomalies]);
+
+  useEffect(() => {
+    if (sessionRole === 'l_operator' && sessionScope?.primary_location) {
+      setTransferPayload((prev) => ({ ...prev, from_location: sessionScope.primary_location ?? '' }));
+    }
+  }, [sessionRole, sessionScope]);
 
   useEffect(() => {
     if (!isLoggedIn) return;
@@ -1803,19 +1848,43 @@ export default function Home() {
                       <span>보내는 곳</span>
                       <input
                         list="location-options"
-                        value={transferPayload.from_location}
+                        value={
+                          sessionRole === 'l_operator' && sessionScope?.primary_location
+                            ? sessionScope.primary_location
+                            : transferPayload.from_location
+                        }
+                        disabled={sessionRole === 'l_operator' && !!sessionScope?.primary_location}
                         onChange={(e) => setTransferPayload({ ...transferPayload, from_location: e.target.value })}
                         placeholder="출발 로케이션"
                       />
                     </label>
                     <label>
                       <span>받는 곳</span>
-                      <input
-                        list="location-options"
-                        value={transferPayload.to_location}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, to_location: e.target.value })}
-                        placeholder="도착 로케이션"
-                      />
+                      {sessionRole === 'l_operator' ? (
+                        <select
+                          value={transferPayload.to_location}
+                          onChange={(e) => setTransferPayload({ ...transferPayload, to_location: e.target.value })}
+                          disabled={!sessionScope?.sub_locations || sessionScope.sub_locations.length === 0}
+                        >
+                          <option value="" disabled>
+                            {sessionScope?.sub_locations && sessionScope.sub_locations.length > 0
+                              ? '받는 곳 선택'
+                              : '서브 로케이션 없음'}
+                          </option>
+                          {(sessionScope?.sub_locations ?? []).map((loc) => (
+                            <option key={loc} value={loc}>
+                              {loc}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          list="location-options"
+                          value={transferPayload.to_location}
+                          onChange={(e) => setTransferPayload({ ...transferPayload, to_location: e.target.value })}
+                          placeholder="도착 로케이션"
+                        />
+                      )}
                     </label>
                   </div>
                   <div className="form-row">
@@ -1829,8 +1898,16 @@ export default function Home() {
                     </label>
                   </div>
                   <div className="actions-row">
-                    <button type="button" disabled={isSubmitting} onClick={submitTransfer}>
-                      {isSubmitting && movementMode === 'transfer' ? '처리 중...' : '전산이관'}
+                    <button
+                      type="button"
+                      disabled={isSubmitting || transferBlockedForScope}
+                      onClick={submitTransfer}
+                    >
+                      {transferBlockedForScope
+                        ? '서브 로케이션 필요'
+                        : isSubmitting && movementMode === 'transfer'
+                        ? '처리 중...'
+                        : '전산이관'}
                     </button>
                     <button
                       type="button"
