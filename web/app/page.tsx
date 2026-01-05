@@ -1042,10 +1042,24 @@ export default function Home() {
     return rows;
   }
 
-  async function exportInventory() {
-    setInventoryActionStatus('엑셀 내보내는 중...');
-    const allRows = await fetchAllInventoryForExport();
-    const grouped = groupInventoryRows(allRows.length ? allRows : stock);
+    async function exportInventory() {
+      setInventoryActionStatus('엑셀 내보내는 중...');
+      const allRows = await fetchAllInventoryForExport();
+      const sourceRows: InventoryApiRow[] = allRows.length
+        ? allRows
+        : stock.flatMap((row) =>
+            row.locations.map((loc) => ({
+              inventory_id: loc.editableId ?? undefined,
+              item_id: undefined,
+              artist: row.artist,
+              category: row.category,
+              album_version: row.album_version,
+              option: row.option,
+              location: loc.location,
+              quantity: loc.quantity,
+            }))
+          );
+      const grouped = groupInventoryRows(sourceRows);
     const rows = grouped.map((row) => ({
       artist: row.artist,
       category: row.category,
