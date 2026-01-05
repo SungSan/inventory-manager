@@ -122,6 +122,7 @@ export async function PATCH(req: Request) {
     const updates: Record<string, any> = {};
 
     const hasScope = typeof primary_location === 'string' || Array.isArray(sub_locations);
+    const normalizedRoleFromPayload = typeof role !== 'undefined' ? normalizeRole(role) : undefined;
 
     if (typeof approved === 'boolean') {
       updates.approved = approved;
@@ -129,12 +130,11 @@ export async function PATCH(req: Request) {
     }
 
     if (typeof role !== 'undefined') {
-      const normalizedRole = normalizeRole(role);
       const allowed: Role[] = ['admin', 'operator', 'viewer', 'l_operator'];
-      if (!normalizedRole || !allowed.includes(normalizedRole)) {
+      if (!normalizedRoleFromPayload || !allowed.includes(normalizedRoleFromPayload)) {
         return NextResponse.json({ ok: false, step: 'validation', error: 'invalid role' }, { status: 400 });
       }
-      updates.role = normalizedRole;
+      updates.role = normalizedRoleFromPayload;
     }
 
     if (Object.keys(updates).length === 0 && !hasScope) {
@@ -213,10 +213,12 @@ export async function PATCH(req: Request) {
       }
     }
 
+    const effectiveRole = normalizeRole(updatedUser.role) ?? normalizedRoleFromPayload ?? updatedUser.role;
+
     if (hasScope) {
       const primary = typeof primary_location === 'string' ? primary_location.trim() : '';
       const subs = Array.isArray(sub_locations) ? sub_locations.filter(Boolean) : [];
-      const shouldPersistScope = normalizedRole === 'l_operator';
+      const shouldPersistScope = effectiveRole === 'l_operator';
 
       if (shouldPersistScope && !primary) {
         console.warn('location scope skipped: missing primary_location for l-operator');
