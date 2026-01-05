@@ -19,11 +19,13 @@ type AdminUserRow = {
 };
 
 function normalizeRole(value: any): Role | undefined {
-  if (!value) return undefined;
-  const raw = String(value);
-  if (raw === 'l-operator' || raw === 'L-operator' || raw === 'L_operator') return 'l_operator';
-  if (raw === 'l_operator') return 'l_operator';
-  if (raw === 'operator' || raw === 'admin' || raw === 'viewer') return raw as Role;
+  if (value === undefined || value === null) return undefined;
+  const raw = String(value).trim();
+  if (!raw) return undefined;
+  const cleaned = raw.replace(/^['"]+|['"]+$/g, '');
+  const normalized = cleaned.toLowerCase().replace(/-/g, '_');
+  if (normalized === 'l_operator') return 'l_operator';
+  if (normalized === 'operator' || normalized === 'admin' || normalized === 'viewer') return normalized as Role;
   return undefined;
 }
 
@@ -213,7 +215,7 @@ export async function PATCH(req: Request) {
       }
     }
 
-    const effectiveRole = normalizeRole(updatedUser.role) ?? normalizedRoleFromPayload ?? updatedUser.role;
+    const effectiveRole = normalizeRole(updatedUser.role) ?? normalizedRoleFromPayload ?? normalizeRole(existingUser.role);
 
     if (hasScope) {
       const primary = typeof primary_location === 'string' ? primary_location.trim() : '';
@@ -221,8 +223,13 @@ export async function PATCH(req: Request) {
       const shouldPersistScope = effectiveRole === 'l_operator';
 
       if (shouldPersistScope && !primary) {
-        console.warn('location scope skipped: missing primary_location for l-operator');
-      } else if (shouldPersistScope) {
+        return NextResponse.json(
+          { ok: false, step: 'location_scope_validation', error: 'primary_location is required for l_operator' },
+          { status: 400 }
+        );
+      }
+
+      if (shouldPersistScope) {
         const { error: scopeError } = await supabaseAdmin
           .from('user_location_permissions')
           .upsert({ user_id: id, primary_location: primary, sub_locations: subs })
@@ -236,6 +243,24 @@ export async function PATCH(req: Request) {
             console.error('location scope persist error:', scopeError);
           }
         }
+      } else {
+        const { error: deleteError } = await supabaseAdmin
+          .from('user_location_permissions')
+          .delete()
+          .eq('user_id', id);
+        if (deleteError && !isMissingLocationScopeTable(deleteError)) {
+          console.error('location scope cleanup error:', deleteError);
+        }
+      }
+    }
+
+    if (!hasScope && effectiveRole !== 'l_operator') {
+      const { error: deleteError } = await supabaseAdmin
+        .from('user_location_permissions')
+        .delete()
+        .eq('user_id', id);
+      if (deleteError && !isMissingLocationScopeTable(deleteError)) {
+        console.error('location scope cleanup error:', deleteError);
       }
     }
 
