@@ -154,6 +154,21 @@ function toKstDateInput(date: Date) {
 
 const parseKstDate = (value: string) => Date.parse(`${value}T00:00:00+09:00`);
 
+function normalizeStockToApiRows(rows: InventoryRow[]): InventoryApiRow[] {
+  return rows.flatMap((row, idx) =>
+    row.locations.map((loc, locIdx) => ({
+      inventory_id: loc.editableId ?? loc.id ?? `${row.key}|${loc.location}|${idx}|${locIdx}`,
+      item_id: undefined,
+      artist: row.artist,
+      category: row.category,
+      album_version: row.album_version,
+      option: row.option,
+      location: loc.location,
+      quantity: Number(loc.quantity ?? 0),
+    }))
+  );
+}
+
 function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
   const grouped = new Map<string, InventoryRow>();
 
@@ -1045,20 +1060,7 @@ export default function Home() {
     async function exportInventory() {
       setInventoryActionStatus('엑셀 내보내는 중...');
       const allRows = await fetchAllInventoryForExport();
-      const sourceRows: InventoryApiRow[] = allRows.length
-        ? allRows
-        : stock.flatMap((row) =>
-            row.locations.map((loc) => ({
-              inventory_id: loc.editableId ?? undefined,
-              item_id: undefined,
-              artist: row.artist,
-              category: row.category,
-              album_version: row.album_version,
-              option: row.option,
-              location: loc.location,
-              quantity: loc.quantity,
-            }))
-          );
+      const sourceRows: InventoryApiRow[] = allRows.length ? allRows : normalizeStockToApiRows(stock);
       const grouped = groupInventoryRows(sourceRows);
     const rows = grouped.map((row) => ({
       artist: row.artist,
