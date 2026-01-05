@@ -2381,6 +2381,7 @@ export default function Home() {
         </button>
       </div>
 
+
       {accountManagerOpen && (
         <div className="modal-backdrop">
           <div className="modal-card wide-modal">
@@ -2391,6 +2392,7 @@ export default function Home() {
                 <button className="ghost" onClick={closeAccountManager}>닫기</button>
               </div>
             </div>
+            <div className="account-modal-body">
               <p className="muted" style={{ marginTop: 0 }}>
                 ID, 실명, 부서를 확인하고 권한과 승인 여부를 바로 수정할 수 있습니다.
               </p>
@@ -2410,114 +2412,165 @@ export default function Home() {
                   <thead>
                     <tr>
                       <th>ID</th>
-                    <th>이메일</th>
-                    <th>성함</th>
-                    <th>부서</th>
-                    <th>연락처</th>
-                    <th>사용 목적</th>
-                    <th>권한</th>
-                    <th>담당 로케이션</th>
-                    <th>서브 로케이션</th>
-                    <th>로케이션 저장</th>
-                    <th>승인</th>
-                    <th>생성일</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {accounts.length === 0 && (
-                    <tr>
-                      <td colSpan={12}>계정 정보가 없습니다.</td>
+                      <th>이메일</th>
+                      <th>성함</th>
+                      <th>부서</th>
+                      <th>연락처</th>
+                      <th>사용 목적</th>
+                      <th>권한</th>
+                      <th>담당 로케이션</th>
+                      <th>서브 로케이션</th>
+                      <th>로케이션 저장</th>
+                      <th>승인</th>
+                      <th>생성일</th>
                     </tr>
-                  )}
-                  {accounts.map((acc) => (
-                    <tr key={acc.id}>
-                      <td>{acc.username}</td>
-                      <td>{acc.email}</td>
-                      <td>{acc.full_name}</td>
-                      <td>{acc.department || '-'}</td>
-                      <td>{acc.contact || '-'}</td>
-                      <td>{acc.purpose || '-'}</td>
-                      <td>
-                        <select
-                          value={acc.role}
-                          onChange={(e) => updateAccountRole(acc.id, e.target.value as Role)}
-                        >
-                          <option value="admin">admin</option>
-                          <option value="operator">operator</option>
-                          <option value="l_operator">l-operator</option>
-                          <option value="viewer">viewer</option>
-                        </select>
-                      </td>
-                      <td>
-                        {acc.role === 'l_operator' ? (
-                          <input
-                            className="inline-input"
-                            placeholder="주 로케이션"
-                            value={locationScopes[acc.id]?.primary ?? ''}
-                            list="locations-list"
-                            disabled={!locationScopeAvailable}
-                            onChange={(e) =>
-                              setLocationScopes((prev) => ({
-                                ...prev,
-                                [acc.id]: { ...prev[acc.id], primary: e.target.value, subs: prev[acc.id]?.subs ?? '' },
-                              }))
-                            }
-                          />
-                        ) : (
-                          <span className="muted">-</span>
-                        )}
-                      </td>
-                      <td>
-                        {acc.role === 'l_operator' ? (
-                          <input
-                            className="inline-input"
-                            placeholder="쉼표로 구분"
-                            value={locationScopes[acc.id]?.subs ?? ''}
-                            list="locations-list"
-                            disabled={!locationScopeAvailable}
-                            onChange={(e) =>
-                              setLocationScopes((prev) => ({
-                                ...prev,
-                                [acc.id]: { ...prev[acc.id], subs: e.target.value, primary: prev[acc.id]?.primary ?? '' },
-                              }))
-                            }
-                          />
-                        ) : (
-                          <span className="muted">-</span>
-                        )}
-                      </td>
-                      <td>
-                        {acc.role === 'l_operator' ? (
-                          <button
-                            className="ghost"
-                            type="button"
-                            onClick={() => saveAccountScope(acc.id)}
-                            disabled={!locationScopeAvailable}
-                            title={locationScopeAvailable ? undefined : '로케이션 범위 테이블이 없어 저장을 건너뜁니다'}
+                  </thead>
+                  <tbody>
+                    {accounts.length === 0 && (
+                      <tr>
+                        <td colSpan={12}>계정 정보가 없습니다.</td>
+                      </tr>
+                    )}
+                    {accounts.map((acc) => (
+                      <tr key={acc.id}>
+                        <td>{acc.username}</td>
+                        <td>{acc.email}</td>
+                        <td>{acc.full_name}</td>
+                        <td>{acc.department || '-'}</td>
+                        <td>{acc.contact || '-'}</td>
+                        <td>{acc.purpose || '-'}</td>
+                        <td>
+                          <select
+                            value={acc.role}
+                            onChange={(e) => updateAccountRole(acc.id, e.target.value as Role)}
                           >
-                            저장
-                          </button>
-                        ) : (
-                          <span className="muted">-</span>
-                        )}
-                      </td>
-                      <td>
-                        <label className="muted small-text" style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}>
-                          <input
-                            type="checkbox"
-                            checked={acc.approved}
-                            onChange={(e) => updateAccountApproval(acc.id, e.target.checked)}
-                          />
-                          승인 여부
-                        </label>
-                      </td>
-                      <td>{formatDate(acc.created_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                            <option value="admin">admin</option>
+                            <option value="operator">operator</option>
+                            <option value="l_operator">l-operator</option>
+                            <option value="viewer">viewer</option>
+                          </select>
+                        </td>
+                        <td>
+                          {acc.role === 'l_operator' ? (
+                            <div className="location-input-group">
+                              <input
+                                className="inline-input"
+                                placeholder="주 로케이션"
+                                value={locationScopes[acc.id]?.primary ?? ''}
+                                list="locations-list"
+                                disabled={!locationScopeAvailable}
+                                onChange={(e) =>
+                                  setLocationScopes((prev) => ({
+                                    ...prev,
+                                    [acc.id]: { ...prev[acc.id], primary: e.target.value, subs: prev[acc.id]?.subs ?? '' },
+                                  }))
+                                }
+                              />
+                              {locationScopeAvailable && locationOptions.length > 0 && (
+                                <div className="location-chip-row">
+                                  {locationOptions.slice(0, 6).map((loc) => (
+                                    <button
+                                      key={`${acc.id}-primary-${loc}`}
+                                      type="button"
+                                      className="chip"
+                                      onClick={() =>
+                                        setLocationScopes((prev) => ({
+                                          ...prev,
+                                          [acc.id]: { ...prev[acc.id], primary: loc, subs: prev[acc.id]?.subs ?? '' },
+                                        }))
+                                      }
+                                    >
+                                      {loc}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
+                        </td>
+                        <td>
+                          {acc.role === 'l_operator' ? (
+                            <div className="location-input-group">
+                              <input
+                                className="inline-input"
+                                placeholder="쉼표로 구분"
+                                value={locationScopes[acc.id]?.subs ?? ''}
+                                list="locations-list"
+                                disabled={!locationScopeAvailable}
+                                onChange={(e) =>
+                                  setLocationScopes((prev) => ({
+                                    ...prev,
+                                    [acc.id]: { ...prev[acc.id], subs: e.target.value, primary: prev[acc.id]?.primary ?? '' },
+                                  }))
+                                }
+                              />
+                              {locationScopeAvailable && locationOptions.length > 0 && (
+                                <div className="location-chip-row">
+                                  {locationOptions.slice(0, 6).map((loc) => (
+                                    <button
+                                      key={`${acc.id}-subs-${loc}`}
+                                      type="button"
+                                      className="chip ghost-chip"
+                                      onClick={() =>
+                                        setLocationScopes((prev) => {
+                                          const existing = (prev[acc.id]?.subs || '')
+                                            .split(',')
+                                            .map((v) => v.trim())
+                                            .filter(Boolean);
+                                          if (existing.includes(loc)) return prev;
+                                          const combined = existing.length > 0 ? `${existing.join(', ')}, ${loc}` : loc;
+                                          return {
+                                            ...prev,
+                                            [acc.id]: { ...prev[acc.id], subs: combined, primary: prev[acc.id]?.primary ?? '' },
+                                          };
+                                        })
+                                      }
+                                    >
+                                      {loc}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
+                        </td>
+                        <td>
+                          {acc.role === 'l_operator' ? (
+                            <button
+                              className="ghost"
+                              type="button"
+                              onClick={() => saveAccountScope(acc.id)}
+                              disabled={!locationScopeAvailable}
+                              title={locationScopeAvailable ? undefined : '로케이션 범위 테이블이 없어 저장을 건너뜁니다'}
+                            >
+                              저장
+                            </button>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
+                        </td>
+                        <td>
+                          <label className="muted small-text" style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}>
+                            <input
+                              type="checkbox"
+                              checked={acc.approved}
+                              onChange={(e) => updateAccountApproval(acc.id, e.target.checked)}
+                            />
+                            승인 여부
+                          </label>
+                        </td>
+                        <td>{formatDate(acc.created_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="muted account-status-row">{accountsStatus}</div>
             </div>
-            <div className="muted">{accountsStatus}</div>
           </div>
         </div>
       )}
@@ -2578,10 +2631,10 @@ export default function Home() {
       }
 
       .modal-card.wide-modal {
-        max-width: 90vw;
-        width: 1200px;
-        min-height: 70vh;
-        max-height: 85vh;
+        max-width: 95vw;
+        width: 1280px;
+        min-height: 75vh;
+        max-height: 90vh;
         overflow: hidden;
         display: flex;
         flex-direction: column;
@@ -2594,8 +2647,15 @@ export default function Home() {
         z-index: 2;
       }
 
+      .account-modal-body {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        padding: 0 0.75rem 0.75rem;
+      }
+
       .account-table-wrapper {
-        max-height: 60vh;
+        max-height: 70vh;
         overflow: auto;
       }
 
@@ -2604,6 +2664,40 @@ export default function Home() {
         top: 0;
         background: #f8f8f8;
         z-index: 1;
+      }
+
+      .account-status-row {
+        padding: 0.25rem 0.35rem;
+      }
+
+      .location-input-group {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+      }
+
+      .location-chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+      }
+
+      .chip {
+        border: 1px solid #e2e2e2;
+        border-radius: 999px;
+        padding: 0.2rem 0.55rem;
+        background: #f7f7f7;
+        font-size: 0.85rem;
+        cursor: pointer;
+      }
+
+      .chip:hover {
+        background: #eef2ff;
+        border-color: #cdd4ff;
+      }
+
+      .ghost-chip {
+        background: #fff;
       }
 
       .stats {
