@@ -137,6 +137,7 @@ export async function POST(req: Request) {
       const outPayload: Record<string, any> = {
         album_version: trimmedAlbum,
         artist: trimmedArtist,
+        barcode: normalizedBarcode || null,
         category: normalizedCategory,
         created_by: createdBy,
         direction: 'OUT',
@@ -150,6 +151,7 @@ export async function POST(req: Request) {
       const inPayload: Record<string, any> = {
         album_version: trimmedAlbum,
         artist: trimmedArtist,
+        barcode: normalizedBarcode || null,
         category: normalizedCategory,
         created_by: createdBy,
         direction: 'IN',
@@ -159,11 +161,6 @@ export async function POST(req: Request) {
         option: normalizedOption || '',
         quantity: normalizedQuantity,
       };
-
-      if (normalizedBarcode) {
-        outPayload.barcode = normalizedBarcode;
-        inPayload.barcode = normalizedBarcode;
-      }
 
       try {
         const { data: outData, error: outError } = await supabaseAdmin.rpc('record_movement', outPayload);
