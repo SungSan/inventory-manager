@@ -2559,7 +2559,7 @@ export default function Home() {
                 onChange={(e) => setHistoryFilters({ ...historyFilters, to: e.target.value })}
               />
             </label>
-            <button className="ghost" type="button" onClick={reloadHistory}>
+            <button className="ghost" type="button" onClick={() => reloadHistory()}>
               새로고침
             </button>
             <button className="ghost" type="button" onClick={exportHistory}>
