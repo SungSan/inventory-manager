@@ -5,7 +5,7 @@ import { withAuth } from '../../../../lib/auth';
 async function getInventoryRow(id: string) {
   const { data, error } = await supabaseAdmin
     .from('inventory')
-    .select('id, quantity, location, items:items(artist, category, album_version, option)')
+    .select('id, quantity, location, items:items(artist, category, album_version, option, barcode)')
     .eq('id', id)
     .single();
 
@@ -16,17 +16,30 @@ async function getInventoryRow(id: string) {
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   return withAuth(['admin', 'operator'], async () => {
     const body = await req.json();
-    const { artist, category, album_version, option, location, quantity } = body;
+    const { artist, category, album_version, option, location, quantity, barcode } = body;
 
     const current = await getInventoryRow(params.id);
     if (!current) return NextResponse.json({ error: 'not found' }, { status: 404 });
 
     const baseItem = Array.isArray(current.items) ? current.items[0] ?? {} : current.items ?? {};
+    const barcodeValue = typeof barcode === 'string' ? barcode.trim() : (baseItem.barcode ?? '');
+    if (barcodeValue) {
+      const isAllowed = /^[0-9A-Za-z._-]+$/.test(barcodeValue);
+      if (!isAllowed || barcodeValue.length > 64) {
+        console.error('inventory_update_validation', {
+          step: 'inventory_update_validate',
+          id: params.id,
+          barcode: barcodeValue,
+        });
+        return NextResponse.json({ error: 'invalid barcode format' }, { status: 400 });
+      }
+    }
     const nextItem = {
       artist: (artist ?? baseItem.artist ?? '').trim(),
       category: (category ?? baseItem.category ?? 'album').trim(),
       album_version: (album_version ?? baseItem.album_version ?? '').trim(),
       option: (option ?? baseItem.option ?? '').trim(),
+      barcode: barcodeValue || null,
     };
 
     if (!nextItem.artist || !nextItem.album_version) {
@@ -40,6 +53,11 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       .single();
 
     if (itemError) {
+      console.error('inventory_update_item_upsert', {
+        step: 'inventory_update_item_upsert',
+        id: params.id,
+        message: itemError.message,
+      });
       return NextResponse.json({ error: itemError.message }, { status: 400 });
     }
 
@@ -56,6 +74,11 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       .eq('id', params.id);
 
     if (invError) {
+      console.error('inventory_update_inventory', {
+        step: 'inventory_update_inventory',
+        id: params.id,
+        message: invError.message,
+      });
       return NextResponse.json({ error: invError.message }, { status: 400 });
     }
 
