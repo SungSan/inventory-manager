@@ -137,7 +137,7 @@ export async function POST(req: Request) {
       const outPayload: Record<string, any> = {
         album_version: trimmedAlbum,
         artist: trimmedArtist,
-        barcode: normalizedBarcode || null,
+        barcode: normalizedBarcode || '',
         category: normalizedCategory,
         created_by: createdBy,
         direction: 'OUT',
@@ -151,7 +151,7 @@ export async function POST(req: Request) {
       const inPayload: Record<string, any> = {
         album_version: trimmedAlbum,
         artist: trimmedArtist,
-        barcode: normalizedBarcode || null,
+        barcode: normalizedBarcode || '',
         category: normalizedCategory,
         created_by: createdBy,
         direction: 'IN',
