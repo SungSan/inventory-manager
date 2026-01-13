@@ -132,7 +132,7 @@ export async function POST(req: Request) {
     }
 
     const baseIdempotency = String(idempotencyKey ?? '').trim() || `transfer-${randomUUID()}`;
-    const outPayload = {
+    const outPayload: Record<string, any> = {
       album_version: trimmedAlbum,
       artist: trimmedArtist,
       category: normalizedCategory,
@@ -145,7 +145,7 @@ export async function POST(req: Request) {
       quantity: normalizedQuantity,
     };
 
-    const inPayload = {
+    const inPayload: Record<string, any> = {
       album_version: trimmedAlbum,
       artist: trimmedArtist,
       category: normalizedCategory,
