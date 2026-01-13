@@ -42,6 +42,20 @@ begin
       null;
     end;
   end if;
+
+  if exists (
+    select 1 from pg_type t
+    join pg_enum e on t.oid = e.enumtypid
+    where t.typname = 'user_role'
+      and e.enumlabel = 'manager'
+  ) is false then
+    begin
+      alter type public.user_role add value 'manager';
+    exception when duplicate_object then
+      -- ignore if added concurrently
+      null;
+    end;
+  end if;
 end $$;
 
 create table if not exists public.users (
