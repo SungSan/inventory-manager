@@ -43,6 +43,8 @@ type AdminLog = {
   created_at: string;
 };
 
+type MovementDirection = 'IN' | 'OUT' | 'ADJUST';
+
 type MovementPayload = {
   artist: string;
   category: 'album' | 'md';
@@ -50,7 +52,7 @@ type MovementPayload = {
   option: string;
   location: string;
   quantity: number;
-  direction: 'IN' | 'OUT' | 'ADJUST';
+  direction: MovementDirection;
   memo: string;
 };
 
@@ -439,7 +441,7 @@ export default function Home() {
     }
   }
 
-  async function submitMovement(direction: 'IN' | 'OUT') {
+  async function submitMovement(direction: MovementDirection) {
     const artistValue = movement.artist.trim();
     const albumVersion = movement.album_version.trim();
     const locationValue = movement.location.trim();
