@@ -1198,6 +1198,7 @@ export default function Home() {
       category: row.category as TransferPayload['category'],
       album_version: row.album_version,
       option: row.option,
+      barcode: row.barcode ?? '',
       from_location:
         sessionRole === 'l_operator' && sessionScope?.primary_location
           ? sessionScope.primary_location
