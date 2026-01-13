@@ -149,6 +149,7 @@ export async function POST(req: Request) {
       };
 
       try {
+        console.info('bulk transfer rpc call', { rpc: 'record_transfer_bulk', item: transferPayload });
         const { data, error } = await supabaseAdmin.rpc('record_transfer_bulk', transferPayload);
         if (error) {
           console.error('bulk transfer record_transfer_bulk failed', {
