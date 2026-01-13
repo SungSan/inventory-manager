@@ -5,12 +5,6 @@ import { withAuth } from '../../../lib/auth';
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
 
-function isMissingLocationScopeTable(error: any) {
-  const message = error?.message || '';
-  const code = error?.code || '';
-  return code === '42P01' || message.includes('user_location_permissions');
-}
-
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const artist = searchParams.get('artist') || undefined;
@@ -25,26 +19,7 @@ export async function GET(req: Request) {
   const offset = Number.isFinite(offsetParam) && offsetParam > 0 ? offsetParam : 0;
 
   return withAuth(['admin', 'operator', 'viewer', 'l_operator'], async (session) => {
-    let enforcedLocation = location || undefined;
-    if (session.role === 'l_operator') {
-      const { data: scope, error: scopeError } = await supabaseAdmin
-        .from('user_location_permissions')
-        .select('primary_location')
-        .eq('user_id', session.userId)
-        .maybeSingle();
-      if (scopeError) {
-        if (isMissingLocationScopeTable(scopeError)) {
-          console.warn('location scope table missing, skipping enforcement');
-        } else {
-          console.error('location scope fetch error:', scopeError);
-          return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
-        }
-      } else if (!scope?.primary_location) {
-        return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
-      } else {
-        enforcedLocation = scope.primary_location;
-      }
-    }
+    const enforcedLocation = location || undefined;
 
     let query = supabaseAdmin
       .from('inventory_view')

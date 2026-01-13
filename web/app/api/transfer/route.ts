@@ -13,6 +13,24 @@ async function loadLocationScope(userId: string) {
   return data;
 }
 
+async function loadItemBarcode(params: {
+  artist: string;
+  category: string;
+  album_version: string;
+  option: string;
+}) {
+  const { data, error } = await supabaseAdmin
+    .from('items')
+    .select('barcode')
+    .eq('artist', params.artist)
+    .eq('category', params.category)
+    .eq('album_version', params.album_version)
+    .eq('option', params.option)
+    .maybeSingle();
+  if (error) return null;
+  return data?.barcode ?? null;
+}
+
 export async function POST(req: Request) {
   return withAuth(['admin', 'operator', 'l_operator'], async (session) => {
     let body: any;
@@ -32,6 +50,7 @@ export async function POST(req: Request) {
       toLocation,
       quantity,
       memo,
+      barcode,
       idempotencyKey,
     } = body ?? {};
 
@@ -43,6 +62,7 @@ export async function POST(req: Request) {
     const to_location = String(toLocation ?? '').trim();
     const normalizedMemo = String(memo ?? '').trim();
     const normalizedQuantity = parseInt(quantity, 10);
+    const normalizedBarcode = String(barcode ?? '').trim();
 
     if (!trimmedArtist || !normalizedCategory || !trimmedAlbum || !from_location || !to_location || !normalizedQuantity) {
       return NextResponse.json(
@@ -54,6 +74,13 @@ export async function POST(req: Request) {
     if (!Number.isFinite(normalizedQuantity) || normalizedQuantity <= 0) {
       return NextResponse.json(
         { ok: false, error: 'quantity must be a positive number', step: 'validation' },
+        { status: 400 }
+      );
+    }
+
+    if (normalizedBarcode && (normalizedBarcode.length > 64 || /\s/.test(normalizedBarcode))) {
+      return NextResponse.json(
+        { ok: false, error: 'barcode must be 1~64 characters with no spaces', step: 'validation' },
         { status: 400 }
       );
     }
@@ -89,8 +116,23 @@ export async function POST(req: Request) {
       }
     }
 
+    if (normalizedBarcode && session.role !== 'admin') {
+      const existingBarcode = await loadItemBarcode({
+        artist: trimmedArtist,
+        category: normalizedCategory,
+        album_version: trimmedAlbum,
+        option: normalizedOption,
+      });
+      if (existingBarcode && existingBarcode !== normalizedBarcode) {
+        return NextResponse.json(
+          { ok: false, error: 'barcode update not allowed', step: 'barcode_scope' },
+          { status: 403 }
+        );
+      }
+    }
+
     const baseIdempotency = String(idempotencyKey ?? '').trim() || `transfer-${randomUUID()}`;
-    const outPayload = {
+    const outPayload: Record<string, any> = {
       album_version: trimmedAlbum,
       artist: trimmedArtist,
       category: normalizedCategory,
@@ -103,7 +145,7 @@ export async function POST(req: Request) {
       quantity: normalizedQuantity,
     };
 
-    const inPayload = {
+    const inPayload: Record<string, any> = {
       album_version: trimmedAlbum,
       artist: trimmedArtist,
       category: normalizedCategory,
@@ -115,6 +157,11 @@ export async function POST(req: Request) {
       option: normalizedOption || '',
       quantity: normalizedQuantity,
     };
+
+    if (normalizedBarcode) {
+      outPayload.barcode = normalizedBarcode;
+      inPayload.barcode = normalizedBarcode;
+    }
 
     try {
       const { data: outData, error: outError } = await supabaseAdmin.rpc('record_movement', outPayload);
