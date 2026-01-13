@@ -43,7 +43,7 @@ async function loadItemBarcode(params: {
 }
 
 export async function POST(req: Request) {
-  return withAuth(['admin', 'operator', 'l_operator'], async (session) => {
+  return withAuth(['admin', 'operator', 'l_operator', 'manager'], async (session) => {
     let body: any;
     try {
       body = await req.json();
@@ -68,7 +68,7 @@ export async function POST(req: Request) {
     }
 
     let primaryLocation: string | null = null;
-    if (session.role === 'l_operator') {
+    if (session.role === 'l_operator' || session.role === 'manager') {
       const scope = await loadLocationScope(createdBy);
       if (!scope?.primary_location) {
         return NextResponse.json(
@@ -115,7 +115,11 @@ export async function POST(req: Request) {
         continue;
       }
 
-      if (session.role === 'l_operator' && primaryLocation && from_location !== primaryLocation) {
+      if (
+        (session.role === 'l_operator' || session.role === 'manager') &&
+        primaryLocation &&
+        from_location !== primaryLocation
+      ) {
         failures.push({ item, step: 'location_scope', error: 'from_location not allowed' });
         continue;
       }

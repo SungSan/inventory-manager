@@ -32,7 +32,7 @@ async function fetchLocationSnapshot(seed: string[] = []) {
 }
 
 export async function GET() {
-  return withAuth(['admin', 'operator', 'viewer'], async () => {
+  return withAuth(['admin', 'operator', 'viewer', 'manager'], async () => {
     const { locations, error } = await fetchLocationSnapshot();
 
     if (error && locations.length === 0) {

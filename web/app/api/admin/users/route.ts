@@ -25,6 +25,7 @@ function normalizeRole(value: any): Role | undefined {
   const cleaned = raw.replace(/^['"]+|['"]+$/g, '');
   const normalized = cleaned.toLowerCase().replace(/-/g, '_');
   if (normalized === 'l_operator') return 'l_operator';
+  if (normalized === 'manager') return 'manager';
   if (normalized === 'operator' || normalized === 'admin' || normalized === 'viewer') return normalized as Role;
   return undefined;
 }

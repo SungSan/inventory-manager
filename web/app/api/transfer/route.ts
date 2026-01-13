@@ -32,7 +32,7 @@ async function loadItemBarcode(params: {
 }
 
 export async function POST(req: Request) {
-  return withAuth(['admin', 'operator', 'l_operator'], async (session) => {
+  return withAuth(['admin', 'operator', 'l_operator', 'manager'], async (session) => {
     let body: any;
     try {
       body = await req.json();
@@ -100,7 +100,7 @@ export async function POST(req: Request) {
       );
     }
 
-    if (session.role === 'l_operator') {
+    if (session.role === 'l_operator' || session.role === 'manager') {
       const scope = await loadLocationScope(createdBy);
       if (!scope?.primary_location) {
         return NextResponse.json(

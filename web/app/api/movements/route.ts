@@ -51,7 +51,7 @@ async function loadItemBarcode(params: {
 }
 
 export async function POST(req: Request) {
-  return withAuth(['admin', 'operator', 'l_operator'], async (session) => {
+  return withAuth(['admin', 'operator', 'l_operator', 'manager'], async (session) => {
     logSupabaseRef();
     let body: any;
     try {
@@ -137,8 +137,8 @@ export async function POST(req: Request) {
         { status: 401 }
       );
     }
-    const scope = session.role === 'l_operator' ? await loadLocationScope(createdBy) : null;
-    if (session.role === 'l_operator') {
+    const scope = session.role === 'l_operator' || session.role === 'manager' ? await loadLocationScope(createdBy) : null;
+    if (session.role === 'l_operator' || session.role === 'manager') {
       if (!scope?.primary_location) {
         return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
       }
