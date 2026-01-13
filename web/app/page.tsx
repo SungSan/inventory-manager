@@ -219,7 +219,7 @@ function buildBarcodeBars(value: string) {
   chars.forEach((char, index) => {
     const code = char.charCodeAt(0);
     const width = 1 + (code % 3);
-    const height = 28 + (code % 4) * 4;
+    const height = 64 + (code % 4) * 6;
     bars.push({ x, width, height });
     x += width + (index % 2 === 0 ? 1 : 2);
   });
@@ -230,11 +230,13 @@ function BarcodePreview({ value }: { value: string }) {
   const safeValue = value.trim();
   if (!safeValue) return null;
   const { bars, width } = buildBarcodeBars(safeValue);
-  const height = Math.max(...bars.map((bar) => bar.height), 32);
+  const height = Math.max(...bars.map((bar) => bar.height), 80);
+  const displayWidth = Math.max(width * 4, 280);
   return (
     <svg
       className="barcode-preview"
       viewBox={`0 0 ${Math.max(width, 1)} ${height}`}
+      style={{ width: `${displayWidth}px`, height: '80px' }}
       aria-label={`barcode-${safeValue}`}
       role="img"
     >
@@ -406,6 +408,23 @@ export default function Home() {
   const adminRef = useRef<HTMLDivElement | null>(null);
   const barcodeBufferRef = useRef('');
   const barcodeTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const movementBarcodeSource = useMemo(() => {
+    const artistValue = movement.artist.trim();
+    const albumValue = movement.album_version.trim();
+    if (!artistValue || !albumValue) return null;
+    return findMatchingStock(stock, artistValue, movement.category, albumValue, movement.option);
+  }, [stock, movement.artist, movement.album_version, movement.category, movement.option]);
+
+  const movementBarcodeLocked = sessionRole !== 'admin' && Boolean(movementBarcodeSource?.barcode);
+
+  const transferBarcodeSource = useMemo(() => {
+    const artistValue = transferPayload.artist.trim();
+    const albumValue = transferPayload.album_version.trim();
+    if (!artistValue || !albumValue) return null;
+    return findMatchingStock(stock, artistValue, transferPayload.category, albumValue, transferPayload.option);
+  }, [stock, transferPayload.artist, transferPayload.album_version, transferPayload.category, transferPayload.option]);
+
+  const transferBarcodeLocked = sessionRole !== 'admin' && Boolean(transferBarcodeSource?.barcode);
 
   const notifyMissingSupabase = () => {
     const message = 'Supabase 환경 변수가 설정되지 않았습니다.';
@@ -1168,6 +1187,7 @@ export default function Home() {
       category: row.category as MovementPayload['category'],
       album_version: row.album_version,
       option: row.option,
+      barcode: row.barcode ?? '',
       location: defaultLocation,
       quantity: 0,
     }));
@@ -1963,6 +1983,8 @@ export default function Home() {
                         value={movement.barcode || ''}
                         onChange={(e) => setMovement({ ...movement, barcode: e.target.value })}
                         placeholder="바코드 (MD 권장)"
+                        disabled={movementBarcodeLocked}
+                        readOnly={movementBarcodeLocked}
                       />
                     </label>
                     <label>
@@ -2074,6 +2096,8 @@ export default function Home() {
                         value={transferPayload.barcode || ''}
                         onChange={(e) => setTransferPayload({ ...transferPayload, barcode: e.target.value })}
                         placeholder="바코드 (MD 권장)"
+                        disabled={transferBarcodeLocked}
+                        readOnly={transferBarcodeLocked}
                       />
                     </label>
                     <label>
@@ -2438,6 +2462,8 @@ export default function Home() {
                                       value={editDraft.barcode ?? ''}
                                       onChange={(e) => setEditDraft({ ...editDraft, barcode: e.target.value })}
                                       placeholder="바코드 (선택)"
+                                      disabled={sessionRole !== 'admin' && Boolean(editDraft.barcode)}
+                                      readOnly={sessionRole !== 'admin' && Boolean(editDraft.barcode)}
                                     />
                                   </label>
                                   <label>
@@ -3004,8 +3030,11 @@ export default function Home() {
 
       .barcode-preview {
         display: block;
-        height: 36px;
-        width: 180px;
+        min-height: 80px;
+        min-width: 280px;
+        height: 80px;
+        width: 100%;
+        max-width: 520px;
       }
 
       .location-chip-row {

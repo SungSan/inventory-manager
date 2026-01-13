@@ -32,6 +32,24 @@ async function loadLocationScope(userId: string) {
   return data;
 }
 
+async function loadItemBarcode(params: {
+  artist: string;
+  category: string;
+  album_version: string;
+  option: string;
+}) {
+  const { data, error } = await supabaseAdmin
+    .from('items')
+    .select('barcode')
+    .eq('artist', params.artist)
+    .eq('category', params.category)
+    .eq('album_version', params.album_version)
+    .eq('option', params.option)
+    .maybeSingle();
+  if (error) return null;
+  return data?.barcode ?? null;
+}
+
 export async function POST(req: Request) {
   return withAuth(['admin', 'operator', 'l_operator'], async (session) => {
     logSupabaseRef();
@@ -52,6 +70,7 @@ export async function POST(req: Request) {
       quantity,
       direction,
       memo,
+      barcode,
       idempotencyKey,
       idempotency_key
     } = body ?? {};
@@ -63,6 +82,7 @@ export async function POST(req: Request) {
     const normalizedDirection = String(direction ?? '').toUpperCase();
     const normalizedCategory = String(category ?? '').trim();
     const normalizedOption = String(option ?? '').trim();
+    const normalizedBarcode = String(barcode ?? '').trim();
     const rawLocation = String(location ?? '').trim();
     const effectiveLocation = rawLocation || normalizedOption;
 
@@ -86,6 +106,13 @@ export async function POST(req: Request) {
       const error = 'quantity must be a positive number';
       console.error({ step: 'validation', error, payload: { quantity } });
       return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
+    }
+
+    if (normalizedBarcode && (normalizedBarcode.length > 64 || /\s/.test(normalizedBarcode))) {
+      return NextResponse.json(
+        { ok: false, error: 'barcode must be 1~64 characters with no spaces', step: 'validation' },
+        { status: 400 }
+      );
     }
 
     if (!['IN', 'OUT'].includes(normalizedDirection)) {
@@ -120,6 +147,21 @@ export async function POST(req: Request) {
       }
     }
 
+    if (normalizedBarcode && session.role !== 'admin') {
+      const existingBarcode = await loadItemBarcode({
+        artist: trimmedArtist,
+        category: normalizedCategory,
+        album_version: trimmedAlbum,
+        option: normalizedOption,
+      });
+      if (existingBarcode && existingBarcode !== normalizedBarcode) {
+        return NextResponse.json(
+          { ok: false, error: 'barcode update not allowed', step: 'barcode_scope' },
+          { status: 403 }
+        );
+      }
+    }
+
     const payload: Record<string, any> = {
       album_version: trimmedAlbum,
       artist: trimmedArtist,
@@ -131,6 +173,10 @@ export async function POST(req: Request) {
       option: normalizedOption || '',
       quantity: normalizedQuantity,
     };
+
+    if (normalizedBarcode) {
+      payload.barcode = normalizedBarcode;
+    }
 
     payload.location = effectiveLocation;
 

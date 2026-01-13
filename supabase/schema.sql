@@ -105,6 +105,7 @@ create table if not exists public.items (
   barcode text
 );
 create unique index if not exists items_unique on public.items(artist, category, album_version, option);
+create unique index if not exists items_barcode_ux on public.items(barcode) where barcode is not null;
 
 create table if not exists public.inventory (
   id uuid primary key default gen_random_uuid(),
@@ -689,6 +690,7 @@ $$ language plpgsql security definer;
 -- RLS safeguards to allow authenticated users to read their own records when client-side checks are used
 alter table if exists public.users enable row level security;
 alter table if exists public.user_profiles enable row level security;
+alter table if exists public.items enable row level security;
 
 do $$
 begin
@@ -702,6 +704,28 @@ begin
     select 1 from pg_policies where schemaname = 'public' and tablename = 'user_profiles' and policyname = 'profiles_select_own'
   ) then
     create policy profiles_select_own on public.user_profiles for select to authenticated using (user_id = auth.uid());
+  end if;
+
+  if not exists (
+    select 1 from pg_policies where schemaname = 'public' and tablename = 'items' and policyname = 'items_select_authenticated'
+  ) then
+    create policy items_select_authenticated on public.items for select to authenticated using (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies where schemaname = 'public' and tablename = 'items' and policyname = 'items_update_barcode_admin_or_empty'
+  ) then
+    create policy items_update_barcode_admin_or_empty
+      on public.items
+      for update
+      to authenticated
+      using (
+        barcode is null
+        or exists (
+          select 1 from public.users u where u.id = auth.uid() and u.role = 'admin'
+        )
+      )
+      with check (true);
   end if;
 end;
 $$;

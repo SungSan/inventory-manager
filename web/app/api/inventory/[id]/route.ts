@@ -14,7 +14,7 @@ async function getInventoryRow(id: string) {
 }
 
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
-  return withAuth(['admin', 'operator'], async () => {
+  return withAuth(['admin', 'operator'], async (session) => {
     const body = await req.json();
     const { artist, category, album_version, option, location, quantity, barcode } = body;
 
@@ -27,6 +27,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json(
         { error: 'barcode must be 1~64 characters with no spaces', step: 'validation' },
         { status: 400 }
+      );
+    }
+    if (session.role !== 'admin' && baseItem.barcode && trimmedBarcode !== undefined && trimmedBarcode !== baseItem.barcode) {
+      return NextResponse.json(
+        { error: 'barcode update not allowed', step: 'barcode_scope' },
+        { status: 403 }
       );
     }
     const nextItem = {
