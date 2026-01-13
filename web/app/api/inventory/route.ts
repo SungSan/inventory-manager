@@ -18,6 +18,7 @@ export async function GET(req: Request) {
   const category = searchParams.get('category') || undefined;
   const albumVersion = searchParams.get('album_version') || undefined;
   const q = searchParams.get('q') || undefined;
+  const barcode = searchParams.get('barcode') || undefined;
   const limitParam = Number(searchParams.get('limit'));
   const offsetParam = Number(searchParams.get('offset'));
   const limit = Number.isFinite(limitParam) ? Math.min(Math.max(1, limitParam), MAX_LIMIT) : DEFAULT_LIMIT;
@@ -47,7 +48,7 @@ export async function GET(req: Request) {
 
     let query = supabaseAdmin
       .from('inventory_view')
-      .select('inventory_id,item_id,artist,category,album_version,option,location,quantity', { count: 'exact' })
+      .select('inventory_id,item_id,artist,category,album_version,option,barcode,location,quantity', { count: 'exact' })
       .order('artist', { ascending: true })
       .order('album_version', { ascending: true })
       .order('option', { ascending: true })
@@ -57,6 +58,7 @@ export async function GET(req: Request) {
     if (artist) query = query.eq('artist', artist);
     if (enforcedLocation) query = query.eq('location', enforcedLocation);
     if (category) query = query.eq('category', category);
+    if (barcode) query = query.eq('barcode', barcode);
     if (albumVersion) {
       const term = `%${albumVersion}%`;
       query = query.ilike('album_version', term);

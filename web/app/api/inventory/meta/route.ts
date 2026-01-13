@@ -13,11 +13,12 @@ export async function GET(req: Request) {
   const artist = searchParams.get('artist') || undefined;
   const location = searchParams.get('location') || undefined;
   const category = searchParams.get('category') || undefined;
+  const barcode = searchParams.get('barcode') || undefined;
   const q = searchParams.get('q') || undefined;
   const prefix = searchParams.get('prefix') || undefined;
   const albumVersion = searchParams.get('album_version') || undefined;
 
-  const qTerm = albumVersion || q || undefined;
+  const qTerm = barcode || albumVersion || q || undefined;
 
   return withAuth(['admin', 'operator', 'viewer', 'l_operator'], async (session) => {
     let enforcedLocation = location || undefined;

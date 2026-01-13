@@ -156,6 +156,10 @@ export async function PATCH(req: Request) {
       );
     }
 
+    if (typeof approved === 'boolean' && approved && typeof updates.role === 'undefined' && !existingUser?.role) {
+      updates.role = 'viewer';
+    }
+
     let updatedUser = existingUser;
     if (Object.keys(updates).length > 0) {
       const response = await supabaseAdmin

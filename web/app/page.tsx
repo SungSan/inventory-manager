@@ -305,12 +305,14 @@ export default function Home() {
   const [stockFilters, setStockFilters] = useState({
     q: '',
     albumVersion: '',
+    barcode: '',
     artist: '',
     location: '',
     category: '',
   });
   const [searchTerm, setSearchTerm] = useState('');
   const [albumVersionTerm, setAlbumVersionTerm] = useState('');
+  const [barcodeTerm, setBarcodeTerm] = useState('');
   const [inventoryMeta, setInventoryMeta] = useState<InventoryMeta>({
     summary: { totalQuantity: 0, uniqueItems: 0, byLocation: {} },
     anomalyCount: 0,
@@ -362,6 +364,8 @@ export default function Home() {
   const stockRef = useRef<HTMLDivElement | null>(null);
   const historyRef = useRef<HTMLDivElement | null>(null);
   const adminRef = useRef<HTMLDivElement | null>(null);
+  const barcodeBufferRef = useRef('');
+  const barcodeTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const notifyMissingSupabase = () => {
     const message = 'Supabase 환경 변수가 설정되지 않았습니다.';
@@ -602,6 +606,7 @@ export default function Home() {
     if (filters.category) params.set('category', filters.category);
     if (filters.q) params.set('q', filters.q);
     if (filters.albumVersion) params.set('album_version', filters.albumVersion);
+    if (filters.barcode) params.set('barcode', filters.barcode);
     if (options?.prefix !== undefined) params.set('prefix', options.prefix ?? '');
 
     const metaRes = await fetch(`/api/inventory/meta?${params.toString()}`, { cache: 'no-store' });
@@ -628,6 +633,7 @@ export default function Home() {
     if (filters.category) params.set('category', filters.category);
     if (filters.q) params.set('q', filters.q);
     if (filters.albumVersion) params.set('album_version', filters.albumVersion);
+    if (filters.barcode) params.set('barcode', filters.barcode);
     if (typeof limit === 'number') params.set('limit', String(limit));
     if (typeof offset === 'number') params.set('offset', String(Math.max(0, offset)));
     return params;
@@ -682,14 +688,26 @@ export default function Home() {
       ...stockFilters,
       q: searchTerm.trim(),
       albumVersion: albumVersionTerm.trim(),
+      barcode: barcodeTerm.trim(),
     };
+    applyInventoryFilters(next);
+  }
+
+  function applyBarcodeScan(value: string) {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    setBarcodeTerm(trimmed);
+    setSearchTerm('');
+    setAlbumVersionTerm('');
+    const next = { ...stockFilters, q: '', albumVersion: '', barcode: trimmed };
     applyInventoryFilters(next);
   }
 
   function resetInventorySearch() {
     setSearchTerm('');
     setAlbumVersionTerm('');
-    const cleared = { ...stockFilters, q: '', albumVersion: '', artist: '', location: '', category: '' };
+    setBarcodeTerm('');
+    const cleared = { ...stockFilters, q: '', albumVersion: '', barcode: '', artist: '', location: '', category: '' };
     applyInventoryFilters(cleared);
   }
 
@@ -829,7 +847,10 @@ export default function Home() {
   async function submitTransfer() {
     const artistValue = transferPayload.artist.trim();
     const albumVersion = transferPayload.album_version.trim();
-    const fromLocation = transferPayload.from_location.trim();
+    const fromLocation =
+      sessionRole === 'l_operator' && sessionScope?.primary_location
+        ? sessionScope.primary_location.trim()
+        : transferPayload.from_location.trim();
     const toLocation = transferPayload.to_location.trim();
     const quantityValue = Number(transferPayload.quantity);
     if (!artistValue || !albumVersion || !fromLocation || !toLocation || !quantityValue) {
@@ -859,7 +880,60 @@ export default function Home() {
       return;
     }
 
-    alert('전산이관은 현재 배포본에서 비활성화되어 있습니다. 일반 입/출고를 사용해 주세요.');
+    setIsSubmitting(true);
+    setStatus('전산이관 처리 중...');
+    markActivity();
+
+    try {
+      const idempotencyKey = `transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const res = await fetch('/api/transfer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          artist: artistValue,
+          category: transferPayload.category,
+          album_version: albumVersion,
+          option: transferPayload.option ?? '',
+          fromLocation,
+          toLocation,
+          quantity: Number(quantityValue),
+          memo: transferPayload.memo ?? '',
+          barcode: transferPayload.barcode ?? '',
+          idempotencyKey,
+        })
+      });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok || payload?.ok !== true) {
+        const message = payload?.error || payload?.message || `전산이관 실패 (${res.status})`;
+        const stepMessage = payload?.step ? `${message} [${payload.step}]` : message;
+        console.error('transfer submit error:', { message: stepMessage, payload });
+        alert(stepMessage);
+        setStatus(stepMessage);
+        return;
+      }
+      await Promise.all([reloadInventory(), reloadHistory()]);
+      setStatus('전산이관 완료');
+      const baseTransfer = {
+        ...EMPTY_TRANSFER,
+        from_location:
+          sessionRole === 'l_operator' && sessionScope?.primary_location ? sessionScope.primary_location : '',
+      };
+      setTransferPayload(baseTransfer);
+    } catch (err: any) {
+      const message = err?.message || '전산이관 처리 중 오류가 발생했습니다.';
+      setStatus(`전산이관 실패: ${message}`);
+      alert(message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  function resetTransferForm() {
+    setTransferPayload({
+      ...EMPTY_TRANSFER,
+      from_location:
+        sessionRole === 'l_operator' && sessionScope?.primary_location ? sessionScope.primary_location : '',
+    });
   }
 
   async function registerAccount() {
@@ -1329,6 +1403,39 @@ export default function Home() {
   }, [sessionRole, sessionScope]);
 
   useEffect(() => {
+    if (activePanel !== 'stock') return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
+      const target = event.target as HTMLElement | null;
+      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+      if (event.key === 'Enter') {
+        const captured = barcodeBufferRef.current;
+        barcodeBufferRef.current = '';
+        if (barcodeTimerRef.current) {
+          clearTimeout(barcodeTimerRef.current);
+          barcodeTimerRef.current = null;
+        }
+        if (captured) {
+          applyBarcodeScan(captured);
+        }
+        return;
+      }
+      if (event.key.length === 1) {
+        barcodeBufferRef.current += event.key;
+        if (barcodeTimerRef.current) {
+          clearTimeout(barcodeTimerRef.current);
+        }
+        barcodeTimerRef.current = setTimeout(() => {
+          barcodeBufferRef.current = '';
+          barcodeTimerRef.current = null;
+        }, 200);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [activePanel, applyBarcodeScan]);
+
+  useEffect(() => {
     if (!isLoggedIn) return;
     markActivity();
     const handler = () => markActivity();
@@ -1666,10 +1773,23 @@ export default function Home() {
                   onClick={() => {
                     setMovementMode('transfer');
                     setMovement(EMPTY_MOVEMENT);
+                    resetTransferForm();
                   }}
                 >
                   전산이관
                 </button>
+                {movementMode === 'transfer' && (
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      setMovementMode('movement');
+                      setTransferPayload(EMPTY_TRANSFER);
+                    }}
+                  >
+                    전산이관 취소
+                  </button>
+                )}
               </div>
 
               {movementMode === 'movement' ? (
@@ -1860,31 +1980,30 @@ export default function Home() {
                     </label>
                     <label>
                       <span>받는 곳</span>
-                      {sessionRole === 'l_operator' ? (
-                        <select
-                          value={transferPayload.to_location}
-                          onChange={(e) => setTransferPayload({ ...transferPayload, to_location: e.target.value })}
-                          disabled={!sessionScope?.sub_locations || sessionScope.sub_locations.length === 0}
-                        >
-                          <option value="" disabled>
-                            {sessionScope?.sub_locations && sessionScope.sub_locations.length > 0
+                      <select
+                        value={transferPayload.to_location}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, to_location: e.target.value })}
+                        disabled={
+                          sessionRole === 'l_operator'
+                            ? !sessionScope?.sub_locations || sessionScope.sub_locations.length === 0
+                            : locationOptions.length === 0
+                        }
+                      >
+                        <option value="" disabled>
+                          {sessionRole === 'l_operator'
+                            ? sessionScope?.sub_locations && sessionScope.sub_locations.length > 0
                               ? '받는 곳 선택'
-                              : '서브 로케이션 없음'}
+                              : '서브 로케이션 없음'
+                            : locationOptions.length > 0
+                            ? '받는 곳 선택'
+                            : '로케이션 없음'}
+                        </option>
+                        {(sessionRole === 'l_operator' ? sessionScope?.sub_locations ?? [] : locationOptions).map((loc) => (
+                          <option key={loc} value={loc}>
+                            {loc}
                           </option>
-                          {(sessionScope?.sub_locations ?? []).map((loc) => (
-                            <option key={loc} value={loc}>
-                              {loc}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          list="location-options"
-                          value={transferPayload.to_location}
-                          onChange={(e) => setTransferPayload({ ...transferPayload, to_location: e.target.value })}
-                          placeholder="도착 로케이션"
-                        />
-                      )}
+                        ))}
+                      </select>
                     </label>
                   </div>
                   <div className="form-row">
@@ -1912,12 +2031,9 @@ export default function Home() {
                     <button
                       type="button"
                       className="ghost"
-                      onClick={() => {
-                        setTransferPayload(EMPTY_TRANSFER);
-                        setMovementMode('movement');
-                      }}
+                      onClick={resetTransferForm}
                     >
-                      취소
+                      초기화
                     </button>
                   </div>
                 </form>
@@ -1942,6 +2058,17 @@ export default function Home() {
                         placeholder="앨범/버전"
                         value={albumVersionTerm}
                         onChange={(e) => setAlbumVersionTerm(e.target.value)}
+                      />
+                      <input
+                        className="inline-input"
+                        placeholder="바코드"
+                        value={barcodeTerm}
+                        onChange={(e) => setBarcodeTerm(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            handleInventorySearchSubmit(e);
+                          }
+                        }}
                       />
                       <button className="primary" type="submit">
                         검색
@@ -2667,6 +2794,15 @@ export default function Home() {
         top: 0;
         background: #f8f8f8;
         z-index: 1;
+      }
+
+      .account-table {
+        min-width: 1180px;
+      }
+
+      .account-table th:nth-child(7),
+      .account-table td:nth-child(7) {
+        min-width: 120px;
       }
 
       .account-status-row {
