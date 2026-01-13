@@ -163,12 +163,7 @@ export async function POST(req: Request) {
           continue;
         }
 
-        if (!data) {
-          failures.push({ item, step: 'record_transfer_bulk', error: 'empty response from rpc' });
-          continue;
-        }
-
-        successes.push({ item, result: data });
+        successes.push({ item, result: data ?? null });
       } catch (error: any) {
         console.error('bulk transfer unexpected error', { error, item });
         failures.push({ item, step: 'exception', error: error?.message || 'transfer failed' });
