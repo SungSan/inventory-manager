@@ -111,6 +111,17 @@ type TransferPayload = {
   item_id?: string | null;
 };
 
+type BulkTransferItem = {
+  artist: string;
+  category: 'album' | 'md';
+  album_version: string;
+  option: string;
+  from_location: string;
+  quantity: number;
+  barcode?: string | null;
+  item_id?: string | null;
+};
+
 type Role = 'admin' | 'operator' | 'viewer' | 'l_operator';
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes of inactivity triggers logout
@@ -339,6 +350,15 @@ export default function Home() {
   const [movement, setMovement] = useState<MovementPayload>(EMPTY_MOVEMENT);
   const [transferPayload, setTransferPayload] = useState<TransferPayload>(EMPTY_TRANSFER);
   const [movementMode, setMovementMode] = useState<'movement' | 'transfer'>('movement');
+  const [bulkTransferMode, setBulkTransferMode] = useState(false);
+  const [bulkSelectedKeys, setBulkSelectedKeys] = useState<string[]>([]);
+  const [bulkTransferToLocation, setBulkTransferToLocation] = useState('');
+  const [bulkTransferStatus, setBulkTransferStatus] = useState('');
+  const [bulkTransferReport, setBulkTransferReport] = useState<{
+    successCount: number;
+    failureCount: number;
+    failures: string[];
+  } | null>(null);
   const [selectedStockKeys, setSelectedStockKeys] = useState<string[]>([]);
   const [focusedStockKey, setFocusedStockKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<InventoryEditDraft | null>(null);
@@ -1008,6 +1028,136 @@ export default function Home() {
     }
   }
 
+  async function submitBulkTransfer() {
+    if (!bulkTransferAllowed) {
+      alert('일괄 이관 권한이 없습니다.');
+      return;
+    }
+    const toLocation = bulkTransferToLocation.trim();
+    if (!toLocation) {
+      alert('받는 곳을 선택하세요.');
+      return;
+    }
+    if (bulkSelectedRows.length === 0) {
+      alert('일괄 이관할 항목을 선택하세요.');
+      return;
+    }
+
+    if (sessionRole === 'l_operator') {
+      const primary = sessionScope?.primary_location?.trim();
+      const subs = (sessionScope?.sub_locations ?? []).map((v) => v.trim()).filter(Boolean);
+      if (!primary) {
+        alert('담당 로케이션이 지정되지 않아 전산이관을 진행할 수 없습니다.');
+        return;
+      }
+      if (subs.length === 0 || !subs.includes(toLocation)) {
+        alert('받는 곳은 서브 로케이션 중에서만 선택할 수 있습니다.');
+        return;
+      }
+    }
+
+    const invalidRows: InventoryRow[] = [];
+    const items: BulkTransferItem[] = [];
+
+    bulkSelectedRows.forEach((row) => {
+      if (row.locations.length !== 1) {
+        invalidRows.push(row);
+        return;
+      }
+      const location = row.locations[0];
+      const quantity = Number(location?.quantity ?? 0);
+      if (!location || !Number.isFinite(quantity) || quantity <= 0) {
+        invalidRows.push(row);
+        return;
+      }
+      if (
+        sessionRole === 'l_operator' &&
+        sessionScope?.primary_location &&
+        location.location !== sessionScope.primary_location
+      ) {
+        invalidRows.push(row);
+        return;
+      }
+
+      items.push({
+        artist: row.artist,
+        category: row.category as BulkTransferItem['category'],
+        album_version: row.album_version,
+        option: row.option ?? '',
+        from_location: location.location,
+        quantity,
+        barcode: row.barcode ?? null,
+        item_id: row.item_id ?? null,
+      });
+    });
+
+    if (invalidRows.length > 0) {
+      alert(`복수 로케이션 또는 수량 0인 항목 ${invalidRows.length}개는 일괄 이관할 수 없습니다.`);
+      return;
+    }
+
+    const confirmed = confirm(`${items.length}개 항목을 ${toLocation}로 전량 이관합니다. 계속할까요?`);
+    if (!confirmed) return;
+
+    setIsSubmitting(true);
+    setBulkTransferStatus('일괄 이관 처리 중...');
+    setBulkTransferReport(null);
+    markActivity();
+
+    try {
+      const idempotencyKey = `bulk-transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const res = await fetch('/api/transfer/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to_location: toLocation,
+          items,
+          idempotencyKey,
+        }),
+      });
+
+      const payload = await res.json().catch(() => null);
+      if (!res.ok) {
+        const message = payload?.error || payload?.message || `일괄 이관 실패 (${res.status})`;
+        alert(message);
+        setBulkTransferStatus(message);
+        return;
+      }
+
+      const successes = payload?.results?.successes ?? [];
+      const failures = payload?.results?.failures ?? [];
+      const failureMessages = failures.map((failure: any) => {
+        const item = failure?.item;
+        if (!item) return failure?.error || '실패';
+        const label = `${item.artist} / ${item.album_version} / ${item.option || '-'} (${item.from_location})`;
+        return `${label}: ${failure?.error || '실패'}`;
+      });
+      const successCount = successes.length;
+      const failureCount = failures.length;
+
+      setBulkTransferReport({
+        successCount,
+        failureCount,
+        failures: failureMessages,
+      });
+
+      if (payload?.ok === true && failureCount === 0) {
+        setBulkTransferStatus(`일괄 이관 완료: ${successCount}건`);
+        setBulkSelectedKeys([]);
+      } else {
+        setBulkTransferStatus(`일괄 이관 완료: 성공 ${successCount}건 · 실패 ${failureCount}건`);
+      }
+
+      await Promise.all([reloadInventory(), reloadHistory()]);
+    } catch (err: any) {
+      const message = err?.message || '일괄 이관 처리 중 오류가 발생했습니다.';
+      setBulkTransferStatus(`일괄 이관 실패: ${message}`);
+      alert(message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   function resetTransferForm() {
     setTransferPayload({
       ...EMPTY_TRANSFER,
@@ -1229,6 +1379,18 @@ export default function Home() {
     }
   }
 
+  function toggleBulkSelection(key: string) {
+    setBulkSelectedKeys((prev) => (prev.includes(key) ? prev.filter((id) => id !== key) : [...prev, key]));
+  }
+
+  function selectAllBulk(rows: InventoryRow[]) {
+    setBulkSelectedKeys(rows.map((row) => row.key));
+  }
+
+  function clearBulkSelection() {
+    setBulkSelectedKeys([]);
+  }
+
   async function saveInventoryEdit() {
     if (!editDraft) return;
     if (!editDraft.id) {
@@ -1301,6 +1463,12 @@ export default function Home() {
     }
     return baseStock;
   }, [anomalousStock, baseStock, showAnomalies]);
+
+  const bulkSelectedRows = useMemo(() => {
+    if (bulkSelectedKeys.length === 0) return [];
+    const lookup = new Map(stock.map((row) => [row.key, row]));
+    return bulkSelectedKeys.map((key) => lookup.get(key)).filter(Boolean) as InventoryRow[];
+  }, [bulkSelectedKeys, stock]);
 
   const locationOptions = useMemo(
     () => Array.from(new Set([...locationPresets, ...inventoryMeta.locations])).filter(Boolean).sort(),
@@ -1501,6 +1669,7 @@ export default function Home() {
   const canNextPage = inventoryPage.offset + inventoryPage.limit < inventoryPage.totalRows;
   const transferBlockedForScope =
     sessionRole === 'l_operator' && (!sessionScope?.primary_location || (sessionScope.sub_locations ?? []).length === 0);
+  const bulkTransferAllowed = sessionRole === 'admin' || sessionRole === 'operator' || sessionRole === 'l_operator';
 
   useEffect(() => {
     if (logoutTimeout.current) {
@@ -1637,6 +1806,14 @@ export default function Home() {
   useEffect(() => {
     setInventoryActionStatus('');
   }, [selectedStockKeys, focusedStockKey]);
+
+  useEffect(() => {
+    if (!bulkTransferMode) {
+      setBulkSelectedKeys([]);
+      setBulkTransferStatus('');
+      setBulkTransferReport(null);
+    }
+  }, [bulkTransferMode]);
 
   const selectionDisabled = sessionRole === 'operator';
 
@@ -2307,10 +2484,23 @@ export default function Home() {
                   </div>
                 </div>
               </div>
+              <div className="bulk-toggle-row">
+                <button
+                  type="button"
+                  className={bulkTransferMode ? 'primary' : 'ghost'}
+                  disabled={!bulkTransferAllowed}
+                  onClick={() => setBulkTransferMode((prev) => !prev)}
+                  title={bulkTransferAllowed ? undefined : '일괄 이관 권한 필요'}
+                >
+                  {bulkTransferMode ? '일괄 이관 모드 해제' : '일괄 이관 모드'}
+                </button>
+                <span className="muted small-text">복수 항목을 선택해 전량 이관할 수 있습니다.</span>
+              </div>
               <div className="table-wrapper responsive-table">
                 <table className="table">
                   <thead>
                     <tr>
+                      {bulkTransferMode && <th className="bulk-check-column">선택</th>}
                       <th>아티스트</th>
                       <th>카테고리</th>
                       <th>앨범/버전</th>
@@ -2325,10 +2515,37 @@ export default function Home() {
                     {filteredStock.map((row) => (
                       <React.Fragment key={row.key}>
                         <tr
-                          className={selectedStockKeys.includes(row.key) ? 'selected-row' : ''}
-                          onClick={() => handleStockClick(row)}
-                          onDoubleClick={() => handleStockDoubleClick(row)}
+                          className={[
+                            selectedStockKeys.includes(row.key) ? 'selected-row' : '',
+                            bulkSelectedKeys.includes(row.key) ? 'bulk-selected-row' : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' ')}
+                          onClick={() => {
+                            if (bulkTransferMode) {
+                              toggleBulkSelection(row.key);
+                              return;
+                            }
+                            handleStockClick(row);
+                          }}
+                          onDoubleClick={() => {
+                            if (bulkTransferMode) return;
+                            handleStockDoubleClick(row);
+                          }}
                         >
+                          {bulkTransferMode && (
+                            <td className="bulk-check-cell">
+                              <label className="bulk-check-label">
+                                <input
+                                  type="checkbox"
+                                  checked={bulkSelectedKeys.includes(row.key)}
+                                  onChange={() => toggleBulkSelection(row.key)}
+                                  aria-label={`${row.artist} ${row.album_version} 선택`}
+                                />
+                                <span className="bulk-check-text">선택</span>
+                              </label>
+                            </td>
+                          )}
                           <td>{row.artist}</td>
                           <td>{row.category}</td>
                           <td>{row.album_version}</td>
@@ -2342,6 +2559,7 @@ export default function Home() {
                                   className="ghost small"
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  if (bulkTransferMode) return;
                                   if (selectionDisabled) return;
                                   setSelectedStockKeys((prev) =>
                                     prev.includes(row.key) ? prev : [...prev, row.key]
@@ -2374,8 +2592,10 @@ export default function Home() {
                               <div className="row-actions">
                                 <button
                                   className="ghost small"
+                                  disabled={bulkTransferMode}
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    if (bulkTransferMode) return;
                                     setSelectedStockKeys((prev) =>
                                       prev.includes(row.key) ? prev : [...prev, row.key]
                                     );
@@ -2400,8 +2620,10 @@ export default function Home() {
                                 {sessionRole === 'admin' && (
                                   <button
                                     className="ghost danger small"
+                                    disabled={bulkTransferMode}
                                     onClick={(e) => {
                                       e.stopPropagation();
+                                      if (bulkTransferMode) return;
                                       setSelectedStockKeys((prev) =>
                                         prev.includes(row.key) ? prev : [...prev, row.key]
                                       );
@@ -2419,7 +2641,7 @@ export default function Home() {
                         {editPanelEnabled && !selectionDisabled && sessionRole !== 'viewer' && editDraft &&
                           focusedStockKey === row.key && (
                           <tr className="inline-editor-row">
-                            <td colSpan={8}>
+                            <td colSpan={bulkTransferMode ? 9 : 8}>
                               <div className="inline-editor">
                                 <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
                                   <h3>선택 재고 편집</h3>
@@ -2506,6 +2728,80 @@ export default function Home() {
                     ))}
                   </tbody>
                 </table>
+                {bulkTransferMode && (
+                  <div className="bulk-transfer-bar">
+                    <div className="bulk-transfer-summary">
+                      <strong>선택됨: {bulkSelectedKeys.length}개</strong>
+                      <span className="muted small-text">전량 이관 기준</span>
+                    </div>
+                    <div className="bulk-transfer-controls">
+                      <select
+                        value={bulkTransferToLocation}
+                        onChange={(e) => setBulkTransferToLocation(e.target.value)}
+                        disabled={
+                          sessionRole === 'l_operator'
+                            ? !sessionScope?.sub_locations || sessionScope.sub_locations.length === 0
+                            : locationOptions.length === 0
+                        }
+                      >
+                        <option value="" disabled>
+                          {sessionRole === 'l_operator'
+                            ? sessionScope?.sub_locations && sessionScope.sub_locations.length > 0
+                              ? '받는 곳 선택'
+                              : '서브 로케이션 없음'
+                            : locationOptions.length > 0
+                            ? '받는 곳 선택'
+                            : '로케이션 없음'}
+                        </option>
+                        {(sessionRole === 'l_operator' ? sessionScope?.sub_locations ?? [] : locationOptions).map((loc) => (
+                          <option key={`bulk-${loc}`} value={loc}>
+                            {loc}
+                          </option>
+                        ))}
+                      </select>
+                      <button type="button" className="ghost" onClick={() => selectAllBulk(filteredStock)}>
+                        전체 선택
+                      </button>
+                      <button type="button" className="ghost" onClick={clearBulkSelection}>
+                        선택 해제
+                      </button>
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={
+                          isSubmitting ||
+                          !bulkTransferAllowed ||
+                          transferBlockedForScope ||
+                          bulkSelectedKeys.length === 0 ||
+                          !bulkTransferToLocation
+                        }
+                        onClick={submitBulkTransfer}
+                      >
+                        {isSubmitting ? '처리 중...' : '일괄 이관 실행'}
+                      </button>
+                    </div>
+                    <div className="bulk-transfer-status muted small-text">
+                      {bulkTransferStatus || '선택 후 일괄 이관을 실행하세요.'}
+                      {bulkTransferReport && (
+                        <div className="bulk-transfer-report">
+                          <strong>
+                            성공 {bulkTransferReport.successCount}건 · 실패 {bulkTransferReport.failureCount}건
+                          </strong>
+                          {bulkTransferReport.failures.length > 0 && (
+                            <ul>
+                              {bulkTransferReport.failures.slice(0, 4).map((failure) => (
+                                <li key={failure}>{failure}</li>
+                              ))}
+                              {bulkTransferReport.failures.length > 4 && (
+                                <li>외 {bulkTransferReport.failures.length - 4}건</li>
+                              )}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 <div className="pagination-row">
                   <span className="muted">
                     총 {inventoryPage.totalRows.toLocaleString()}건 · {currentPage}/{totalPages} 페이지
@@ -3068,6 +3364,93 @@ export default function Home() {
         grid-template-columns: 1fr;
       }
 
+      .bulk-toggle-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+        margin: 0.75rem 0 0.5rem;
+      }
+
+      .bulk-check-column {
+        width: 64px;
+      }
+
+      .bulk-check-cell {
+        padding: 0;
+      }
+
+      .bulk-check-label {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 40px;
+        gap: 0.35rem;
+        padding: 0.25rem;
+        cursor: pointer;
+      }
+
+      .bulk-check-label input {
+        width: 18px;
+        height: 18px;
+      }
+
+      .bulk-check-text {
+        font-size: 0.75rem;
+        color: #333;
+      }
+
+      .bulk-selected-row {
+        background: #eef5ff;
+        outline: 2px solid #b7d4ff;
+        outline-offset: -2px;
+      }
+
+      .bulk-transfer-bar {
+        position: sticky;
+        bottom: 0;
+        margin-top: 0.75rem;
+        padding: 0.75rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        background: #fff;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        z-index: 1;
+      }
+
+      .bulk-transfer-summary {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+      }
+
+      .bulk-transfer-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+      }
+
+      .bulk-transfer-controls button,
+      .bulk-transfer-controls select {
+        min-height: 40px;
+      }
+
+      .bulk-transfer-status {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+      }
+
+      .bulk-transfer-report ul {
+        margin: 0.25rem 0 0;
+        padding-left: 1.1rem;
+      }
+
       @media (min-width: 640px) {
         .stats {
           grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -3103,6 +3486,10 @@ export default function Home() {
           flex-direction: column;
           align-items: flex-start;
           gap: 0.5rem;
+        }
+
+        .bulk-transfer-summary {
+          align-items: flex-start;
         }
       }
     `}</style>
