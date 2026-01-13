@@ -163,316 +163,6 @@ function deriveStockKey(target?: InventoryRow | InventoryEditDraft | null) {
 }
 
 function Section({ title, children, actions }: { title: string; children: React.ReactNode; actions?: React.ReactNode }) {
-  const movementPanel = (
-    <Section
-      title="입/출고 등록"
-      actions={
-        <div className="section-actions">
-          <button className="ghost" onClick={() => setMovement(EMPTY_MOVEMENT)}>입력값 초기화</button>
-        </div>
-      }
-    >
-      <div className="mode-toggle">
-        <button
-          type="button"
-          className={movementMode === 'movement' ? 'primary' : 'ghost'}
-          onClick={() => {
-            setMovementMode('movement');
-            setTransferPayload(EMPTY_TRANSFER);
-          }}
-        >
-          입/출고
-        </button>
-        <button
-          type="button"
-          className={movementMode === 'transfer' ? 'primary' : 'ghost'}
-          onClick={() => {
-            setMovementMode('transfer');
-            setMovement(EMPTY_MOVEMENT);
-            resetTransferForm();
-          }}
-        >
-          전산이관
-        </button>
-        {movementMode === 'transfer' && (
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => {
-              setMovementMode('movement');
-              setTransferPayload(EMPTY_TRANSFER);
-            }}
-          >
-            전산이관 취소
-          </button>
-        )}
-      </div>
-
-      {movementMode === 'movement' ? (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            submitMovement('IN');
-          }}
-        >
-          <div className="form-row">
-            <label>
-              <span>아티스트</span>
-              <input
-                value={movement.artist}
-                onChange={(e) => setMovement({ ...movement, artist: e.target.value })}
-                placeholder="예: ARTIST"
-              />
-            </label>
-            <label className="compact">
-              <span>카테고리</span>
-              <select
-                value={movement.category}
-                onChange={(e) => setMovement({ ...movement, category: e.target.value as MovementPayload['category'] })}
-              >
-                <option value="album">앨범</option>
-                <option value="md">MD</option>
-              </select>
-            </label>
-            <label>
-              <span>앨범/버전</span>
-              <input
-                value={movement.album_version}
-                onChange={(e) => setMovement({ ...movement, album_version: e.target.value })}
-                placeholder="앨범명/버전"
-              />
-            </label>
-            <label>
-              <span>옵션</span>
-              <input
-                value={movement.option}
-                onChange={(e) => setMovement({ ...movement, option: e.target.value })}
-                placeholder="포카/키트 등"
-              />
-            </label>
-            <label>
-              <span>바코드</span>
-              <input
-                value={movement.barcode || ''}
-                onChange={(e) => setMovement({ ...movement, barcode: e.target.value })}
-                placeholder="바코드 (MD 권장)"
-                disabled={movementBarcodeLocked}
-                readOnly={movementBarcodeLocked}
-              />
-            </label>
-            <label>
-              <span>로케이션</span>
-              <input
-                list="location-options"
-                value={movement.location}
-                onChange={(e) => setMovement({ ...movement, location: e.target.value })}
-                placeholder="창고/선반"
-              />
-              <datalist id="location-options">
-                {locationOptions.map((loc) => (
-                  <option key={loc} value={loc} />
-                ))}
-              </datalist>
-            </label>
-            <label className="compact">
-              <span>수량</span>
-              <input
-                type="number"
-                value={movement.quantity}
-                min={1}
-                onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
-              />
-            </label>
-          </div>
-          <div className={`mobile-form-modal ${mobileFormOpen ? 'open' : ''}`} aria-hidden={!mobileFormOpen}>
-            <div className="mobile-form-sheet">
-              <div className="mobile-form-header">
-                <strong>입/출고 등록</strong>
-                <button type="button" className="ghost" onClick={() => setMobileFormOpen(false)}>
-                  닫기
-                </button>
-              </div>
-              {movementPanel}
-            </div>
-          </div>
-          <div className="form-row">
-            <label className="wide">
-              <span>메모</span>
-              <input
-                value={movement.memo}
-                onChange={(e) => setMovement({ ...movement, memo: e.target.value })}
-                placeholder="작업 사유/비고"
-              />
-            </label>
-          </div>
-          <div className="actions-row">
-            <button type="button" disabled={isSubmitting} onClick={() => submitMovement('IN')}>
-              {isSubmitting && movementMode === 'movement' ? '처리 중...' : '입고'}
-            </button>
-            <button
-              type="button"
-              disabled={isSubmitting}
-              className="secondary"
-              onClick={() => submitMovement('OUT')}
-            >
-              {isSubmitting && movementMode === 'movement' ? '처리 중...' : '출고'}
-            </button>
-            <button
-              type="button"
-              disabled={isSubmitting}
-              className="ghost"
-              onClick={() => {
-                setMovementMode('transfer');
-                setMovement(EMPTY_MOVEMENT);
-              }}
-            >
-              전산이관으로 전환
-            </button>
-          </div>
-        </form>
-      ) : (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            submitTransfer();
-          }}
-        >
-          <div className="form-row">
-            <label>
-              <span>아티스트</span>
-              <input
-                value={transferPayload.artist}
-                onChange={(e) => setTransferPayload({ ...transferPayload, artist: e.target.value })}
-                placeholder="예: ARTIST"
-              />
-            </label>
-            <label className="compact">
-              <span>카테고리</span>
-              <select
-                value={transferPayload.category}
-                onChange={(e) =>
-                  setTransferPayload({ ...transferPayload, category: e.target.value as TransferPayload['category'] })
-                }
-              >
-                <option value="album">앨범</option>
-                <option value="md">MD</option>
-              </select>
-            </label>
-            <label>
-              <span>앨범/버전</span>
-              <input
-                value={transferPayload.album_version}
-                onChange={(e) => setTransferPayload({ ...transferPayload, album_version: e.target.value })}
-                placeholder="앨범명/버전"
-              />
-            </label>
-            <label>
-              <span>옵션</span>
-              <input
-                value={transferPayload.option}
-                onChange={(e) => setTransferPayload({ ...transferPayload, option: e.target.value })}
-                placeholder="포카/키트 등"
-              />
-            </label>
-            <label>
-              <span>바코드</span>
-              <input
-                value={transferPayload.barcode || ''}
-                onChange={(e) => setTransferPayload({ ...transferPayload, barcode: e.target.value })}
-                placeholder="바코드 (MD 권장)"
-                disabled={transferBarcodeLocked}
-                readOnly={transferBarcodeLocked}
-              />
-            </label>
-            <label>
-              <span>수량</span>
-              <input
-                type="number"
-                value={transferPayload.quantity}
-                min={1}
-                onChange={(e) => setTransferPayload({ ...transferPayload, quantity: Number(e.target.value) })}
-              />
-            </label>
-          </div>
-          <div className="form-row">
-            <label>
-              <span>보내는 곳</span>
-              <input
-                list="location-options"
-                value={
-                  (sessionRole === 'l_operator' || sessionRole === 'manager') && sessionScope?.primary_location
-                    ? sessionScope.primary_location
-                    : transferPayload.from_location
-                }
-                disabled={
-                  (sessionRole === 'l_operator' || sessionRole === 'manager') && !!sessionScope?.primary_location
-                }
-                onChange={(e) => setTransferPayload({ ...transferPayload, from_location: e.target.value })}
-                placeholder="출발 로케이션"
-              />
-            </label>
-            <label>
-              <span>받는 곳</span>
-              <select
-                value={transferPayload.to_location}
-                onChange={(e) => setTransferPayload({ ...transferPayload, to_location: e.target.value })}
-                disabled={
-                  sessionRole === 'l_operator' || sessionRole === 'manager'
-                    ? !sessionScope?.sub_locations || sessionScope.sub_locations.length === 0
-                    : locationOptions.length === 0
-                }
-              >
-                <option value="" disabled>
-                  {sessionRole === 'l_operator' || sessionRole === 'manager'
-                    ? sessionScope?.sub_locations && sessionScope.sub_locations.length > 0
-                      ? '받는 곳 선택'
-                      : '서브 로케이션 없음'
-                    : locationOptions.length > 0
-                    ? '받는 곳 선택'
-                    : '로케이션 없음'}
-                </option>
-                {(sessionRole === 'l_operator' || sessionRole === 'manager'
-                  ? sessionScope?.sub_locations ?? []
-                  : locationOptions
-                ).map((loc) => (
-                  <option key={loc} value={loc}>
-                    {loc}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="form-row">
-            <label className="wide">
-              <span>메모 (필수)</span>
-              <input
-                value={transferPayload.memo}
-                onChange={(e) => setTransferPayload({ ...transferPayload, memo: e.target.value })}
-                placeholder="작업 사유/비고"
-              />
-            </label>
-          </div>
-          <div className="actions-row">
-            <button
-              type="button"
-              disabled={isSubmitting || transferBlockedForScope || !transferPayload.memo.trim()}
-              onClick={submitTransfer}
-            >
-              {transferBlockedForScope
-                ? '서브 로케이션 필요'
-                : isSubmitting && movementMode === 'transfer'
-                ? '처리 중...'
-                : '전산이관'}
-            </button>
-            <button type="button" className="ghost" onClick={resetTransferForm}>
-              초기화
-            </button>
-          </div>
-        </form>
-      )}
-    </Section>
-  );
-
   return (
     <section className="card">
       <div className="section-heading">
@@ -2179,6 +1869,311 @@ export default function Home() {
     refresh();
     }, []);
 
+  const movementPanelContent = (
+    <>
+      <div className="mode-toggle">
+        <button
+          type="button"
+          className={movementMode === 'movement' ? 'primary' : 'ghost'}
+          onClick={() => {
+            setMovementMode('movement');
+            setTransferPayload(EMPTY_TRANSFER);
+          }}
+        >
+          입/출고
+        </button>
+        <button
+          type="button"
+          className={movementMode === 'transfer' ? 'primary' : 'ghost'}
+          onClick={() => {
+            setMovementMode('transfer');
+            setMovement(EMPTY_MOVEMENT);
+            resetTransferForm();
+          }}
+        >
+          전산이관
+        </button>
+        {movementMode === 'transfer' && (
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => {
+              setMovementMode('movement');
+              setTransferPayload(EMPTY_TRANSFER);
+            }}
+          >
+            전산이관 취소
+          </button>
+        )}
+      </div>
+
+      {movementMode === 'movement' ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            submitMovement('IN');
+          }}
+        >
+          <div className="form-row">
+            <label>
+              <span>아티스트</span>
+              <input
+                value={movement.artist}
+                onChange={(e) => setMovement({ ...movement, artist: e.target.value })}
+                placeholder="예: ARTIST"
+              />
+            </label>
+            <label className="compact">
+              <span>카테고리</span>
+              <select
+                value={movement.category}
+                onChange={(e) => setMovement({ ...movement, category: e.target.value as MovementPayload['category'] })}
+              >
+                <option value="album">앨범</option>
+                <option value="md">MD</option>
+              </select>
+            </label>
+            <label>
+              <span>앨범/버전</span>
+              <input
+                value={movement.album_version}
+                onChange={(e) => setMovement({ ...movement, album_version: e.target.value })}
+                placeholder="앨범명/버전"
+              />
+            </label>
+            <label>
+              <span>옵션</span>
+              <input
+                value={movement.option}
+                onChange={(e) => setMovement({ ...movement, option: e.target.value })}
+                placeholder="포카/키트 등"
+              />
+            </label>
+            <label>
+              <span>바코드</span>
+              <input
+                value={movement.barcode || ''}
+                onChange={(e) => setMovement({ ...movement, barcode: e.target.value })}
+                placeholder="바코드 (MD 권장)"
+                disabled={movementBarcodeLocked}
+                readOnly={movementBarcodeLocked}
+              />
+            </label>
+            <label>
+              <span>로케이션</span>
+              <input
+                list="location-options"
+                value={movement.location}
+                onChange={(e) => setMovement({ ...movement, location: e.target.value })}
+                placeholder="창고/선반"
+              />
+              <datalist id="location-options">
+                {locationOptions.map((loc) => (
+                  <option key={loc} value={loc} />
+                ))}
+              </datalist>
+            </label>
+            <label className="compact">
+              <span>수량</span>
+              <input
+                type="number"
+                value={movement.quantity}
+                min={1}
+                onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
+              />
+            </label>
+          </div>
+          <div className="form-row">
+            <label className="wide">
+              <span>메모 (필수)</span>
+              <input
+                value={movement.memo}
+                onChange={(e) => setMovement({ ...movement, memo: e.target.value })}
+                placeholder="작업 사유/비고"
+              />
+            </label>
+          </div>
+          <div className="actions-row">
+            <button type="button" disabled={isSubmitting} onClick={() => submitMovement('IN')}>
+              {isSubmitting && movementMode === 'movement' ? '처리 중...' : '입고'}
+            </button>
+            <button
+              type="button"
+              disabled={isSubmitting}
+              className="secondary"
+              onClick={() => submitMovement('OUT')}
+            >
+              {isSubmitting && movementMode === 'movement' ? '처리 중...' : '출고'}
+            </button>
+            <button
+              type="button"
+              disabled={isSubmitting}
+              className="ghost"
+              onClick={() => {
+                setMovementMode('transfer');
+                setMovement(EMPTY_MOVEMENT);
+              }}
+            >
+              전산이관으로 전환
+            </button>
+          </div>
+        </form>
+      ) : (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            submitTransfer();
+          }}
+        >
+          <div className="form-row">
+            <label>
+              <span>아티스트</span>
+              <input
+                value={transferPayload.artist}
+                onChange={(e) => setTransferPayload({ ...transferPayload, artist: e.target.value })}
+                placeholder="예: ARTIST"
+              />
+            </label>
+            <label className="compact">
+              <span>카테고리</span>
+              <select
+                value={transferPayload.category}
+                onChange={(e) =>
+                  setTransferPayload({ ...transferPayload, category: e.target.value as TransferPayload['category'] })
+                }
+              >
+                <option value="album">앨범</option>
+                <option value="md">MD</option>
+              </select>
+            </label>
+            <label>
+              <span>앨범/버전</span>
+              <input
+                value={transferPayload.album_version}
+                onChange={(e) => setTransferPayload({ ...transferPayload, album_version: e.target.value })}
+                placeholder="앨범명/버전"
+              />
+            </label>
+            <label>
+              <span>옵션</span>
+              <input
+                value={transferPayload.option}
+                onChange={(e) => setTransferPayload({ ...transferPayload, option: e.target.value })}
+                placeholder="포카/키트 등"
+              />
+            </label>
+            <label>
+              <span>바코드</span>
+              <input
+                value={transferPayload.barcode || ''}
+                onChange={(e) => setTransferPayload({ ...transferPayload, barcode: e.target.value })}
+                placeholder="바코드 (MD 권장)"
+                disabled={transferBarcodeLocked}
+                readOnly={transferBarcodeLocked}
+              />
+            </label>
+            <label>
+              <span>수량</span>
+              <input
+                type="number"
+                value={transferPayload.quantity}
+                min={1}
+                onChange={(e) => setTransferPayload({ ...transferPayload, quantity: Number(e.target.value) })}
+              />
+            </label>
+          </div>
+          <div className="form-row">
+            <label>
+              <span>보내는 곳</span>
+              <input
+                list="location-options"
+                value={
+                  (sessionRole === 'l_operator' || sessionRole === 'manager') && sessionScope?.primary_location
+                    ? sessionScope.primary_location
+                    : transferPayload.from_location
+                }
+                disabled={
+                  (sessionRole === 'l_operator' || sessionRole === 'manager') && !!sessionScope?.primary_location
+                }
+                onChange={(e) => setTransferPayload({ ...transferPayload, from_location: e.target.value })}
+                placeholder="출발 로케이션"
+              />
+            </label>
+            <label>
+              <span>받는 곳</span>
+              <select
+                value={transferPayload.to_location}
+                onChange={(e) => setTransferPayload({ ...transferPayload, to_location: e.target.value })}
+                disabled={
+                  sessionRole === 'l_operator' || sessionRole === 'manager'
+                    ? !sessionScope?.sub_locations || sessionScope.sub_locations.length === 0
+                    : locationOptions.length === 0
+                }
+              >
+                <option value="" disabled>
+                  {sessionRole === 'l_operator' || sessionRole === 'manager'
+                    ? sessionScope?.sub_locations && sessionScope.sub_locations.length > 0
+                      ? '받는 곳 선택'
+                      : '서브 로케이션 없음'
+                    : locationOptions.length > 0
+                    ? '받는 곳 선택'
+                    : '로케이션 없음'}
+                </option>
+                {(sessionRole === 'l_operator' || sessionRole === 'manager'
+                  ? sessionScope?.sub_locations ?? []
+                  : locationOptions
+                ).map((loc) => (
+                  <option key={loc} value={loc}>
+                    {loc}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="form-row">
+            <label className="wide">
+              <span>메모 (필수)</span>
+              <input
+                value={transferPayload.memo}
+                onChange={(e) => setTransferPayload({ ...transferPayload, memo: e.target.value })}
+                placeholder="작업 사유/비고"
+              />
+            </label>
+          </div>
+          <div className="actions-row">
+            <button
+              type="button"
+              disabled={isSubmitting || transferBlockedForScope || !transferPayload.memo.trim()}
+              onClick={submitTransfer}
+            >
+              {transferBlockedForScope
+                ? '서브 로케이션 필요'
+                : isSubmitting && movementMode === 'transfer'
+                ? '처리 중...'
+                : '전산이관'}
+            </button>
+            <button type="button" className="ghost" onClick={resetTransferForm}>
+              초기화
+            </button>
+          </div>
+        </form>
+      )}
+    </>
+  );
+
+  const movementPanel = (
+    <Section
+      title="입/출고 등록"
+      actions={
+        <div className="section-actions">
+          <button className="ghost" onClick={() => setMovement(EMPTY_MOVEMENT)}>입력값 초기화</button>
+        </div>
+      }
+    >
+      {movementPanelContent}
+    </Section>
+  );
+
   return (
     <>
     <main className="page">
@@ -2227,6 +2222,23 @@ export default function Home() {
         >
           관리자 페이지
         </button>
+      </div>
+
+      <div className={`mobile-form-modal ${mobileFormOpen ? 'open' : ''}`} aria-hidden={!mobileFormOpen}>
+        <div className="mobile-form-sheet">
+          <div className="mobile-form-header">
+            <strong>입/출고 등록</strong>
+            <div className="actions-row">
+              <button type="button" className="ghost" onClick={() => setMovement(EMPTY_MOVEMENT)}>
+                입력값 초기화
+              </button>
+              <button type="button" className="ghost" onClick={() => setMobileFormOpen(false)}>
+                닫기
+              </button>
+            </div>
+          </div>
+          {movementPanelContent}
+        </div>
       </div>
 
       {!isLoggedIn ? (
@@ -2418,307 +2430,7 @@ export default function Home() {
       {activePanel === 'stock' && (
         <div className="split-panels" ref={stockRef}>
           <div className="left-sticky desktop-only">
-            <Section
-              title="입/출고 등록"
-              actions={
-                <div className="section-actions">
-                  <button className="ghost" onClick={() => setMovement(EMPTY_MOVEMENT)}>입력값 초기화</button>
-                </div>
-              }
-            >
-              <div className="mode-toggle">
-                <button
-                  type="button"
-                  className={movementMode === 'movement' ? 'primary' : 'ghost'}
-                  onClick={() => {
-                    setMovementMode('movement');
-                    setTransferPayload(EMPTY_TRANSFER);
-                  }}
-                >
-                  입/출고
-                </button>
-                <button
-                  type="button"
-                  className={movementMode === 'transfer' ? 'primary' : 'ghost'}
-                  onClick={() => {
-                    setMovementMode('transfer');
-                    setMovement(EMPTY_MOVEMENT);
-                    resetTransferForm();
-                  }}
-                >
-                  전산이관
-                </button>
-                {movementMode === 'transfer' && (
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => {
-                      setMovementMode('movement');
-                      setTransferPayload(EMPTY_TRANSFER);
-                    }}
-                  >
-                    전산이관 취소
-                  </button>
-                )}
-              </div>
-
-              {movementMode === 'movement' ? (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    submitMovement('IN');
-                  }}
-                >
-                  <div className="form-row">
-                    <label>
-                      <span>아티스트</span>
-                      <input
-                        value={movement.artist}
-                        onChange={(e) => setMovement({ ...movement, artist: e.target.value })}
-                        placeholder="예: ARTIST"
-                      />
-                    </label>
-                    <label className="compact">
-                      <span>카테고리</span>
-                      <select
-                        value={movement.category}
-                        onChange={(e) => setMovement({ ...movement, category: e.target.value as MovementPayload['category'] })}
-                      >
-                        <option value="album">앨범</option>
-                        <option value="md">MD</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>앨범/버전</span>
-                      <input
-                        value={movement.album_version}
-                        onChange={(e) => setMovement({ ...movement, album_version: e.target.value })}
-                        placeholder="앨범명/버전"
-                      />
-                    </label>
-                    <label>
-                      <span>옵션</span>
-                      <input
-                        value={movement.option}
-                        onChange={(e) => setMovement({ ...movement, option: e.target.value })}
-                        placeholder="포카/키트 등"
-                      />
-                    </label>
-                    <label>
-                      <span>바코드</span>
-                      <input
-                        value={movement.barcode || ''}
-                        onChange={(e) => setMovement({ ...movement, barcode: e.target.value })}
-                        placeholder="바코드 (MD 권장)"
-                        disabled={movementBarcodeLocked}
-                        readOnly={movementBarcodeLocked}
-                      />
-                    </label>
-                    <label>
-                      <span>로케이션</span>
-                      <input
-                        list="location-options"
-                        value={movement.location}
-                        onChange={(e) => setMovement({ ...movement, location: e.target.value })}
-                        placeholder="창고/선반"
-                      />
-                      <datalist id="location-options">
-                        {locationOptions.map((loc) => (
-                          <option key={loc} value={loc} />
-                        ))}
-                      </datalist>
-                    </label>
-                    <label className="compact">
-                      <span>수량</span>
-                      <input
-                        type="number"
-                        value={movement.quantity}
-                        min={1}
-                        onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
-                      />
-                    </label>
-                  </div>
-                  <div className="form-row">
-                    <label className="wide">
-                      <span>메모 (필수)</span>
-                      <input
-                        value={movement.memo}
-                        onChange={(e) => setMovement({ ...movement, memo: e.target.value })}
-                        placeholder="작업 사유/비고"
-                      />
-                    </label>
-                  </div>
-                  <div className="actions-row">
-                    <button type="button" disabled={isSubmitting} onClick={() => submitMovement('IN')}>
-                      {isSubmitting && movementMode === 'movement' ? '처리 중...' : '입고'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isSubmitting}
-                      className="secondary"
-                      onClick={() => submitMovement('OUT')}
-                    >
-                      {isSubmitting && movementMode === 'movement' ? '처리 중...' : '출고'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isSubmitting}
-                      className="ghost"
-                      onClick={() => {
-                        setMovementMode('transfer');
-                        setMovement(EMPTY_MOVEMENT);
-                      }}
-                    >
-                      전산이관으로 전환
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    submitTransfer();
-                  }}
-                >
-                  <div className="form-row">
-                    <label>
-                      <span>아티스트</span>
-                      <input
-                        value={transferPayload.artist}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, artist: e.target.value })}
-                        placeholder="예: ARTIST"
-                      />
-                    </label>
-                    <label className="compact">
-                      <span>카테고리</span>
-                      <select
-                        value={transferPayload.category}
-                        onChange={(e) =>
-                          setTransferPayload({ ...transferPayload, category: e.target.value as TransferPayload['category'] })
-                        }
-                      >
-                        <option value="album">앨범</option>
-                        <option value="md">MD</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>앨범/버전</span>
-                      <input
-                        value={transferPayload.album_version}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, album_version: e.target.value })}
-                        placeholder="앨범명/버전"
-                      />
-                    </label>
-                    <label>
-                      <span>옵션</span>
-                      <input
-                        value={transferPayload.option}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, option: e.target.value })}
-                        placeholder="포카/키트 등"
-                      />
-                    </label>
-                    <label>
-                      <span>바코드</span>
-                      <input
-                        value={transferPayload.barcode || ''}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, barcode: e.target.value })}
-                        placeholder="바코드 (MD 권장)"
-                        disabled={transferBarcodeLocked}
-                        readOnly={transferBarcodeLocked}
-                      />
-                    </label>
-                    <label>
-                      <span>수량</span>
-                      <input
-                        type="number"
-                        value={transferPayload.quantity}
-                        min={1}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, quantity: Number(e.target.value) })}
-                      />
-                    </label>
-                  </div>
-                  <div className="form-row">
-                    <label>
-                      <span>보내는 곳</span>
-                      <input
-                        list="location-options"
-                        value={
-                          (sessionRole === 'l_operator' || sessionRole === 'manager') && sessionScope?.primary_location
-                            ? sessionScope.primary_location
-                            : transferPayload.from_location
-                        }
-                        disabled={
-                          (sessionRole === 'l_operator' || sessionRole === 'manager') &&
-                          !!sessionScope?.primary_location
-                        }
-                        onChange={(e) => setTransferPayload({ ...transferPayload, from_location: e.target.value })}
-                        placeholder="출발 로케이션"
-                      />
-                    </label>
-                    <label>
-                      <span>받는 곳</span>
-                      <select
-                        value={transferPayload.to_location}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, to_location: e.target.value })}
-                        disabled={
-                          sessionRole === 'l_operator' || sessionRole === 'manager'
-                            ? !sessionScope?.sub_locations || sessionScope.sub_locations.length === 0
-                            : locationOptions.length === 0
-                        }
-                      >
-                        <option value="" disabled>
-                          {sessionRole === 'l_operator' || sessionRole === 'manager'
-                            ? sessionScope?.sub_locations && sessionScope.sub_locations.length > 0
-                              ? '받는 곳 선택'
-                              : '서브 로케이션 없음'
-                            : locationOptions.length > 0
-                            ? '받는 곳 선택'
-                            : '로케이션 없음'}
-                        </option>
-                        {(sessionRole === 'l_operator' || sessionRole === 'manager'
-                          ? sessionScope?.sub_locations ?? []
-                          : locationOptions
-                        ).map((loc) => (
-                          <option key={loc} value={loc}>
-                            {loc}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                  <div className="form-row">
-                    <label className="wide">
-                      <span>메모</span>
-                      <input
-                        value={transferPayload.memo}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, memo: e.target.value })}
-                        placeholder="작업 사유/비고"
-                      />
-                    </label>
-                  </div>
-                  <div className="actions-row">
-                    <button
-                      type="button"
-                      disabled={isSubmitting || transferBlockedForScope || !transferPayload.memo.trim()}
-                      onClick={submitTransfer}
-                    >
-                      {transferBlockedForScope
-                        ? '서브 로케이션 필요'
-                        : isSubmitting && movementMode === 'transfer'
-                        ? '처리 중...'
-                        : '전산이관'}
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={resetTransferForm}
-                    >
-                      초기화
-                    </button>
-                  </div>
-                </form>
-              )}
-            </Section>
+            {movementPanel}
           </div>
           <div className="right-panel">
             <Section
