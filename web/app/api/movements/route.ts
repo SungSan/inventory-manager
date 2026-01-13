@@ -174,10 +174,6 @@ export async function POST(req: Request) {
       quantity: normalizedQuantity,
     };
 
-    if (normalizedBarcode) {
-      payload.barcode = normalizedBarcode;
-    }
-
     payload.location = effectiveLocation;
 
     try {
@@ -212,7 +208,18 @@ export async function POST(req: Request) {
       }
 
       const result = data as any;
-      return NextResponse.json({ ok: true, result });
+      let barcodeUpdateError: string | null = null;
+      if (normalizedBarcode && result?.item_id) {
+        const { error: barcodeError } = await supabaseAdmin
+          .from('items')
+          .update({ barcode: normalizedBarcode })
+          .eq('id', result.item_id);
+        if (barcodeError) {
+          barcodeUpdateError = barcodeError.message;
+          console.error('barcode update failed', { barcodeError, itemId: result.item_id });
+        }
+      }
+      return NextResponse.json({ ok: true, result, barcodeUpdateError });
     } catch (error: any) {
       console.error({ step: 'record_movement_unexpected', payload, error });
       const message = error?.message || '입출고 처리 중 오류가 발생했습니다.';
