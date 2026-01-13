@@ -140,6 +140,12 @@ const EMPTY_TRANSFER: TransferPayload = {
   barcode: '',
 };
 
+type HistoryPage = {
+  page: number;
+  pageSize: number;
+  totalRows: number;
+};
+
 function deriveStockKey(target?: InventoryRow | InventoryEditDraft | null) {
   if (!target) return null;
   return 'key' in target ? target.key : target.id;
@@ -203,6 +209,39 @@ function findMatchingStock(
       row.category === category &&
       row.album_version === albumVersion &&
       row.option === option
+  );
+}
+
+function buildBarcodeBars(value: string) {
+  const chars = value.split('');
+  let x = 0;
+  const bars: Array<{ x: number; width: number; height: number }> = [];
+  chars.forEach((char, index) => {
+    const code = char.charCodeAt(0);
+    const width = 1 + (code % 3);
+    const height = 28 + (code % 4) * 4;
+    bars.push({ x, width, height });
+    x += width + (index % 2 === 0 ? 1 : 2);
+  });
+  return { bars, width: x };
+}
+
+function BarcodePreview({ value }: { value: string }) {
+  const safeValue = value.trim();
+  if (!safeValue) return null;
+  const { bars, width } = buildBarcodeBars(safeValue);
+  const height = Math.max(...bars.map((bar) => bar.height), 32);
+  return (
+    <svg
+      className="barcode-preview"
+      viewBox={`0 0 ${Math.max(width, 1)} ${height}`}
+      aria-label={`barcode-${safeValue}`}
+      role="img"
+    >
+      {bars.map((bar, index) => (
+        <rect key={`${safeValue}-${index}`} x={bar.x} y={0} width={bar.width} height={bar.height} fill="#111" />
+      ))}
+    </svg>
   );
 }
 
@@ -340,6 +379,7 @@ export default function Home() {
     from: defaultHistoryFrom,
     to: defaultHistoryTo
   });
+  const [historyPage, setHistoryPage] = useState<HistoryPage>({ page: 1, pageSize: 50, totalRows: 0 });
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [accountsStatus, setAccountsStatus] = useState('');
@@ -717,10 +757,14 @@ export default function Home() {
     reloadInventory({ offset: clamped, fetchMeta: true });
   }
 
-  async function reloadHistory() {
+  async function reloadHistory(options?: { page?: number; pageSize?: number }) {
     const params = new URLSearchParams();
     if (historyFilters.from) params.set('startDate', historyFilters.from);
     if (historyFilters.to) params.set('endDate', historyFilters.to);
+    const nextPage = options?.page ?? historyPage.page;
+    const nextPageSize = options?.pageSize ?? historyPage.pageSize;
+    params.set('page', String(Math.max(1, nextPage)));
+    params.set('pageSize', String(nextPageSize));
 
     const qs = params.toString();
     const histRes = await fetch(qs ? `/api/history?${qs}` : '/api/history', { cache: 'no-store' });
@@ -738,12 +782,29 @@ export default function Home() {
         created_by_department: row.created_by_department ?? '',
       }));
       setHistory(rows);
+      setHistoryPage({
+        page: payload?.page?.page ?? nextPage,
+        pageSize: payload?.page?.pageSize ?? nextPageSize,
+        totalRows: payload?.page?.totalRows ?? rows.length,
+      });
     } else {
       const payload = await histRes.json().catch(() => null);
       const message = payload?.error || payload?.message || '입출고 이력 불러오기 실패';
       setStatus(message);
       alert(message);
     }
+  }
+
+  function changeHistoryPage(nextPage: number) {
+    const clamped = Math.max(1, nextPage);
+    setHistoryPage((prev) => ({ ...prev, page: clamped }));
+    reloadHistory({ page: clamped });
+  }
+
+  function changeHistoryPageSize(nextSize: number) {
+    const size = Math.max(1, Math.min(nextSize, 200));
+    setHistoryPage((prev) => ({ ...prev, page: 1, pageSize: size }));
+    reloadHistory({ page: 1, pageSize: size });
   }
 
   async function refresh() {
@@ -1101,18 +1162,6 @@ export default function Home() {
     const hasMultipleLocations = row.locations.length > 1;
     const defaultLocation = hasMultipleLocations ? '' : row.locations[0]?.location ?? '';
 
-    if (row.locations[0]) {
-      setEditDraft({
-        id: row.locations[0].editableId ?? row.locations[0].id,
-        artist: row.artist,
-        category: row.category,
-        album_version: row.album_version,
-        option: row.option,
-        location: row.locations[0].location,
-        quantity: row.locations[0].quantity,
-      });
-    }
-
     setMovement((prev) => ({
       ...prev,
       artist: row.artist,
@@ -1152,6 +1201,7 @@ export default function Home() {
         category: row.category,
         album_version: row.album_version,
         option: row.option,
+        barcode: row.barcode ?? '',
         location: row.locations[0].location,
         quantity: row.locations[0].quantity,
       });
@@ -1282,6 +1332,11 @@ export default function Home() {
     });
   }, [history, historyFilters]);
 
+  const historyTotalPages = Math.max(1, Math.ceil((historyPage.totalRows || 0) / historyPage.pageSize));
+  const historyCurrentPage = Math.min(historyTotalPages, historyPage.page);
+  const historyCanPrev = historyCurrentPage > 1;
+  const historyCanNext = historyCurrentPage < historyTotalPages;
+
   function exportToExcel(rows: any[], filename: string, sheetName: string) {
     const workbook = utils.book_new();
     const sheet = utils.json_to_sheet(rows.length ? rows : [{}]);
@@ -1313,21 +1368,81 @@ export default function Home() {
     const allRows = await fetchAllInventoryForExport();
     const sourceRows: InventoryApiRow[] = allRows.length ? allRows : normalizeStockToApiRows(stock);
     const grouped = groupInventoryRows(sourceRows);
-    const rows = grouped.map((row) => ({
-      artist: row.artist,
-      category: row.category,
-      album_version: row.album_version,
-      option: row.option,
-      barcode: row.barcode ?? '',
-      locations: row.locations.map((loc) => `${loc.location}: ${loc.quantity}`).join(', '),
-      total_quantity: row.total_quantity,
-    }));
+    const rows = grouped.map((row) => {
+      console.info('export_map_row', { step: 'export_map_row', key: row.key, barcode: row.barcode ?? '' });
+      return {
+        artist: row.artist,
+        category: row.category,
+        album_version: row.album_version,
+        option: row.option,
+        바코드: row.barcode ?? '',
+        locations: row.locations.map((loc) => `${loc.location}: ${loc.quantity}`).join(', '),
+        total_quantity: row.total_quantity,
+      };
+    });
     exportToExcel(rows, 'inventory.xlsx', 'Inventory');
     setInventoryActionStatus('');
   }
 
-  function exportHistory() {
-    const rows = filteredHistory.map((h) => ({
+  async function fetchAllHistoryForExport() {
+    const pageSize = 200;
+    let page = 1;
+    let total = Number.MAX_SAFE_INTEGER;
+    const rows: HistoryRow[] = [];
+    while ((page - 1) * pageSize < total) {
+      const params = new URLSearchParams();
+      if (historyFilters.from) params.set('startDate', historyFilters.from);
+      if (historyFilters.to) params.set('endDate', historyFilters.to);
+      params.set('page', String(page));
+      params.set('pageSize', String(pageSize));
+      const res = await fetch(`/api/history?${params.toString()}`, { cache: 'no-store' });
+      if (!res.ok) {
+        console.error('history export fetch failed', { step: 'history_export_fetch', page, status: res.status });
+        break;
+      }
+      const payload = await res.json().catch(() => null);
+      if (!payload?.ok) {
+        console.error('history export fetch failed', { step: 'history_export_fetch', page, payload });
+        break;
+      }
+      const list = Array.isArray(payload?.rows) ? payload.rows : [];
+      rows.push(
+        ...list.map((row: any) => ({
+          ...row,
+          option: row.option ?? '',
+          created_by_name: row.created_by_name ?? '',
+          created_by_department: row.created_by_department ?? '',
+        }))
+      );
+      total = payload?.page?.totalRows ?? rows.length;
+      page += 1;
+      if (list.length < pageSize) break;
+    }
+    return rows;
+  }
+
+  async function exportHistory() {
+    const allRows = await fetchAllHistoryForExport();
+    const matchesSearch = (row: HistoryRow) =>
+      [
+        row.artist,
+        row.album_version,
+        row.option,
+        row.location,
+        row.created_by,
+        row.created_by_name ?? '',
+        row.created_by_department ?? '',
+        row.memo ?? ''
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(historyFilters.search.toLowerCase());
+    const filtered = allRows.filter((row) => {
+      const matchesDirection = !historyFilters.direction || row.direction === historyFilters.direction;
+      const matchesCategory = !historyFilters.category || row.category === historyFilters.category;
+      return matchesDirection && matchesCategory && matchesSearch(row);
+    });
+    const rows = filtered.map((h) => ({
       created_at_kst: formatDate(h.created_at),
       direction: h.direction,
       artist: h.artist,
@@ -1340,7 +1455,7 @@ export default function Home() {
       created_by_department: h.created_by_department ?? '',
       memo: h.memo ?? ''
     }));
-    exportToExcel(rows, 'history.xlsx', 'History');
+    exportToExcel(rows, `history-${historyFilters.from}-${historyFilters.to}.xlsx`, 'History');
   }
 
   const totalQuantity = inventoryMeta.summary.totalQuantity;
@@ -1463,6 +1578,13 @@ export default function Home() {
   }, [activePanel]);
 
   useEffect(() => {
+    setHistoryPage((prev) => ({ ...prev, page: 1 }));
+    if (activePanel === 'history') {
+      reloadHistory({ page: 1 });
+    }
+  }, [historyFilters.from, historyFilters.to]);
+
+  useEffect(() => {
     if (!focusedStockKey) {
       setEditDraft(null);
       return;
@@ -1476,6 +1598,7 @@ export default function Home() {
         category: match.category,
         album_version: match.album_version,
         option: match.option,
+        barcode: match.barcode ?? '',
         location: defaultLocation.location,
         quantity: defaultLocation.quantity,
       });
@@ -2167,6 +2290,7 @@ export default function Home() {
                       <th>카테고리</th>
                       <th>앨범/버전</th>
                       <th>옵션</th>
+                      <th>바코드</th>
                       <th>로케이션</th>
                       <th className="align-right">현재고</th>
                       <th>관리</th>
@@ -2184,6 +2308,7 @@ export default function Home() {
                           <td>{row.category}</td>
                           <td>{row.album_version}</td>
                           <td>{row.option}</td>
+                          <td title={row.barcode ?? ''}>{row.barcode || '-'}</td>
                           <td>
                             <div className="pill-row wrap">
                               {row.locations.map((loc) => (
@@ -2203,6 +2328,7 @@ export default function Home() {
                                     category: row.category,
                                     album_version: row.album_version,
                                     option: row.option,
+                                    barcode: row.barcode ?? '',
                                     location: loc.location,
                                     quantity: loc.quantity,
                                   });
@@ -2237,6 +2363,7 @@ export default function Home() {
                                         category: row.category,
                                         album_version: row.album_version,
                                         option: row.option,
+                                        barcode: row.barcode ?? '',
                                         location: loc.location,
                                         quantity: loc.quantity,
                                       });
@@ -2267,7 +2394,7 @@ export default function Home() {
                         {editPanelEnabled && !selectionDisabled && sessionRole !== 'viewer' && editDraft &&
                           focusedStockKey === row.key && (
                           <tr className="inline-editor-row">
-                            <td colSpan={7}>
+                            <td colSpan={8}>
                               <div className="inline-editor">
                                 <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
                                   <h3>선택 재고 편집</h3>
@@ -2306,6 +2433,14 @@ export default function Home() {
                                     />
                                   </label>
                                   <label>
+                                    <span>바코드</span>
+                                    <input
+                                      value={editDraft.barcode ?? ''}
+                                      onChange={(e) => setEditDraft({ ...editDraft, barcode: e.target.value })}
+                                      placeholder="바코드 (선택)"
+                                    />
+                                  </label>
+                                  <label>
                                     <span>로케이션</span>
                                     <input
                                       value={editDraft.location}
@@ -2321,6 +2456,12 @@ export default function Home() {
                                     />
                                   </label>
                                 </div>
+                                {editDraft.barcode && (
+                                  <div className="barcode-panel">
+                                    <span className="muted small-text">바코드 미리보기</span>
+                                    <BarcodePreview value={editDraft.barcode} />
+                                  </div>
+                                )}
                                 <div className="actions-row">
                                   <button onClick={saveInventoryEdit}>수정 저장</button>
                                   {sessionRole === 'admin' && (
@@ -2430,7 +2571,7 @@ export default function Home() {
         <p className="muted" style={{ margin: '0 0 0.5rem' }}>
           기본적으로 최근 15일 데이터를 한국시간 기준으로 보여주며, 달력으로 기간을 직접 선택하고 유형으로 필터링할 수 있습니다.
         </p>
-        <div className="table-wrapper">
+        <div className="table-wrapper history-table-wrapper">
           <table className="table">
             <thead>
               <tr>
@@ -2474,6 +2615,40 @@ export default function Home() {
               })}
             </tbody>
           </table>
+        </div>
+        <div className="pagination-row">
+          <span className="muted">
+            총 {historyPage.totalRows.toLocaleString()}건 · {historyCurrentPage}/{historyTotalPages} 페이지
+          </span>
+          <div className="section-actions">
+            <select
+              className="compact"
+              value={historyPage.pageSize}
+              onChange={(e) => changeHistoryPageSize(Number(e.target.value))}
+            >
+              {[50, 100, 200].map((size) => (
+                <option key={size} value={size}>
+                  {size}개
+                </option>
+              ))}
+            </select>
+            <button
+              className="ghost"
+              type="button"
+              disabled={!historyCanPrev}
+              onClick={() => changeHistoryPage(historyCurrentPage - 1)}
+            >
+              이전
+            </button>
+            <button
+              className="ghost"
+              type="button"
+              disabled={!historyCanNext}
+              onClick={() => changeHistoryPage(historyCurrentPage + 1)}
+            >
+              다음
+            </button>
+          </div>
         </div>
       </Section>
       </div>
@@ -2760,6 +2935,11 @@ export default function Home() {
         overflow-x: auto;
       }
 
+      .history-table-wrapper {
+        max-height: 70vh;
+        overflow: auto;
+      }
+
       .modal-card.wide-modal {
         max-width: 95vw;
         width: 1280px;
@@ -2813,6 +2993,19 @@ export default function Home() {
         display: flex;
         flex-direction: column;
         gap: 0.35rem;
+      }
+
+      .barcode-panel {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 0.5rem;
+      }
+
+      .barcode-preview {
+        display: block;
+        height: 36px;
+        width: 180px;
       }
 
       .location-chip-row {
