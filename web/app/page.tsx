@@ -1,11 +1,15 @@
 'use client';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { utils, writeFile } from 'xlsx';
 import { getSupabaseClient } from '../lib/supabaseClient';
 
 type InventoryLocation = {
   id: string;
   location: string;
   quantity: number;
+  editableId?: string | null;
+  item_id?: string | null;
+  inventory_id?: string | null;
 };
 
 type InventoryRow = {
@@ -16,13 +20,42 @@ type InventoryRow = {
   option: string;
   total_quantity: number;
   locations: InventoryLocation[];
+  inventory_id?: string | null;
+  item_id?: string | null;
+  barcode?: string | null;
+};
+
+type InventoryApiRow = {
+  inventory_id?: string;
+  item_id?: string;
+  barcode?: string | null;
+  artist: string;
+  category: string;
+  album_version: string;
+  option: string;
+  location: string;
+  quantity: number;
+};
+
+type InventorySummary = {
+  totalQuantity: number;
+  uniqueItems: number;
+  byLocation: Record<string, number>;
+};
+
+type InventoryMeta = {
+  summary: InventorySummary;
+  anomalyCount: number;
+  artists: string[];
+  locations: string[];
+  categories: string[];
 };
 
 type InventoryEditDraft = InventoryLocation & Omit<InventoryRow, 'locations' | 'total_quantity' | 'key'>;
 
 type HistoryRow = {
   created_at: string;
-  direction: 'IN' | 'OUT' | 'ADJUST';
+  direction: 'IN' | 'OUT' | 'ADJUST' | 'TRANSFER';
   artist: string;
   category: string;
   album_version: string;
@@ -48,15 +81,8 @@ type AccountRow = {
   created_at: string;
   requested_at?: string;
   approved_at?: string | null;
-};
-
-type AdminLog = {
-  id: string;
-  action: string;
-  detail: string | null;
-  actor_email: string | null;
-  actor_id: string | null;
-  created_at: string;
+  primary_location?: string | null;
+  sub_locations?: string[];
 };
 
 type MovementPayload = {
@@ -68,9 +94,24 @@ type MovementPayload = {
   quantity: number;
   direction: 'IN' | 'OUT';
   memo: string;
+  barcode?: string;
+  item_id?: string | null;
 };
 
-type Role = 'admin' | 'operator' | 'viewer';
+type TransferPayload = {
+  artist: string;
+  category: 'album' | 'md';
+  album_version: string;
+  option: string;
+  from_location: string;
+  to_location: string;
+  quantity: number;
+  memo: string;
+  barcode?: string;
+  item_id?: string | null;
+};
+
+type Role = 'admin' | 'operator' | 'viewer' | 'l_operator';
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes of inactivity triggers logout
 const CORPORATE_DOMAIN = 'sound-wave.co.kr';
@@ -83,7 +124,26 @@ const EMPTY_MOVEMENT: MovementPayload = {
   location: '',
   quantity: 0,
   direction: 'IN',
-  memo: ''
+  memo: '',
+  barcode: ''
+};
+
+const EMPTY_TRANSFER: TransferPayload = {
+  artist: '',
+  category: 'album',
+  album_version: '',
+  option: '',
+  from_location: '',
+  to_location: '',
+  quantity: 0,
+  memo: '',
+  barcode: '',
+};
+
+type HistoryPage = {
+  page: number;
+  pageSize: number;
+  totalRows: number;
 };
 
 function deriveStockKey(target?: InventoryRow | InventoryEditDraft | null) {
@@ -107,25 +167,151 @@ function Pill({ children }: { children: React.ReactNode }) {
   return <span className="pill">{children}</span>;
 }
 
+const kstFormatter = new Intl.DateTimeFormat('ko-KR', {
+  timeZone: 'Asia/Seoul',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit'
+});
+
 function formatDate(value: string) {
-  return new Date(value).toLocaleString('ko-KR', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  });
+  return kstFormatter.format(new Date(value));
 }
 
-function aggregateLocations(rows: InventoryRow[]) {
-  const byLocation: Record<string, number> = {};
-  rows.forEach((row) => {
-    row.locations.forEach((loc) => {
-      byLocation[loc.location] = (byLocation[loc.location] ?? 0) + loc.quantity;
+function kstDate(offsetDays = 0) {
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+  now.setDate(now.getDate() + offsetDays);
+  return now;
+}
+
+function toKstDateInput(date: Date) {
+  const y = date.getFullYear();
+  const m = `${date.getMonth() + 1}`.padStart(2, '0');
+  const d = `${date.getDate()}`.padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+const parseKstDate = (value: string) => Date.parse(`${value}T00:00:00+09:00`);
+
+function findMatchingStock(
+  rows: InventoryRow[],
+  artist: string,
+  category: string,
+  albumVersion: string,
+  option: string
+): InventoryRow | undefined {
+  return rows.find(
+    (row) =>
+      row.artist === artist &&
+      row.category === category &&
+      row.album_version === albumVersion &&
+      row.option === option
+  );
+}
+
+function buildBarcodeBars(value: string) {
+  const chars = value.split('');
+  let x = 0;
+  const bars: Array<{ x: number; width: number; height: number }> = [];
+  chars.forEach((char, index) => {
+    const code = char.charCodeAt(0);
+    const width = 1 + (code % 3);
+    const height = 28 + (code % 4) * 4;
+    bars.push({ x, width, height });
+    x += width + (index % 2 === 0 ? 1 : 2);
+  });
+  return { bars, width: x };
+}
+
+function BarcodePreview({ value }: { value: string }) {
+  const safeValue = value.trim();
+  if (!safeValue) return null;
+  const { bars, width } = buildBarcodeBars(safeValue);
+  const height = Math.max(...bars.map((bar) => bar.height), 32);
+  return (
+    <svg
+      className="barcode-preview"
+      viewBox={`0 0 ${Math.max(width, 1)} ${height}`}
+      aria-label={`barcode-${safeValue}`}
+      role="img"
+    >
+      {bars.map((bar, index) => (
+        <rect key={`${safeValue}-${index}`} x={bar.x} y={0} width={bar.width} height={bar.height} fill="#111" />
+      ))}
+    </svg>
+  );
+}
+
+function normalizeStockToApiRows(rows: InventoryRow[]): InventoryApiRow[] {
+  return rows.flatMap((row, idx) =>
+    row.locations.map((loc, locIdx) => ({
+      inventory_id: loc.editableId ?? loc.inventory_id ?? loc.id ?? `${row.key}|${loc.location}|${idx}|${locIdx}`,
+      item_id: loc.item_id ?? row.item_id ?? undefined,
+      barcode: row.barcode ?? undefined,
+      artist: row.artist,
+      category: row.category,
+      album_version: row.album_version,
+      option: row.option,
+      location: loc.location,
+      quantity: Number(loc.quantity ?? 0),
+    }))
+  );
+}
+
+function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
+  const grouped = new Map<string, InventoryRow>();
+
+  rows.forEach((row, idx) => {
+    const artist = row.artist ?? '';
+    const category = row.category ?? '';
+    const album_version = row.album_version ?? '';
+    const option = row.option ?? '';
+    const key = `${artist}|${category}|${album_version}|${option}`;
+    const qty = Number(row.quantity ?? 0);
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        key,
+        artist,
+        category,
+        album_version,
+        option,
+        total_quantity: 0,
+        locations: [],
+        inventory_id: row.inventory_id ?? null,
+        item_id: row.item_id ?? null,
+        barcode: row.barcode ?? null,
+      });
+    }
+
+    const entry = grouped.get(key)!;
+    entry.total_quantity += qty;
+    if (!entry.item_id && row.item_id) {
+      entry.item_id = row.item_id;
+    }
+    if (!entry.inventory_id && row.inventory_id) {
+      entry.inventory_id = row.inventory_id;
+    }
+    if (!entry.barcode && row.barcode) {
+      entry.barcode = row.barcode;
+    }
+    entry.locations.push({
+      id: row.inventory_id || `${key}|${row.location}|${idx}`,
+      editableId: row.inventory_id ?? null,
+      inventory_id: row.inventory_id ?? null,
+      item_id: row.item_id ?? null,
+      location: row.location,
+      quantity: qty,
     });
   });
-  return Object.entries(byLocation).sort((a, b) => b[1] - a[1]);
+
+  return Array.from(grouped.values()).map((row) => ({
+    ...row,
+    locations: row.locations.sort((a, b) => a.location.localeCompare(b.location)),
+  }));
 }
 
 export default function Home() {
@@ -149,71 +335,77 @@ export default function Home() {
   const [editPanelEnabled, setEditPanelEnabled] = useState(false);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [movement, setMovement] = useState<MovementPayload>(EMPTY_MOVEMENT);
+  const [transferPayload, setTransferPayload] = useState<TransferPayload>(EMPTY_TRANSFER);
+  const [movementMode, setMovementMode] = useState<'movement' | 'transfer'>('movement');
   const [selectedStockKeys, setSelectedStockKeys] = useState<string[]>([]);
   const [focusedStockKey, setFocusedStockKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<InventoryEditDraft | null>(null);
   const [activePanel, setActivePanel] = useState<'stock' | 'history' | 'admin'>('stock');
-  const [stockFilters, setStockFilters] = useState({ search: '', category: '', location: '', artist: '' });
+  const [stockFilters, setStockFilters] = useState({
+    q: '',
+    albumVersion: '',
+    barcode: '',
+    artist: '',
+    location: '',
+    category: '',
+  });
+  const [searchTerm, setSearchTerm] = useState('');
+  const [albumVersionTerm, setAlbumVersionTerm] = useState('');
+  const [barcodeTerm, setBarcodeTerm] = useState('');
+  const [inventoryMeta, setInventoryMeta] = useState<InventoryMeta>({
+    summary: { totalQuantity: 0, uniqueItems: 0, byLocation: {} },
+    anomalyCount: 0,
+    artists: [],
+    locations: [],
+    categories: [],
+  });
+  const [inventoryPage, setInventoryPage] = useState({ limit: 50, offset: 0, totalRows: 0 });
   const [locationPresets, setLocationPresets] = useState<string[]>([]);
   const [registerForm, setRegisterForm] = useState({
     username: '',
     password: '',
     confirm: '',
-    otp: '',
     name: '',
     department: '',
     contact: '',
     purpose: '',
   });
-  const today = useMemo(() => new Date(), []);
-  const sevenDaysAgo = useMemo(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 7);
-    return d;
-  }, []);
+  const defaultHistoryTo = useMemo(() => toKstDateInput(kstDate(0)), []);
+  const defaultHistoryFrom = useMemo(() => toKstDateInput(kstDate(-15)), []);
   const [historyFilters, setHistoryFilters] = useState({
     search: '',
     direction: '',
     category: '',
-    from: sevenDaysAgo.toISOString().slice(0, 10),
-    to: today.toISOString().slice(0, 10)
+    from: defaultHistoryFrom,
+    to: defaultHistoryTo
   });
-  const [newUser, setNewUser] = useState<{ username: string; password: string; role: Role; full_name: string; department: string; contact: string; purpose: string }>(
-    {
-      username: '',
-      password: '',
-      role: 'operator',
-      full_name: '',
-      department: '',
-      contact: '',
-      purpose: ''
-    }
-  );
+  const [historyPage, setHistoryPage] = useState<HistoryPage>({ page: 1, pageSize: 50, totalRows: 0 });
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [accountsStatus, setAccountsStatus] = useState('');
+  const [locationScopes, setLocationScopes] = useState<Record<string, { primary: string; subs: string }>>({});
+  const [locationScopeAvailable, setLocationScopeAvailable] = useState(true);
   const [registerStatus, setRegisterStatus] = useState('');
-  const [registerOtpStatus, setRegisterOtpStatus] = useState('');
-  const [otpEnabled, setOtpEnabled] = useState(false);
-  const [otpExpiry, setOtpExpiry] = useState<number | null>(null);
   const [adminStatus, setAdminStatus] = useState('');
   const [sessionRole, setSessionRole] = useState<Role | null>(null);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+  const [sessionScope, setSessionScope] = useState<{ primary_location?: string | null; sub_locations?: string[] } | null>(
+    null
+  );
   const [showAdmin, setShowAdmin] = useState(false);
   const [idleDeadline, setIdleDeadline] = useState<number | null>(null);
   const [pendingBlock, setPendingBlock] = useState<string | null>(null);
   const [importStatus, setImportStatus] = useState('');
-  const [logStatus, setLogStatus] = useState('');
-  const [adminLogs, setAdminLogs] = useState<AdminLog[]>([]);
   const [newLocation, setNewLocation] = useState('');
-  const [createUserStatus, setCreateUserStatus] = useState('');
   const [inventoryActionStatus, setInventoryActionStatus] = useState('');
   const logoutTimeout = useRef<NodeJS.Timeout | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const stockRef = useRef<HTMLDivElement | null>(null);
   const historyRef = useRef<HTMLDivElement | null>(null);
   const adminRef = useRef<HTMLDivElement | null>(null);
+  const barcodeBufferRef = useRef('');
+  const barcodeTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const notifyMissingSupabase = () => {
     const message = 'Supabase 환경 변수가 설정되지 않았습니다.';
@@ -258,6 +450,7 @@ export default function Home() {
       setSessionRole(null);
       setSessionEmail(null);
       setSessionUserId(null);
+      setSessionScope(null);
       setShowAdmin(false);
       setIdleDeadline(null);
       return null;
@@ -270,6 +463,7 @@ export default function Home() {
     setSessionRole(data.role ?? null);
     setSessionEmail(data.email ?? null);
     setSessionUserId(data.userId ?? null);
+    setSessionScope(data.locationScope ?? null);
     markActivity();
     await fetchLocations();
     return data;
@@ -289,17 +483,6 @@ export default function Home() {
       }
     } catch (err) {
       setAdminStatus('로케이션 불러오기 실패');
-    }
-  }
-
-  async function loadAdminLogs() {
-    setLogStatus('로그 불러오는 중...');
-    const res = await fetch('/api/admin/logs');
-    if (res.ok) {
-      setAdminLogs(await res.json());
-      setLogStatus('');
-    } else {
-      setLogStatus('로그 불러오기 실패');
     }
   }
 
@@ -324,7 +507,6 @@ export default function Home() {
       setImportStatus(`업로드 완료: 재고 ${data.stockCount}건, 이력 ${data.historyCount}건`);
       await refresh();
       await fetchLocations();
-      await loadAdminLogs();
     } else {
       const text = await res.text();
       setImportStatus(`실패: ${text || res.status}`);
@@ -405,9 +587,6 @@ export default function Home() {
         setLoginPassword('');
         markActivity();
         const sessionInfo = await fetchSessionInfo();
-        if (sessionInfo?.role === 'admin') {
-          await loadAdminLogs();
-        }
         await refresh();
       } else {
         const text = await res.text();
@@ -429,7 +608,6 @@ export default function Home() {
     setShowAdmin(false);
     setStock([]);
     setHistory([]);
-    setAdminLogs([]);
     setLocationPresets([]);
     setSelectedStockKeys([]);
     setFocusedStockKey(null);
@@ -461,32 +639,172 @@ export default function Home() {
     alert('30분 이상 사용 기록이 없어 자동 로그아웃되었습니다. 다시 로그인하세요.');
   }
 
-  async function reloadInventory() {
-    const stockRes = await fetch('/api/inventory');
-    if (stockRes.ok) {
-      setStock(await stockRes.json());
-    } else {
-      setStatus('재고 불러오기 실패');
+  async function fetchInventoryMeta(filters: typeof stockFilters, options?: { prefix?: string }) {
+    const params = new URLSearchParams();
+    if (filters.artist) params.set('artist', filters.artist);
+    if (filters.location) params.set('location', filters.location);
+    if (filters.category) params.set('category', filters.category);
+    if (filters.q) params.set('q', filters.q);
+    if (filters.albumVersion) params.set('album_version', filters.albumVersion);
+    if (filters.barcode) params.set('barcode', filters.barcode);
+    if (options?.prefix !== undefined) params.set('prefix', options.prefix ?? '');
+
+    const metaRes = await fetch(`/api/inventory/meta?${params.toString()}`, { cache: 'no-store' });
+    if (metaRes.ok) {
+      const payload = await metaRes.json();
+      if (payload?.ok) {
+        setInventoryMeta({
+          summary: payload.summary ?? { totalQuantity: 0, uniqueItems: 0, byLocation: {} },
+          anomalyCount: Number(payload.anomalyCount ?? 0),
+          artists: payload.artists ?? [],
+          locations: payload.locations ?? [],
+          categories: payload.categories ?? [],
+        });
+        return;
+      }
     }
+    setStatus('재고 메타데이터 불러오기 실패');
   }
 
-  async function reloadHistory() {
-    const histRes = await fetch('/api/history');
+  function buildInventoryParams(filters: typeof stockFilters, limit?: number, offset?: number) {
+    const params = new URLSearchParams();
+    if (filters.artist) params.set('artist', filters.artist);
+    if (filters.location) params.set('location', filters.location);
+    if (filters.category) params.set('category', filters.category);
+    if (filters.q) params.set('q', filters.q);
+    if (filters.albumVersion) params.set('album_version', filters.albumVersion);
+    if (filters.barcode) params.set('barcode', filters.barcode);
+    if (typeof limit === 'number') params.set('limit', String(limit));
+    if (typeof offset === 'number') params.set('offset', String(Math.max(0, offset)));
+    return params;
+  }
+
+  async function reloadInventory(options?: {
+    offset?: number;
+    limit?: number;
+    filters?: typeof stockFilters;
+    fetchMeta?: boolean;
+    prefix?: string;
+  }) {
+    const nextFilters = options?.filters ?? stockFilters;
+    const nextOffset = options?.offset ?? inventoryPage.offset;
+    const nextLimit = options?.limit ?? inventoryPage.limit;
+
+    const params = buildInventoryParams(nextFilters, nextLimit, nextOffset);
+
+    const stockRes = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
+    if (stockRes.ok) {
+      const payload = await stockRes.json();
+      if (payload?.ok) {
+        if (options?.filters) {
+          setStockFilters(options.filters);
+        }
+        setInventoryPage({
+          limit: payload.page?.limit ?? nextLimit,
+          offset: payload.page?.offset ?? nextOffset,
+          totalRows: payload.page?.totalRows ?? 0,
+        });
+        setStock(groupInventoryRows(payload.rows || []));
+
+        if (options?.fetchMeta !== false) {
+          await fetchInventoryMeta(nextFilters, { prefix: options?.prefix ?? nextFilters.q });
+        }
+        return;
+      }
+    }
+    setStatus('재고 불러오기 실패');
+  }
+
+  function applyInventoryFilters(next: typeof stockFilters) {
+    const nextOffset = 0;
+    setInventoryPage((prev) => ({ ...prev, offset: nextOffset }));
+    setStockFilters(next);
+    reloadInventory({ filters: next, offset: nextOffset, prefix: next.q, fetchMeta: true });
+  }
+
+  function handleInventorySearchSubmit(e?: React.FormEvent) {
+    if (e) e.preventDefault();
+    const next = {
+      ...stockFilters,
+      q: searchTerm.trim(),
+      albumVersion: albumVersionTerm.trim(),
+      barcode: barcodeTerm.trim(),
+    };
+    applyInventoryFilters(next);
+  }
+
+  function applyBarcodeScan(value: string) {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    setBarcodeTerm(trimmed);
+    setSearchTerm('');
+    setAlbumVersionTerm('');
+    const next = { ...stockFilters, q: '', albumVersion: '', barcode: trimmed };
+    applyInventoryFilters(next);
+  }
+
+  function resetInventorySearch() {
+    setSearchTerm('');
+    setAlbumVersionTerm('');
+    setBarcodeTerm('');
+    const cleared = { ...stockFilters, q: '', albumVersion: '', barcode: '', artist: '', location: '', category: '' };
+    applyInventoryFilters(cleared);
+  }
+
+  function changeInventoryPage(nextOffset: number) {
+    const clamped = Math.max(0, nextOffset);
+    setInventoryPage((prev) => ({ ...prev, offset: clamped }));
+    reloadInventory({ offset: clamped, fetchMeta: true });
+  }
+
+  async function reloadHistory(options?: { page?: number; pageSize?: number }) {
+    const params = new URLSearchParams();
+    if (historyFilters.from) params.set('startDate', historyFilters.from);
+    if (historyFilters.to) params.set('endDate', historyFilters.to);
+    const nextPage = options?.page ?? historyPage.page;
+    const nextPageSize = options?.pageSize ?? historyPage.pageSize;
+    params.set('page', String(Math.max(1, nextPage)));
+    params.set('pageSize', String(nextPageSize));
+
+    const qs = params.toString();
+    const histRes = await fetch(qs ? `/api/history?${qs}` : '/api/history', { cache: 'no-store' });
     if (histRes.ok) {
       const payload = await histRes.json();
-      const rows = Array.isArray(payload)
-        ? payload.map((row: any) => ({
-            ...row,
-            option: row.option ?? '',
-            created_by_name: row.created_by_name ?? '',
-          }))
+      const list = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.rows)
+        ? payload.rows
         : [];
+      const rows = list.map((row: any) => ({
+        ...row,
+        option: row.option ?? '',
+        created_by_name: row.created_by_name ?? '',
+        created_by_department: row.created_by_department ?? '',
+      }));
       setHistory(rows);
+      setHistoryPage({
+        page: payload?.page?.page ?? nextPage,
+        pageSize: payload?.page?.pageSize ?? nextPageSize,
+        totalRows: payload?.page?.totalRows ?? rows.length,
+      });
     } else {
       const payload = await histRes.json().catch(() => null);
       const message = payload?.error || payload?.message || '입출고 이력 불러오기 실패';
       setStatus(message);
+      alert(message);
     }
+  }
+
+  function changeHistoryPage(nextPage: number) {
+    const clamped = Math.max(1, nextPage);
+    setHistoryPage((prev) => ({ ...prev, page: clamped }));
+    reloadHistory({ page: clamped });
+  }
+
+  function changeHistoryPageSize(nextSize: number) {
+    const size = Math.max(1, Math.min(nextSize, 200));
+    setHistoryPage((prev) => ({ ...prev, page: 1, pageSize: size }));
+    reloadHistory({ page: 1, pageSize: size });
   }
 
   async function refresh() {
@@ -505,7 +823,7 @@ export default function Home() {
     }
   }
 
-  async function submitMovement(direction: 'IN' | 'OUT') {
+  async function submitMovement(direction: MovementPayload['direction']) {
     const artistValue = movement.artist.trim();
     const albumVersion = movement.album_version.trim();
     const locationValue = movement.location.trim();
@@ -513,9 +831,10 @@ export default function Home() {
     const memoValue = movement.memo.trim();
     const optionValue = movement.option;
     const categoryValue = movement.category;
+    const barcodeValue = movement.barcode?.trim() || '';
 
     if (!artistValue || !albumVersion || !locationValue || !quantityValue) {
-      alert('아티스트, 앨범/버전, 로케이션, 수량(1 이상)을 모두 입력해야 합니다.');
+      alert('아티스트, 앨범/버전, 로케이션 정보를 모두 입력해야 합니다.');
       return;
     }
 
@@ -526,6 +845,14 @@ export default function Home() {
 
     if (direction === 'OUT' && !memoValue) {
       alert('출고 시 메모를 입력해야 합니다.');
+      return;
+    }
+
+    const matchingStock = findMatchingStock(stock, artistValue, categoryValue, albumVersion, optionValue);
+    const effectiveBarcode = barcodeValue || matchingStock?.barcode || '';
+
+    if (categoryValue === 'md' && !effectiveBarcode && !matchingStock) {
+      alert('MD 카테고리 신규 등록에는 바코드가 필요합니다.');
       return;
     }
 
@@ -548,27 +875,26 @@ export default function Home() {
           quantity: Number(quantityValue),
           direction,
           memo: memoValue ?? '',
+          barcode: effectiveBarcode || undefined,
           idempotency_key,
         })
       });
 
       const payload = await res.json().catch(() => null);
-      const idempotent = payload?.idempotent === true;
-      const hasFlags = payload ? 'movement_inserted' in payload || 'inventory_updated' in payload : false;
-      const movementInserted = payload?.movement_inserted === true;
-      const inventoryUpdated = payload?.inventory_updated === true;
-      const legacyOk = payload?.ok === true && !hasFlags;
+      const ok = payload?.ok === true;
+      const duplicated = payload?.duplicated === true;
 
-      if (!res.ok || (!idempotent && !legacyOk && !(movementInserted && inventoryUpdated))) {
+      if (!res.ok || !ok) {
         const message = payload?.error || payload?.message || `입출고 실패 (${res.status})`;
-        console.error('movement submit error:', { message, payload });
-        alert(message);
-        setStatus(message);
+        const stepMessage = payload?.step ? `${message} [${payload.step}]` : message;
+        console.error('movement submit error:', { message: stepMessage, payload });
+        alert(stepMessage);
+        setStatus(stepMessage);
         return;
       }
 
       await Promise.all([reloadInventory(), reloadHistory()]);
-      setStatus('기록 완료');
+      setStatus(duplicated ? '중복 요청으로 기존 결과 유지' : '기록 완료');
       setMovement((prev) => ({ ...EMPTY_MOVEMENT, direction: prev.direction }));
     } catch (err: any) {
       const message = err?.message || '요청 중 오류가 발생했습니다.';
@@ -579,32 +905,96 @@ export default function Home() {
     }
   }
 
-  async function createUser() {
-    setCreateUserStatus('계정 생성 중...');
-    if (!newUser.username || !newUser.full_name || !newUser.department) {
-      setCreateUserStatus('ID, 성함, 부서를 모두 입력하세요.');
+  async function submitTransfer() {
+    const artistValue = transferPayload.artist.trim();
+    const albumVersion = transferPayload.album_version.trim();
+    const fromLocation =
+      sessionRole === 'l_operator' && sessionScope?.primary_location
+        ? sessionScope.primary_location.trim()
+        : transferPayload.from_location.trim();
+    const toLocation = transferPayload.to_location.trim();
+    const quantityValue = Number(transferPayload.quantity);
+    if (!artistValue || !albumVersion || !fromLocation || !toLocation || !quantityValue) {
+      alert('전산이관은 품목, 보낸/받는 로케이션, 수량을 모두 입력해야 합니다.');
       return;
     }
-    const res = await fetch('/api/admin/create-user', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: newUser.username,
-        password: newUser.password,
-        role: newUser.role,
-        full_name: newUser.full_name,
-        department: newUser.department,
-        contact: newUser.contact,
-        purpose: newUser.purpose,
-      })
-    });
-    if (res.ok) {
-      setCreateUserStatus('새 계정 생성 완료');
-      setNewUser({ username: '', password: '', role: 'operator', full_name: '', department: '', contact: '', purpose: '' });
-    } else {
-      const text = await res.text();
-      setCreateUserStatus(`생성 실패: ${text || res.status}`);
+
+    if (sessionRole === 'l_operator') {
+      const primary = sessionScope?.primary_location?.trim();
+      const subs = (sessionScope?.sub_locations ?? []).map((v) => v.trim()).filter(Boolean);
+      if (!primary) {
+        alert('담당 로케이션이 지정되지 않아 전산이관을 진행할 수 없습니다.');
+        return;
+      }
+      if (fromLocation !== primary) {
+        alert('담당 로케이션에서만 전산이관을 시작할 수 있습니다.');
+        return;
+      }
+      if (subs.length === 0 || !subs.includes(toLocation)) {
+        alert('받는 곳은 서브 로케이션 중에서만 선택할 수 있습니다.');
+        return;
+      }
     }
+
+    if (!Number.isFinite(quantityValue) || quantityValue <= 0) {
+      alert('수량은 1 이상의 양수만 입력 가능합니다.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus('전산이관 처리 중...');
+    markActivity();
+
+    try {
+      const idempotencyKey = `transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const res = await fetch('/api/transfer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          artist: artistValue,
+          category: transferPayload.category,
+          album_version: albumVersion,
+          option: transferPayload.option ?? '',
+          fromLocation,
+          toLocation,
+          quantity: Number(quantityValue),
+          memo: transferPayload.memo ?? '',
+          barcode: transferPayload.barcode ?? '',
+          idempotencyKey,
+        })
+      });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok || payload?.ok !== true) {
+        const message = payload?.error || payload?.message || `전산이관 실패 (${res.status})`;
+        const stepMessage = payload?.step ? `${message} [${payload.step}]` : message;
+        console.error('transfer submit error:', { message: stepMessage, payload });
+        alert(stepMessage);
+        setStatus(stepMessage);
+        return;
+      }
+      await Promise.all([reloadInventory(), reloadHistory()]);
+      setStatus('전산이관 완료');
+      const baseTransfer = {
+        ...EMPTY_TRANSFER,
+        from_location:
+          sessionRole === 'l_operator' && sessionScope?.primary_location ? sessionScope.primary_location : '',
+      };
+      setTransferPayload(baseTransfer);
+    } catch (err: any) {
+      const message = err?.message || '전산이관 처리 중 오류가 발생했습니다.';
+      setStatus(`전산이관 실패: ${message}`);
+      alert(message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  function resetTransferForm() {
+    setTransferPayload({
+      ...EMPTY_TRANSFER,
+      from_location:
+        sessionRole === 'l_operator' && sessionScope?.primary_location ? sessionScope.primary_location : '',
+    });
   }
 
   async function registerAccount() {
@@ -623,47 +1013,6 @@ export default function Home() {
         setRegisterStatus('ID, 비밀번호, 성함, 부서, 연락처, 사용 목적을 모두 입력하세요.');
         return;
       }
-
-      if (!otpEnabled) {
-        setRegisterStatus('OTP 발송 중...');
-        const res = await fetch('/api/auth/request-otp', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: normalized })
-        });
-
-        const payload = await res.json().catch(() => null);
-
-        if (!res.ok) {
-          const message = payload?.error || payload?.message || `OTP 요청 실패 (${res.status})`;
-          throw new Error(message);
-        }
-        setRegisterOtpStatus(payload.message || 'OTP 전송 완료. 메일함을 확인하세요.');
-        if (payload.otp) {
-          setRegisterForm((prev) => ({ ...prev, otp: payload.otp }));
-        }
-        const expiry = Date.now() + 180_000;
-        setOtpEnabled(true);
-        setOtpExpiry(expiry);
-        setRegisterStatus('이메일로 받은 OTP 코드를 입력하세요. (3분 이내)');
-        return;
-      }
-
-      if (!registerForm.otp.trim()) {
-        setRegisterStatus('이메일로 받은 OTP 코드를 입력하세요.');
-        return;
-      }
-
-      const supabase = requireSupabase();
-      if (!supabase) {
-        return;
-      }
-      const email = deriveEmail(normalized);
-      const { data, error } = await supabase.auth.verifyOtp({ email, token: registerForm.otp.trim(), type: 'signup' });
-      if (error || !data?.session?.access_token) {
-        throw new Error(error?.message || 'OTP 인증에 실패했습니다.');
-      }
-
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -674,17 +1023,12 @@ export default function Home() {
           department: registerForm.department,
           contact: registerForm.contact,
           purpose: registerForm.purpose,
-          access_token: data.session.access_token,
         })
       });
 
       if (res.ok) {
         setRegisterStatus('계정 생성 완료! 관리자 승인 후 사용 가능합니다.');
-        setRegisterForm({ username: '', password: '', confirm: '', otp: '', name: '', department: '', contact: '', purpose: '' });
-        setOtpEnabled(false);
-        setOtpExpiry(null);
-        setRegisterOtpStatus('');
-        await supabase.auth.signOut();
+        setRegisterForm({ username: '', password: '', confirm: '', name: '', department: '', contact: '', purpose: '' });
       } else {
         const text = await res.text();
         setRegisterStatus(`생성 실패: ${text || res.status}`);
@@ -694,13 +1038,21 @@ export default function Home() {
     }
   }
 
-  async function loadAccounts
-() {
+  async function loadAccounts() {
     setAccountsStatus('목록 불러오는 중...');
     const res = await fetch('/api/admin/users');
+    setLocationScopeAvailable(res.headers.get('x-location-scope') !== 'disabled');
     if (res.ok) {
       const data = await res.json();
       setAccounts(data || []);
+      const scopeMap: Record<string, { primary: string; subs: string }> = {};
+      (data || []).forEach((row: AccountRow) => {
+        scopeMap[row.id] = {
+          primary: row.primary_location || '',
+          subs: (row.sub_locations || []).join(', '),
+        };
+      });
+      setLocationScopes(scopeMap);
       setAccountsStatus('불러오기 완료');
       markActivity();
     } else {
@@ -711,6 +1063,8 @@ export default function Home() {
 
   async function updateAccountApproval(id: string, approved: boolean) {
     setAccountsStatus('승인 상태 저장 중...');
+    const previous = accounts.map((acc) => ({ ...acc }));
+    setAccounts((prev) => prev.map((acc) => (acc.id === id ? { ...acc, approved } : acc)));
     const res = await fetch('/api/admin/users', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -718,8 +1072,45 @@ export default function Home() {
     });
 
     if (res.ok) {
-      await loadAccounts();
+      const payload = await res.json().catch(() => null);
+      const updated: AccountRow | undefined = payload?.user;
+      if (updated) {
+        setAccounts((prev) => prev.map((acc) => (acc.id === updated.id ? { ...acc, ...updated } : acc)));
+      }
       setAccountsStatus('저장 완료');
+    } else {
+      const text = await res.text();
+      setAccounts(previous);
+      setAccountsStatus(`저장 실패: ${text || res.status}`);
+      alert(text || '승인 변경 실패');
+    }
+  }
+
+  async function saveAccountScope(id: string) {
+    if (!locationScopeAvailable) {
+      setAccountsStatus('로케이션 범위 저장은 현재 비활성화되어 있습니다.');
+      return;
+    }
+    const scope = locationScopes[id] || { primary: '', subs: '' };
+    const payload = {
+      id,
+      primary_location: scope.primary.trim(),
+      sub_locations: scope.subs
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    };
+
+    setAccountsStatus('로케이션 범위 저장 중...');
+    const res = await fetch('/api/admin/users', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (res.ok) {
+      setAccountsStatus('저장 완료');
+      await loadAccounts();
     } else {
       const text = await res.text();
       setAccountsStatus(`저장 실패: ${text || res.status}`);
@@ -771,18 +1162,6 @@ export default function Home() {
     const hasMultipleLocations = row.locations.length > 1;
     const defaultLocation = hasMultipleLocations ? '' : row.locations[0]?.location ?? '';
 
-    if (row.locations[0]) {
-      setEditDraft({
-        id: row.locations[0].id,
-        artist: row.artist,
-        category: row.category,
-        album_version: row.album_version,
-        option: row.option,
-        location: row.locations[0].location,
-        quantity: row.locations[0].quantity,
-      });
-    }
-
     setMovement((prev) => ({
       ...prev,
       artist: row.artist,
@@ -791,6 +1170,21 @@ export default function Home() {
       option: row.option,
       location: defaultLocation,
       quantity: 0,
+    }));
+
+    setTransferPayload((prev) => ({
+      ...prev,
+      artist: row.artist,
+      category: row.category as TransferPayload['category'],
+      album_version: row.album_version,
+      option: row.option,
+      from_location:
+        sessionRole === 'l_operator' && sessionScope?.primary_location
+          ? sessionScope.primary_location
+          : row.locations[0]?.location ?? prev.from_location,
+      to_location: prev.to_location,
+      quantity: Number.isFinite(prev.quantity) ? prev.quantity : 0,
+      item_id: row.item_id ?? prev.item_id ?? null,
     }));
 
     setStatus(
@@ -802,11 +1196,12 @@ export default function Home() {
     if (row.locations[0]) {
       setFocusedStockKey(row.key);
       setEditDraft({
-        id: row.locations[0].id,
+        id: row.locations[0].editableId ?? row.locations[0].id,
         artist: row.artist,
         category: row.category,
         album_version: row.album_version,
         option: row.option,
+        barcode: row.barcode ?? '',
         location: row.locations[0].location,
         quantity: row.locations[0].quantity,
       });
@@ -815,6 +1210,10 @@ export default function Home() {
 
   async function saveInventoryEdit() {
     if (!editDraft) return;
+    if (!editDraft.id) {
+      alert('이 재고 항목은 편집할 수 없습니다.');
+      return;
+    }
     setInventoryActionStatus('재고 수정 중...');
     const res = await fetch(`/api/inventory/${editDraft.id}`, {
       method: 'PATCH',
@@ -839,6 +1238,11 @@ export default function Home() {
     }
     const row = target && 'locations' in target ? { ...target, ...target.locations[0] } : target ?? editDraft;
     if (!row) return;
+    if (!row.id) {
+      alert('이 재고 항목은 삭제할 수 없습니다.');
+      setInventoryActionStatus('');
+      return;
+    }
     if (!confirm('선택한 재고를 삭제하시겠습니까?')) return;
     setInventoryActionStatus('삭제 중...');
     const res = await fetch(`/api/inventory/${row.id}`, { method: 'DELETE' });
@@ -857,44 +1261,44 @@ export default function Home() {
       }
     }
 
-  const anomalousStock = useMemo(
-    () => stock.filter((row) => row.locations.some((loc) => loc.quantity < 0)),
-    [stock]
-  );
+  const albumVersionFilter = stockFilters.albumVersion.trim().toLowerCase();
 
-  const anomalyCount = anomalousStock.length;
+  const baseStock = useMemo(() => {
+    if (!albumVersionFilter) return stock;
+    return stock.filter((row) => row.album_version.toLowerCase().includes(albumVersionFilter));
+  }, [albumVersionFilter, stock]);
+
+  const anomalousStock = useMemo(() => {
+    return baseStock.filter((row) => row.locations.some((loc) => Number(loc.quantity) < 0));
+  }, [baseStock]);
+
+  const anomalyCount = Math.max(anomalousStock.length, Number(inventoryMeta.anomalyCount ?? 0));
 
   const filteredStock = useMemo(() => {
-    const source = showAnomalies ? anomalousStock : stock;
-    return source.filter((row) => {
-      const locationText = row.locations.map((loc) => `${loc.location} ${loc.quantity}`).join(' ');
-      const matchesSearch = [row.artist, row.album_version, row.option, locationText]
-        .join(' ')
-        .toLowerCase()
-        .includes(stockFilters.search.toLowerCase());
-      const matchesCategory = !stockFilters.category || row.category === stockFilters.category;
-      const matchesLocation =
-        !stockFilters.location || row.locations.some((loc) => loc.location === stockFilters.location);
-      const matchesArtist = !stockFilters.artist || row.artist === stockFilters.artist;
-      return matchesSearch && matchesCategory && matchesLocation && matchesArtist;
-    });
-  }, [anomalousStock, showAnomalies, stock, stockFilters]);
-
-  const stockLocations = useMemo(
-    () => Array.from(new Set(stock.flatMap((row) => row.locations.map((loc) => loc.location)))).filter(Boolean).sort(),
-    [stock]
-  );
+    if (showAnomalies) {
+      return anomalousStock;
+    }
+    return baseStock;
+  }, [anomalousStock, baseStock, showAnomalies]);
 
   const locationOptions = useMemo(
-    () => Array.from(new Set([...locationPresets, ...stockLocations])).filter(Boolean).sort(),
-    [locationPresets, stockLocations]
+    () => Array.from(new Set([...locationPresets, ...inventoryMeta.locations])).filter(Boolean).sort(),
+    [inventoryMeta.locations, locationPresets]
   );
 
-  const filterLocationOptions = useMemo(() => stockLocations, [stockLocations]);
+  const filterLocationOptions = useMemo(
+    () => Array.from(new Set(inventoryMeta.locations)).filter(Boolean).sort(),
+    [inventoryMeta.locations]
+  );
 
   const artistOptions = useMemo(
-    () => Array.from(new Set(stock.map((row) => row.artist))).filter(Boolean).sort(),
-    [stock]
+    () => Array.from(new Set(inventoryMeta.artists)).filter(Boolean).sort(),
+    [inventoryMeta.artists]
+  );
+
+  const categoryOptions = useMemo(
+    () => Array.from(new Set(inventoryMeta.categories)).filter(Boolean).sort(),
+    [inventoryMeta.categories]
   );
 
   const historyCategoryOptions = useMemo(
@@ -903,8 +1307,8 @@ export default function Home() {
   );
 
   const filteredHistory = useMemo(() => {
-    const fromDate = historyFilters.from ? new Date(historyFilters.from) : null;
-    const toDate = historyFilters.to ? new Date(`${historyFilters.to}T23:59:59`) : null;
+    const fromDateMs = historyFilters.from ? parseKstDate(historyFilters.from) : null;
+    const toDateMs = historyFilters.to ? parseKstDate(historyFilters.to) + 24 * 60 * 60 * 1000 : null;
     return history.filter((row) => {
       const matchesDirection = !historyFilters.direction || row.direction === historyFilters.direction;
       const matchesCategory = !historyFilters.category || row.category === historyFilters.category;
@@ -921,22 +1325,161 @@ export default function Home() {
         .join(' ')
         .toLowerCase()
         .includes(historyFilters.search.toLowerCase());
-      const created = new Date(row.created_at);
-      const matchesFrom = !fromDate || created >= fromDate;
-      const matchesTo = !toDate || created <= toDate;
+      const createdKstMs = Date.parse(row.created_at) + 9 * 60 * 60 * 1000;
+      const matchesFrom = !fromDateMs || createdKstMs >= fromDateMs;
+      const matchesTo = !toDateMs || createdKstMs < toDateMs;
       return matchesDirection && matchesCategory && matchesSearch && matchesFrom && matchesTo;
     });
   }, [history, historyFilters]);
 
-  const totalQuantity = useMemo(
-    () => filteredStock.reduce((sum, row) => sum + row.total_quantity, 0),
-    [filteredStock]
-  );
-  const distinctItems = useMemo(
-    () => new Set(filteredStock.map((r) => `${r.artist}|${r.category}|${r.album_version}|${r.option}`)).size,
-    [filteredStock]
-  );
-  const locationBreakdown = useMemo(() => aggregateLocations(filteredStock), [filteredStock]);
+  const historyTotalPages = Math.max(1, Math.ceil((historyPage.totalRows || 0) / historyPage.pageSize));
+  const historyCurrentPage = Math.min(historyTotalPages, historyPage.page);
+  const historyCanPrev = historyCurrentPage > 1;
+  const historyCanNext = historyCurrentPage < historyTotalPages;
+
+  function exportToExcel(rows: any[], filename: string, sheetName: string) {
+    const workbook = utils.book_new();
+    const sheet = utils.json_to_sheet(rows.length ? rows : [{}]);
+    utils.book_append_sheet(workbook, sheet, sheetName);
+    writeFile(workbook, filename);
+  }
+
+  async function fetchAllInventoryForExport() {
+    const pageLimit = 200;
+    let offset = 0;
+    let total = Number.MAX_SAFE_INTEGER;
+    const rows: InventoryApiRow[] = [];
+    while (offset < total) {
+      const params = buildInventoryParams(stockFilters, pageLimit, offset);
+      const res = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
+      if (!res.ok) break;
+      const payload = await res.json();
+      if (!payload?.ok) break;
+      rows.push(...(payload.rows || []));
+      total = payload.page?.totalRows ?? rows.length;
+      offset += pageLimit;
+      if (!payload.rows || payload.rows.length < pageLimit) break;
+    }
+    return rows;
+  }
+
+  async function exportInventory() {
+    setInventoryActionStatus('엑셀 내보내는 중...');
+    const allRows = await fetchAllInventoryForExport();
+    const sourceRows: InventoryApiRow[] = allRows.length ? allRows : normalizeStockToApiRows(stock);
+    const grouped = groupInventoryRows(sourceRows);
+    const rows = grouped.map((row) => {
+      console.info('export_map_row', { step: 'export_map_row', key: row.key, barcode: row.barcode ?? '' });
+      return {
+        artist: row.artist,
+        category: row.category,
+        album_version: row.album_version,
+        option: row.option,
+        바코드: row.barcode ?? '',
+        locations: row.locations.map((loc) => `${loc.location}: ${loc.quantity}`).join(', '),
+        total_quantity: row.total_quantity,
+      };
+    });
+    exportToExcel(rows, 'inventory.xlsx', 'Inventory');
+    setInventoryActionStatus('');
+  }
+
+  async function fetchAllHistoryForExport() {
+    const pageSize = 200;
+    let page = 1;
+    let total = Number.MAX_SAFE_INTEGER;
+    const rows: HistoryRow[] = [];
+    while ((page - 1) * pageSize < total) {
+      const params = new URLSearchParams();
+      if (historyFilters.from) params.set('startDate', historyFilters.from);
+      if (historyFilters.to) params.set('endDate', historyFilters.to);
+      params.set('page', String(page));
+      params.set('pageSize', String(pageSize));
+      const res = await fetch(`/api/history?${params.toString()}`, { cache: 'no-store' });
+      if (!res.ok) {
+        console.error('history export fetch failed', { step: 'history_export_fetch', page, status: res.status });
+        break;
+      }
+      const payload = await res.json().catch(() => null);
+      if (!payload?.ok) {
+        console.error('history export fetch failed', { step: 'history_export_fetch', page, payload });
+        break;
+      }
+      const list = Array.isArray(payload?.rows) ? payload.rows : [];
+      rows.push(
+        ...list.map((row: any) => ({
+          ...row,
+          option: row.option ?? '',
+          created_by_name: row.created_by_name ?? '',
+          created_by_department: row.created_by_department ?? '',
+        }))
+      );
+      total = payload?.page?.totalRows ?? rows.length;
+      page += 1;
+      if (list.length < pageSize) break;
+    }
+    return rows;
+  }
+
+  async function exportHistory() {
+    const allRows = await fetchAllHistoryForExport();
+    const matchesSearch = (row: HistoryRow) =>
+      [
+        row.artist,
+        row.album_version,
+        row.option,
+        row.location,
+        row.created_by,
+        row.created_by_name ?? '',
+        row.created_by_department ?? '',
+        row.memo ?? ''
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(historyFilters.search.toLowerCase());
+    const filtered = allRows.filter((row) => {
+      const matchesDirection = !historyFilters.direction || row.direction === historyFilters.direction;
+      const matchesCategory = !historyFilters.category || row.category === historyFilters.category;
+      return matchesDirection && matchesCategory && matchesSearch(row);
+    });
+    const rows = filtered.map((h) => ({
+      created_at_kst: formatDate(h.created_at),
+      direction: h.direction,
+      artist: h.artist,
+      category: h.category,
+      album_version: h.album_version,
+      option: h.option ?? '',
+      location: h.location,
+      quantity: h.quantity,
+      created_by_name: h.created_by_name || '-',
+      created_by_department: h.created_by_department ?? '',
+      memo: h.memo ?? ''
+    }));
+    exportToExcel(rows, `history-${historyFilters.from}-${historyFilters.to}.xlsx`, 'History');
+  }
+
+  const totalQuantity = inventoryMeta.summary.totalQuantity;
+  const distinctItems = inventoryMeta.summary.uniqueItems;
+  const locationBreakdown = useMemo(() => {
+    const fromSummary = Object.entries(inventoryMeta.summary.byLocation || {}).sort(
+      (a, b) => Number(b[1]) - Number(a[1])
+    );
+    if (fromSummary.length > 0) return fromSummary;
+
+    const aggregate = new Map<string, number>();
+    filteredStock.forEach((row) => {
+      row.locations.forEach((loc) => {
+        aggregate.set(loc.location, (aggregate.get(loc.location) ?? 0) + Number(loc.quantity ?? 0));
+      });
+    });
+    return Array.from(aggregate.entries()).sort((a, b) => Number(b[1]) - Number(a[1]));
+  }, [filteredStock, inventoryMeta.summary.byLocation]);
+  const totalPages = Math.max(1, Math.ceil((inventoryPage.totalRows || 0) / inventoryPage.limit));
+  const currentPage = Math.min(totalPages, Math.floor(inventoryPage.offset / inventoryPage.limit) + 1);
+  const canPrevPage = inventoryPage.offset > 0;
+  const canNextPage = inventoryPage.offset + inventoryPage.limit < inventoryPage.totalRows;
+  const transferBlockedForScope =
+    sessionRole === 'l_operator' && (!sessionScope?.primary_location || (sessionScope.sub_locations ?? []).length === 0);
 
   useEffect(() => {
     if (logoutTimeout.current) {
@@ -963,16 +1506,49 @@ export default function Home() {
   }, [idleDeadline, isLoggedIn]);
 
   useEffect(() => {
-    if (showAdmin && sessionRole === 'admin') {
-      loadAdminLogs();
-    }
-  }, [showAdmin, sessionRole]);
-
-  useEffect(() => {
     if (showAnomalies && anomalyCount === 0) {
       setShowAnomalies(false);
     }
   }, [anomalyCount, showAnomalies]);
+
+  useEffect(() => {
+    if (sessionRole === 'l_operator' && sessionScope?.primary_location) {
+      setTransferPayload((prev) => ({ ...prev, from_location: sessionScope.primary_location ?? '' }));
+    }
+  }, [sessionRole, sessionScope]);
+
+  useEffect(() => {
+    if (activePanel !== 'stock') return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
+      const target = event.target as HTMLElement | null;
+      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+      if (event.key === 'Enter') {
+        const captured = barcodeBufferRef.current;
+        barcodeBufferRef.current = '';
+        if (barcodeTimerRef.current) {
+          clearTimeout(barcodeTimerRef.current);
+          barcodeTimerRef.current = null;
+        }
+        if (captured) {
+          applyBarcodeScan(captured);
+        }
+        return;
+      }
+      if (event.key.length === 1) {
+        barcodeBufferRef.current += event.key;
+        if (barcodeTimerRef.current) {
+          clearTimeout(barcodeTimerRef.current);
+        }
+        barcodeTimerRef.current = setTimeout(() => {
+          barcodeBufferRef.current = '';
+          barcodeTimerRef.current = null;
+        }, 200);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [activePanel, applyBarcodeScan]);
 
   useEffect(() => {
     if (!isLoggedIn) return;
@@ -986,27 +1562,6 @@ export default function Home() {
   }, [isLoggedIn]);
 
   useEffect(() => {
-    if (!otpExpiry) return;
-    const remaining = otpExpiry - Date.now();
-    if (remaining <= 0) {
-      setOtpEnabled(false);
-      setRegisterForm((prev) => ({ ...prev, otp: '' }));
-      setRegisterOtpStatus('OTP가 만료되었습니다. 계정 생성 버튼을 눌러 다시 요청하세요.');
-      setOtpExpiry(null);
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      setOtpEnabled(false);
-      setRegisterForm((prev) => ({ ...prev, otp: '' }));
-      setRegisterOtpStatus('OTP가 만료되었습니다. 계정 생성 버튼을 눌러 다시 요청하세요.');
-      setOtpExpiry(null);
-    }, remaining);
-
-    return () => clearTimeout(timer);
-  }, [otpExpiry]);
-
-  useEffect(() => {
     setShowAdmin(activePanel === 'admin' && sessionRole === 'admin');
   }, [activePanel, sessionRole]);
 
@@ -1017,6 +1572,19 @@ export default function Home() {
   }, [activePanel, history.length, stock.length]);
 
   useEffect(() => {
+    if (activePanel === 'history') {
+      reloadHistory();
+    }
+  }, [activePanel]);
+
+  useEffect(() => {
+    setHistoryPage((prev) => ({ ...prev, page: 1 }));
+    if (activePanel === 'history') {
+      reloadHistory({ page: 1 });
+    }
+  }, [historyFilters.from, historyFilters.to]);
+
+  useEffect(() => {
     if (!focusedStockKey) {
       setEditDraft(null);
       return;
@@ -1025,11 +1593,12 @@ export default function Home() {
     const defaultLocation = match?.locations?.[0];
     if (match && defaultLocation) {
       setEditDraft({
-        id: defaultLocation.id,
+        id: defaultLocation.editableId ?? defaultLocation.id,
         artist: match.artist,
         category: match.category,
         album_version: match.album_version,
         option: match.option,
+        barcode: match.barcode ?? '',
         location: defaultLocation.location,
         quantity: defaultLocation.quantity,
       });
@@ -1048,12 +1617,23 @@ export default function Home() {
     setInventoryActionStatus('');
   }, [selectedStockKeys, focusedStockKey]);
 
+  const selectionDisabled = sessionRole === 'operator';
+
+  useEffect(() => {
+    if (selectionDisabled) {
+      setEditPanelEnabled(false);
+      setSelectedStockKeys([]);
+      setFocusedStockKey(null);
+    }
+  }, [selectionDisabled]);
+
   useEffect(() => {
     fetchSessionInfo();
     refresh();
-  }, []);
+    }, []);
 
   return (
+    <>
     <main className="page">
       <header className="page-header compact-header">
         <div>
@@ -1077,7 +1657,9 @@ export default function Home() {
         </button>
         <button
           className={editPanelEnabled ? 'tab active' : 'tab disabled'}
+          disabled={selectionDisabled}
           onClick={() => {
+            if (selectionDisabled) return;
             setEditPanelEnabled((prev) => {
               const next = !prev;
               if (!next) {
@@ -1121,11 +1703,11 @@ export default function Home() {
                 <button onClick={handleAuthToggle}>로그인</button>
                 <button className="ghost" onClick={refresh}>세션 확인</button>
               </div>
-              <div className="muted">최초 회원가입만 OTP 인증, 이후 로그인은 ID + 비밀번호로 진행됩니다.</div>
+              <div className="muted">ID + 비밀번호로 로그인합니다.</div>
               <div className="muted">{status}</div>
             </div>
             <div className="card-subpanel">
-              <p className="mini-label">새 계정 만들기 (OTP + 관리자 승인)</p>
+              <p className="mini-label">새 계정 만들기 (관리자 승인 필요)</p>
               <div className="form-grid two">
                 <label>
                   <span>ID</span>
@@ -1151,15 +1733,6 @@ export default function Home() {
                     value={registerForm.confirm}
                     onChange={(e) => setRegisterForm({ ...registerForm, confirm: e.target.value })}
                     placeholder="비밀번호 재입력"
-                  />
-                </label>
-                <label>
-                  <span>이메일 OTP 코드</span>
-                  <input
-                    value={registerForm.otp}
-                    onChange={(e) => setRegisterForm({ ...registerForm, otp: e.target.value })}
-                    placeholder="이메일로 받은 숫자 코드"
-                    disabled={!otpEnabled}
                   />
                 </label>
                 <label>
@@ -1197,7 +1770,7 @@ export default function Home() {
               </div>
               <div className="actions-row">
                 <button onClick={registerAccount}>계정 생성</button>
-                <span className="muted">{registerStatus || registerOtpStatus || '모든 정보를 입력한 뒤 계정 생성 버튼을 누르면 OTP가 자동으로 전송됩니다. 관리자 승인 후 사용 가능합니다.'}</span>
+                <span className="muted">{registerStatus || '모든 정보를 입력하면 계정이 생성되며, 관리자 승인 후 사용 가능합니다.'}</span>
               </div>
             </div>
           </div>
@@ -1242,90 +1815,10 @@ export default function Home() {
         >
           <div className="guide-grid">
             <div className="guide-card">
-              <p className="mini-label">레거시 데이터 이관</p>
-              <ul>
-                <li>`inventory_data.json`을 최신으로 준비합니다.</li>
-                <li>Supabase SQL Editor에서 `supabase/schema.sql` 실행 후 비워진 테이블을 생성합니다.</li>
-                <li>`scripts/migrate_json.py`를 실행해 JSON 재고를 Supabase로 업서트합니다.</li>
-                <li>완료 후 아래 새로고침 → 재고/이력 테이블에서 반영 여부를 확인합니다.</li>
-              </ul>
-            </div>
-            <div className="guide-card">
-              <p className="mini-label">신규 계정 발급</p>
-              <p className="muted">관리자가 직접 ID와 권한을 생성합니다. 비밀번호는 선택 입력이며 이메일은 자동으로 @sound-wave.co.kr 도메인을 사용합니다.</p>
-              <div className="form-grid two">
-                <label>
-                  <span>계정 ID</span>
-                  <input
-                    value={newUser.username}
-                    onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
-                    placeholder="@ 없이 사내 ID"
-                  />
-                </label>
-                <label>
-                  <span>비밀번호 (선택)</span>
-                  <input
-                    type="password"
-                    value={newUser.password}
-                    onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-                    placeholder="미입력 시 자동 생성"
-                  />
-                </label>
-                <label>
-                  <span>성함</span>
-                  <input
-                    value={newUser.full_name}
-                    onChange={(e) => setNewUser({ ...newUser, full_name: e.target.value })}
-                    placeholder="홍길동"
-                  />
-                </label>
-                <label>
-                  <span>부서</span>
-                  <input
-                    value={newUser.department}
-                    onChange={(e) => setNewUser({ ...newUser, department: e.target.value })}
-                    placeholder="물류팀"
-                  />
-                </label>
-                <label>
-                  <span>연락처</span>
-                  <input
-                    value={newUser.contact}
-                    onChange={(e) => setNewUser({ ...newUser, contact: e.target.value })}
-                    placeholder="010-0000-0000"
-                  />
-                </label>
-                <label>
-                  <span>사용 목적</span>
-                  <input
-                    value={newUser.purpose}
-                    onChange={(e) => setNewUser({ ...newUser, purpose: e.target.value })}
-                    placeholder="예: 물류 창고 운영"
-                  />
-                </label>
-                <label>
-                  <span>역할</span>
-                  <select
-                    value={newUser.role}
-                    onChange={(e) => setNewUser({ ...newUser, role: e.target.value as Role })}
-                  >
-                    <option value="admin">admin (전체 권한)</option>
-                    <option value="operator">operator (입/출고)</option>
-                    <option value="viewer">viewer (조회 전용)</option>
-                  </select>
-                </label>
-              </div>
-              <div className="actions-row">
-                <button onClick={createUser}>계정 생성</button>
-                <span className="muted">{createUserStatus || '로그인한 admin만 실행 가능'}</span>
-              </div>
-            </div>
-            <div className="guide-card">
-              <p className="mini-label">작업 순서 요약</p>
+              <p className="mini-label">관리자 안내</p>
               <ol className="muted">
-                <li>관리자 계정으로 로그인 후 세션 확인</li>
-                <li>필요시 위에서 신규 계정 발급</li>
-                <li>입/출고 기록 → 재고/이력/엑셀로 검증</li>
+                <li>관리자 계정으로 로그인 후 세션을 확인하세요.</li>
+                <li>입/출고 기록 후 재고와 이력 화면에서 결과를 검증하세요.</li>
               </ol>
             </div>
             <div className="guide-card">
@@ -1370,45 +1863,6 @@ export default function Home() {
                 <span className="muted">{importStatus || 'JSON/엑셀 파일 선택 후 실행'}</span>
               </div>
             </div>
-            <div className="guide-card full-span">
-              <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
-                <div>
-                  <p className="mini-label">관리자 로그</p>
-                  <p className="muted">계정 생성, 업로드, 로케이션 변경 이력 등 관리 작업을 확인합니다.</p>
-                </div>
-                <div className="actions-row">
-                  <button className="ghost" onClick={loadAdminLogs}>새로고침</button>
-                  <span className="muted">{logStatus || ''}</span>
-                </div>
-              </div>
-              <div className="table-wrapper">
-                <table className="table compact-table">
-                  <thead>
-                    <tr>
-                      <th>일시</th>
-                      <th>작업</th>
-                      <th>세부 정보</th>
-                      <th>실행자</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {adminLogs.length === 0 && (
-                      <tr>
-                        <td colSpan={4}>로그가 없습니다. 새로고침을 눌러 확인하세요.</td>
-                      </tr>
-                    )}
-                    {adminLogs.map((log) => (
-                      <tr key={log.id}>
-                        <td>{formatDate(log.created_at)}</td>
-                        <td>{log.action}</td>
-                        <td>{log.detail || '-'}</td>
-                        <td>{log.actor_email || log.actor_id || '-'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
           </div>
         </Section>
         </div>
@@ -1425,101 +1879,288 @@ export default function Home() {
                 </div>
               }
             >
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const direction: 'IN' | 'OUT' = movement.direction === 'OUT' ? 'OUT' : 'IN';
-                  submitMovement(direction);
-                }}
-              >
-                <div className="form-row">
-                  <label>
-                    <span>아티스트</span>
-                    <input
-                      value={movement.artist}
-                      onChange={(e) => setMovement({ ...movement, artist: e.target.value })}
-                      placeholder="예: ARTIST"
-                    />
-                  </label>
-                  <label className="compact">
-                    <span>카테고리</span>
-                    <select
-                      value={movement.category}
-                      onChange={(e) => setMovement({ ...movement, category: e.target.value as MovementPayload['category'] })}
+              <div className="mode-toggle">
+                <button
+                  type="button"
+                  className={movementMode === 'movement' ? 'primary' : 'ghost'}
+                  onClick={() => {
+                    setMovementMode('movement');
+                    setTransferPayload(EMPTY_TRANSFER);
+                  }}
+                >
+                  입/출고
+                </button>
+                <button
+                  type="button"
+                  className={movementMode === 'transfer' ? 'primary' : 'ghost'}
+                  onClick={() => {
+                    setMovementMode('transfer');
+                    setMovement(EMPTY_MOVEMENT);
+                    resetTransferForm();
+                  }}
+                >
+                  전산이관
+                </button>
+                {movementMode === 'transfer' && (
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      setMovementMode('movement');
+                      setTransferPayload(EMPTY_TRANSFER);
+                    }}
+                  >
+                    전산이관 취소
+                  </button>
+                )}
+              </div>
+
+              {movementMode === 'movement' ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    submitMovement('IN');
+                  }}
+                >
+                  <div className="form-row">
+                    <label>
+                      <span>아티스트</span>
+                      <input
+                        value={movement.artist}
+                        onChange={(e) => setMovement({ ...movement, artist: e.target.value })}
+                        placeholder="예: ARTIST"
+                      />
+                    </label>
+                    <label className="compact">
+                      <span>카테고리</span>
+                      <select
+                        value={movement.category}
+                        onChange={(e) => setMovement({ ...movement, category: e.target.value as MovementPayload['category'] })}
+                      >
+                        <option value="album">앨범</option>
+                        <option value="md">MD</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>앨범/버전</span>
+                      <input
+                        value={movement.album_version}
+                        onChange={(e) => setMovement({ ...movement, album_version: e.target.value })}
+                        placeholder="앨범명/버전"
+                      />
+                    </label>
+                    <label>
+                      <span>옵션</span>
+                      <input
+                        value={movement.option}
+                        onChange={(e) => setMovement({ ...movement, option: e.target.value })}
+                        placeholder="포카/키트 등"
+                      />
+                    </label>
+                    <label>
+                      <span>바코드</span>
+                      <input
+                        value={movement.barcode || ''}
+                        onChange={(e) => setMovement({ ...movement, barcode: e.target.value })}
+                        placeholder="바코드 (MD 권장)"
+                      />
+                    </label>
+                    <label>
+                      <span>로케이션</span>
+                      <input
+                        list="location-options"
+                        value={movement.location}
+                        onChange={(e) => setMovement({ ...movement, location: e.target.value })}
+                        placeholder="창고/선반"
+                      />
+                      <datalist id="location-options">
+                        {locationOptions.map((loc) => (
+                          <option key={loc} value={loc} />
+                        ))}
+                      </datalist>
+                    </label>
+                    <label className="compact">
+                      <span>수량</span>
+                      <input
+                        type="number"
+                        value={movement.quantity}
+                        min={1}
+                        onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
+                      />
+                    </label>
+                  </div>
+                  <div className="form-row">
+                    <label className="wide">
+                      <span>메모</span>
+                      <input
+                        value={movement.memo}
+                        onChange={(e) => setMovement({ ...movement, memo: e.target.value })}
+                        placeholder="작업 사유/비고"
+                      />
+                    </label>
+                  </div>
+                  <div className="actions-row">
+                    <button type="button" disabled={isSubmitting} onClick={() => submitMovement('IN')}>
+                      {isSubmitting && movementMode === 'movement' ? '처리 중...' : '입고'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSubmitting}
+                      className="secondary"
+                      onClick={() => submitMovement('OUT')}
                     >
-                      <option value="album">앨범</option>
-                      <option value="md">MD</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>앨범/버전</span>
-                    <input
-                      value={movement.album_version}
-                      onChange={(e) => setMovement({ ...movement, album_version: e.target.value })}
-                      placeholder="앨범명/버전"
-                    />
-                  </label>
-                  <label>
-                    <span>옵션</span>
-                    <input
-                      value={movement.option}
-                      onChange={(e) => setMovement({ ...movement, option: e.target.value })}
-                      placeholder="포카/키트 등"
-                    />
-                  </label>
-                  <label>
-                    <span>로케이션</span>
-                    <input
-                      list="location-options"
-                      value={movement.location}
-                      onChange={(e) => setMovement({ ...movement, location: e.target.value })}
-                      placeholder="창고/선반"
-                    />
-                    <datalist id="location-options">
-                      {locationOptions.map((loc) => (
-                        <option key={loc} value={loc} />
-                      ))}
-                    </datalist>
-                  </label>
-                  <label className="compact">
-                    <span>수량</span>
-                    <input
-                      type="number"
-                      value={movement.quantity}
-                      min={1}
-                      onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
-                    />
-                  </label>
-                </div>
-                <div className="form-row">
-                  <label className="wide">
-                    <span>메모</span>
-                    <input
-                      value={movement.memo}
-                      onChange={(e) => setMovement({ ...movement, memo: e.target.value })}
-                      placeholder="작업 사유/비고"
-                    />
-                  </label>
-                </div>
-                <div className="actions-row">
-                  <button
-                    type="button"
-                    disabled={isSubmitting}
-                    onClick={() => submitMovement('IN')}
-                  >
-                    {isSubmitting ? '처리 중...' : '입고'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isSubmitting}
-                    className="secondary"
-                    onClick={() => submitMovement('OUT')}
-                  >
-                    {isSubmitting ? '처리 중...' : '출고'}
-                  </button>
-                  <p className="muted">입고/출고를 버튼으로 나눠 Python GUI와 동일한 동선을 제공합니다.</p>
-                </div>
-              </form>
+                      {isSubmitting && movementMode === 'movement' ? '처리 중...' : '출고'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSubmitting}
+                      className="ghost"
+                      onClick={() => {
+                        setMovementMode('transfer');
+                        setMovement(EMPTY_MOVEMENT);
+                      }}
+                    >
+                      전산이관으로 전환
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    submitTransfer();
+                  }}
+                >
+                  <div className="form-row">
+                    <label>
+                      <span>아티스트</span>
+                      <input
+                        value={transferPayload.artist}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, artist: e.target.value })}
+                        placeholder="예: ARTIST"
+                      />
+                    </label>
+                    <label className="compact">
+                      <span>카테고리</span>
+                      <select
+                        value={transferPayload.category}
+                        onChange={(e) =>
+                          setTransferPayload({ ...transferPayload, category: e.target.value as TransferPayload['category'] })
+                        }
+                      >
+                        <option value="album">앨범</option>
+                        <option value="md">MD</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>앨범/버전</span>
+                      <input
+                        value={transferPayload.album_version}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, album_version: e.target.value })}
+                        placeholder="앨범명/버전"
+                      />
+                    </label>
+                    <label>
+                      <span>옵션</span>
+                      <input
+                        value={transferPayload.option}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, option: e.target.value })}
+                        placeholder="포카/키트 등"
+                      />
+                    </label>
+                    <label>
+                      <span>바코드</span>
+                      <input
+                        value={transferPayload.barcode || ''}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, barcode: e.target.value })}
+                        placeholder="바코드 (MD 권장)"
+                      />
+                    </label>
+                    <label>
+                      <span>수량</span>
+                      <input
+                        type="number"
+                        value={transferPayload.quantity}
+                        min={1}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, quantity: Number(e.target.value) })}
+                      />
+                    </label>
+                  </div>
+                  <div className="form-row">
+                    <label>
+                      <span>보내는 곳</span>
+                      <input
+                        list="location-options"
+                        value={
+                          sessionRole === 'l_operator' && sessionScope?.primary_location
+                            ? sessionScope.primary_location
+                            : transferPayload.from_location
+                        }
+                        disabled={sessionRole === 'l_operator' && !!sessionScope?.primary_location}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, from_location: e.target.value })}
+                        placeholder="출발 로케이션"
+                      />
+                    </label>
+                    <label>
+                      <span>받는 곳</span>
+                      <select
+                        value={transferPayload.to_location}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, to_location: e.target.value })}
+                        disabled={
+                          sessionRole === 'l_operator'
+                            ? !sessionScope?.sub_locations || sessionScope.sub_locations.length === 0
+                            : locationOptions.length === 0
+                        }
+                      >
+                        <option value="" disabled>
+                          {sessionRole === 'l_operator'
+                            ? sessionScope?.sub_locations && sessionScope.sub_locations.length > 0
+                              ? '받는 곳 선택'
+                              : '서브 로케이션 없음'
+                            : locationOptions.length > 0
+                            ? '받는 곳 선택'
+                            : '로케이션 없음'}
+                        </option>
+                        {(sessionRole === 'l_operator' ? sessionScope?.sub_locations ?? [] : locationOptions).map((loc) => (
+                          <option key={loc} value={loc}>
+                            {loc}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="form-row">
+                    <label className="wide">
+                      <span>메모</span>
+                      <input
+                        value={transferPayload.memo}
+                        onChange={(e) => setTransferPayload({ ...transferPayload, memo: e.target.value })}
+                        placeholder="작업 사유/비고"
+                      />
+                    </label>
+                  </div>
+                  <div className="actions-row">
+                    <button
+                      type="button"
+                      disabled={isSubmitting || transferBlockedForScope}
+                      onClick={submitTransfer}
+                    >
+                      {transferBlockedForScope
+                        ? '서브 로케이션 필요'
+                        : isSubmitting && movementMode === 'transfer'
+                        ? '처리 중...'
+                        : '전산이관'}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={resetTransferForm}
+                    >
+                      초기화
+                    </button>
+                  </div>
+                </form>
+              )}
             </Section>
           </div>
           <div className="right-panel">
@@ -1527,61 +2168,97 @@ export default function Home() {
               title="현재 재고"
               actions={
                 <div className="filter-row">
-                  <input
-                    className="inline-input"
-                    placeholder="검색 (아티스트/버전/옵션/위치)"
-                    value={stockFilters.search}
-                    onChange={(e) => setStockFilters({ ...stockFilters, search: e.target.value })}
-                  />
-                  <select
-                    className="scroll-select"
-                    value={stockFilters.artist}
-                    onChange={(e) => setStockFilters({ ...stockFilters, artist: e.target.value })}
-                  >
-                    <option value="">전체 아티스트</option>
-                    {artistOptions.map((artist) => (
-                      <option key={artist} value={artist}>
-                        {artist}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    className="scroll-select"
-                    value={stockFilters.location}
-                    onChange={(e) => setStockFilters({ ...stockFilters, location: e.target.value })}
-                  >
-                    <option value="">전체 로케이션</option>
-                    {filterLocationOptions.map((loc) => (
-                      <option key={loc} value={loc}>
-                        {loc}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    className="compact"
-                    value={stockFilters.category}
-                    onChange={(e) => setStockFilters({ ...stockFilters, category: e.target.value })}
-                  >
-                    <option value="">전체</option>
-                    <option value="album">앨범</option>
-                    <option value="md">MD</option>
-                  </select>
-                  <a className="ghost button-link" href="/api/export?type=inventory">엑셀 다운로드</a>
+                  <form className="filter-row inventory-filters" onSubmit={handleInventorySearchSubmit}>
+                    <div className="filter-stack primary-stack">
+                      <input
+                        className="inline-input"
+                        placeholder="검색 (아티스트/버전/옵션/위치)"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                      />
+                      <input
+                        className="inline-input"
+                        placeholder="앨범/버전"
+                        value={albumVersionTerm}
+                        onChange={(e) => setAlbumVersionTerm(e.target.value)}
+                      />
+                      <input
+                        className="inline-input"
+                        placeholder="바코드"
+                        value={barcodeTerm}
+                        onChange={(e) => setBarcodeTerm(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            handleInventorySearchSubmit(e);
+                          }
+                        }}
+                      />
+                      <button className="primary" type="submit">
+                        검색
+                      </button>
+                      <button className="ghost" type="button" onClick={resetInventorySearch}>
+                        초기화
+                      </button>
+                    </div>
+                    <div className="filter-stack wrap secondary-stack">
+                      <select
+                        className="scroll-select"
+                        value={stockFilters.artist}
+                        onChange={(e) => applyInventoryFilters({ ...stockFilters, artist: e.target.value })}
+                      >
+                        <option value="">전체 아티스트</option>
+                        {artistOptions.map((artist) => (
+                          <option key={artist} value={artist}>
+                            {artist}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className="scroll-select"
+                        value={stockFilters.category}
+                        onChange={(e) => applyInventoryFilters({ ...stockFilters, category: e.target.value })}
+                      >
+                        <option value="">전체 카테고리</option>
+                        {categoryOptions.map((cat) => (
+                          <option key={cat} value={cat}>
+                            {cat}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className="scroll-select"
+                        value={stockFilters.location}
+                        onChange={(e) => applyInventoryFilters({ ...stockFilters, location: e.target.value })}
+                      >
+                        <option value="">전체 로케이션</option>
+                        {filterLocationOptions.map((loc) => (
+                          <option key={loc} value={loc}>
+                            {loc}
+                          </option>
+                        ))}
+                      </select>
+                      <button className="ghost" type="button" onClick={exportInventory}>
+                        엑셀 다운로드
+                      </button>
+                    </div>
+                  </form>
                 </div>
               }
             >
-              {anomalyCount > 0 && (
-                <div className="alert-row">
-                  <button
-                    type="button"
-                    className={showAnomalies ? 'warning-button active' : 'warning-button'}
-                    onClick={() => setShowAnomalies((prev) => !prev)}
-                  >
-                    이상재고 {anomalyCount}건
-                  </button>
-                  <span className="muted small-text">음수 수량만 따로 모아 볼 수 있습니다.</span>
-                </div>
-              )}
+              <div className="alert-row">
+                <button
+                  type="button"
+                  className={showAnomalies ? 'warning-button active' : 'warning-button'}
+                  disabled={anomalyCount === 0}
+                  onClick={() => {
+                    if (anomalyCount === 0) return;
+                    setShowAnomalies((prev) => !prev);
+                  }}
+                >
+                  이상재고 {anomalyCount}건
+                </button>
+                <span className="muted small-text">음수 수량만 따로 모아 볼 수 있습니다.</span>
+              </div>
               <div className="stats">
                 <div className="stat">
                   <p className="eyebrow">재고 수량</p>
@@ -1595,8 +2272,9 @@ export default function Home() {
                 </div>
                 <div className="stat">
                   <p className="eyebrow">로케이션 분포</p>
-                  <div className="pill-row">
-                    {locationBreakdown.slice(0, 4).map(([loc, qty]) => (
+                  <div className="pill-row wrap">
+                    {locationBreakdown.length === 0 && <span className="muted">로케이션 정보가 없습니다.</span>}
+                    {locationBreakdown.map(([loc, qty]) => (
                       <Pill key={loc}>
                         {loc}: {qty.toLocaleString()}
                       </Pill>
@@ -1604,7 +2282,7 @@ export default function Home() {
                   </div>
                 </div>
               </div>
-              <div className="table-wrapper">
+              <div className="table-wrapper responsive-table">
                 <table className="table">
                   <thead>
                     <tr>
@@ -1612,6 +2290,7 @@ export default function Home() {
                       <th>카테고리</th>
                       <th>앨범/버전</th>
                       <th>옵션</th>
+                      <th>바코드</th>
                       <th>로케이션</th>
                       <th className="align-right">현재고</th>
                       <th>관리</th>
@@ -1629,28 +2308,31 @@ export default function Home() {
                           <td>{row.category}</td>
                           <td>{row.album_version}</td>
                           <td>{row.option}</td>
+                          <td title={row.barcode ?? ''}>{row.barcode || '-'}</td>
                           <td>
                             <div className="pill-row wrap">
                               {row.locations.map((loc) => (
                                 <button
                                   key={`${row.key}-${loc.id}`}
                                   className="ghost small"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedStockKeys((prev) =>
-                                      prev.includes(row.key) ? prev : [...prev, row.key]
-                                    );
-                                    setFocusedStockKey(row.key);
-                                    setEditDraft({
-                                      id: loc.id,
-                                      artist: row.artist,
-                                      category: row.category,
-                                      album_version: row.album_version,
-                                      option: row.option,
-                                      location: loc.location,
-                                      quantity: loc.quantity,
-                                    });
-                                  }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (selectionDisabled) return;
+                                  setSelectedStockKeys((prev) =>
+                                    prev.includes(row.key) ? prev : [...prev, row.key]
+                                  );
+                                  setFocusedStockKey(row.key);
+                                  setEditDraft({
+                                    id: loc.editableId ?? loc.id,
+                                    artist: row.artist,
+                                    category: row.category,
+                                    album_version: row.album_version,
+                                    option: row.option,
+                                    barcode: row.barcode ?? '',
+                                    location: loc.location,
+                                    quantity: loc.quantity,
+                                  });
+                                }}
                                 >
                                   {loc.location}: {loc.quantity.toLocaleString()}
                                 </button>
@@ -1661,6 +2343,8 @@ export default function Home() {
                           <td>
                             {sessionRole === 'viewer' ? (
                               <span className="muted">읽기 전용</span>
+                            ) : selectionDisabled ? (
+                              <span className="muted">선택 편집 불가</span>
                             ) : (
                               <div className="row-actions">
                                 <button
@@ -1674,11 +2358,12 @@ export default function Home() {
                                     if (loc) {
                                       setFocusedStockKey(row.key);
                                       setEditDraft({
-                                        id: loc.id,
+                                        id: loc.editableId ?? loc.id,
                                         artist: row.artist,
                                         category: row.category,
                                         album_version: row.album_version,
                                         option: row.option,
+                                        barcode: row.barcode ?? '',
                                         location: loc.location,
                                         quantity: loc.quantity,
                                       });
@@ -1706,9 +2391,10 @@ export default function Home() {
                             )}
                           </td>
                         </tr>
-                        {editPanelEnabled && sessionRole !== 'viewer' && editDraft && focusedStockKey === row.key && (
+                        {editPanelEnabled && !selectionDisabled && sessionRole !== 'viewer' && editDraft &&
+                          focusedStockKey === row.key && (
                           <tr className="inline-editor-row">
-                            <td colSpan={7}>
+                            <td colSpan={8}>
                               <div className="inline-editor">
                                 <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
                                   <h3>선택 재고 편집</h3>
@@ -1747,6 +2433,14 @@ export default function Home() {
                                     />
                                   </label>
                                   <label>
+                                    <span>바코드</span>
+                                    <input
+                                      value={editDraft.barcode ?? ''}
+                                      onChange={(e) => setEditDraft({ ...editDraft, barcode: e.target.value })}
+                                      placeholder="바코드 (선택)"
+                                    />
+                                  </label>
+                                  <label>
                                     <span>로케이션</span>
                                     <input
                                       value={editDraft.location}
@@ -1762,6 +2456,12 @@ export default function Home() {
                                     />
                                   </label>
                                 </div>
+                                {editDraft.barcode && (
+                                  <div className="barcode-panel">
+                                    <span className="muted small-text">바코드 미리보기</span>
+                                    <BarcodePreview value={editDraft.barcode} />
+                                  </div>
+                                )}
                                 <div className="actions-row">
                                   <button onClick={saveInventoryEdit}>수정 저장</button>
                                   {sessionRole === 'admin' && (
@@ -1779,6 +2479,29 @@ export default function Home() {
                     ))}
                   </tbody>
                 </table>
+                <div className="pagination-row">
+                  <span className="muted">
+                    총 {inventoryPage.totalRows.toLocaleString()}건 · {currentPage}/{totalPages} 페이지
+                  </span>
+                  <div className="section-actions">
+                    <button
+                      className="ghost"
+                      type="button"
+                      disabled={!canPrevPage}
+                      onClick={() => changeInventoryPage(inventoryPage.offset - inventoryPage.limit)}
+                    >
+                      이전
+                    </button>
+                    <button
+                      className="ghost"
+                      type="button"
+                      disabled={!canNextPage}
+                      onClick={() => changeInventoryPage(inventoryPage.offset + inventoryPage.limit)}
+                    >
+                      다음
+                    </button>
+                  </div>
+                </div>
               </div>
             </Section>
           </div>
@@ -1806,6 +2529,7 @@ export default function Home() {
               <option value="IN">입고</option>
               <option value="OUT">출고</option>
               <option value="ADJUST">조정</option>
+              <option value="TRANSFER">전산이관</option>
             </select>
             <select
               className="compact"
@@ -1835,17 +2559,19 @@ export default function Home() {
                 onChange={(e) => setHistoryFilters({ ...historyFilters, to: e.target.value })}
               />
             </label>
-            <button className="ghost" type="button" onClick={reloadHistory}>
+            <button className="ghost" type="button" onClick={() => reloadHistory()}>
               새로고침
             </button>
-            <a className="ghost button-link" href="/api/export?type=history">엑셀 다운로드</a>
+            <button className="ghost" type="button" onClick={exportHistory}>
+              엑셀 다운로드
+            </button>
           </div>
         }
       >
         <p className="muted" style={{ margin: '0 0 0.5rem' }}>
-          기본적으로 최근 7일 데이터를 보여주며, 달력으로 기간을 직접 선택하고 유형으로 필터링할 수 있습니다.
+          기본적으로 최근 15일 데이터를 한국시간 기준으로 보여주며, 달력으로 기간을 직접 선택하고 유형으로 필터링할 수 있습니다.
         </p>
-        <div className="table-wrapper">
+        <div className="table-wrapper history-table-wrapper">
           <table className="table">
             <thead>
               <tr>
@@ -1862,29 +2588,67 @@ export default function Home() {
               </tr>
             </thead>
             <tbody>
-              {filteredHistory.map((h, idx) => (
-                <tr key={`${h.created_at}-${idx}`}>
-                  <td>{formatDate(h.created_at)}</td>
-                  <td>
-                    <Pill>{h.direction}</Pill>
-                  </td>
-                  <td>{h.artist}</td>
-                  <td>{h.category}</td>
-                  <td>{h.album_version}</td>
-                <td>{h.option}</td>
-                <td>{h.location}</td>
-                <td className="align-right">{h.quantity.toLocaleString()}</td>
-                <td className="align-center">
-                  <div className="stacked-label">
-                    <strong>{h.created_by_name || h.created_by || '-'}</strong>
-                    <span className="muted small-text">{h.created_by_department || '부서 정보 없음'}</span>
-                  </div>
-                </td>
-                <td>{h.memo || '-'}</td>
-              </tr>
-            ))}
+              {filteredHistory.map((h, idx) => {
+                const displayLocation = h.location;
+                const directionLabel = h.direction === 'TRANSFER' ? '전산이관' : h.direction;
+                return (
+                  <tr key={`${h.created_at}-${idx}`}>
+                    <td>{formatDate(h.created_at)}</td>
+                    <td>
+                      <Pill>{directionLabel}</Pill>
+                    </td>
+                    <td>{h.artist}</td>
+                    <td>{h.category}</td>
+                    <td>{h.album_version}</td>
+                    <td>{h.option}</td>
+                    <td>{displayLocation}</td>
+                    <td className="align-right">{h.quantity.toLocaleString()}</td>
+                    <td className="align-center">
+                      <div className="stacked-label">
+                        <strong>{h.created_by_name || h.created_by || '-'}</strong>
+                        <span className="muted small-text">{h.created_by_department || '부서 정보 없음'}</span>
+                      </div>
+                    </td>
+                    <td>{h.memo || '-'}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
+        </div>
+        <div className="pagination-row">
+          <span className="muted">
+            총 {historyPage.totalRows.toLocaleString()}건 · {historyCurrentPage}/{historyTotalPages} 페이지
+          </span>
+          <div className="section-actions">
+            <select
+              className="compact"
+              value={historyPage.pageSize}
+              onChange={(e) => changeHistoryPageSize(Number(e.target.value))}
+            >
+              {[50, 100, 200].map((size) => (
+                <option key={size} value={size}>
+                  {size}개
+                </option>
+              ))}
+            </select>
+            <button
+              className="ghost"
+              type="button"
+              disabled={!historyCanPrev}
+              onClick={() => changeHistoryPage(historyCurrentPage - 1)}
+            >
+              이전
+            </button>
+            <button
+              className="ghost"
+              type="button"
+              disabled={!historyCanNext}
+              onClick={() => changeHistoryPage(historyCurrentPage + 1)}
+            >
+              다음
+            </button>
+          </div>
         </div>
       </Section>
       </div>
@@ -1922,78 +2686,396 @@ export default function Home() {
         </button>
       </div>
 
+
       {accountManagerOpen && (
         <div className="modal-backdrop">
-          <div className="modal-card">
-            <div className="section-heading">
+          <div className="modal-card wide-modal">
+            <div className="section-heading sticky-header">
               <h3>계정 관리</h3>
               <div className="section-actions">
                 <button className="ghost" onClick={loadAccounts}>새로고침</button>
                 <button className="ghost" onClick={closeAccountManager}>닫기</button>
               </div>
             </div>
-            <p className="muted" style={{ marginTop: 0 }}>
-              ID, 실명, 부서를 확인하고 권한과 승인 여부를 바로 수정할 수 있습니다.
-            </p>
-            <div className="table-wrapper">
-              <table className="table compact-table">
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>이메일</th>
-                    <th>성함</th>
-                    <th>부서</th>
-                    <th>연락처</th>
-                    <th>사용 목적</th>
-                    <th>권한</th>
-                    <th>승인</th>
-                    <th>생성일</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {accounts.length === 0 && (
+            <div className="account-modal-body">
+              <p className="muted" style={{ marginTop: 0 }}>
+                ID, 실명, 부서를 확인하고 권한과 승인 여부를 바로 수정할 수 있습니다.
+              </p>
+              {!locationScopeAvailable && (
+                <div className="alert-row" style={{ marginBottom: '0.5rem' }}>
+                  <strong>로케이션 범위 기능이 비활성화되었습니다.</strong>
+                  <span className="muted">DB에 user_location_permissions 테이블이 없거나 준비 중입니다.</span>
+                </div>
+              )}
+              <datalist id="locations-list">
+                {locationOptions.map((loc) => (
+                  <option key={loc} value={loc} />
+                ))}
+              </datalist>
+              <div className="table-wrapper responsive-table account-table-wrapper">
+                <table className="table compact-table account-table">
+                  <thead>
                     <tr>
-                      <td colSpan={9}>계정 정보가 없습니다.</td>
+                      <th>ID</th>
+                      <th>이메일</th>
+                      <th>성함</th>
+                      <th>부서</th>
+                      <th>연락처</th>
+                      <th>사용 목적</th>
+                      <th>권한</th>
+                      <th>담당 로케이션</th>
+                      <th>서브 로케이션</th>
+                      <th>로케이션 저장</th>
+                      <th>승인</th>
+                      <th>생성일</th>
                     </tr>
-                  )}
-                  {accounts.map((acc) => (
-                    <tr key={acc.id}>
-                      <td>{acc.username}</td>
-                      <td>{acc.email}</td>
-                      <td>{acc.full_name}</td>
-                      <td>{acc.department || '-'}</td>
-                      <td>{acc.contact || '-'}</td>
-                      <td>{acc.purpose || '-'}</td>
-                      <td>
-                        <select
-                          value={acc.role}
-                          onChange={(e) => updateAccountRole(acc.id, e.target.value as Role)}
-                        >
-                          <option value="admin">admin</option>
-                          <option value="operator">operator</option>
-                          <option value="viewer">viewer</option>
-                        </select>
-                      </td>
-                      <td>
-                        <label className="muted small-text" style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}>
-                          <input
-                            type="checkbox"
-                            checked={acc.approved}
-                            onChange={(e) => updateAccountApproval(acc.id, e.target.checked)}
-                          />
-                          승인 여부
-                        </label>
-                      </td>
-                      <td>{formatDate(acc.created_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {accounts.length === 0 && (
+                      <tr>
+                        <td colSpan={12}>계정 정보가 없습니다.</td>
+                      </tr>
+                    )}
+                    {accounts.map((acc) => (
+                      <tr key={acc.id}>
+                        <td>{acc.username}</td>
+                        <td>{acc.email}</td>
+                        <td>{acc.full_name}</td>
+                        <td>{acc.department || '-'}</td>
+                        <td>{acc.contact || '-'}</td>
+                        <td>{acc.purpose || '-'}</td>
+                        <td>
+                          <select
+                            value={acc.role}
+                            onChange={(e) => updateAccountRole(acc.id, e.target.value as Role)}
+                          >
+                            <option value="admin">admin</option>
+                            <option value="operator">operator</option>
+                            <option value="l_operator">l-operator</option>
+                            <option value="viewer">viewer</option>
+                          </select>
+                        </td>
+                        <td>
+                          {acc.role === 'l_operator' ? (
+                            <div className="location-input-group">
+                              <input
+                                className="inline-input"
+                                placeholder="주 로케이션"
+                                value={locationScopes[acc.id]?.primary ?? ''}
+                                list="locations-list"
+                                disabled={!locationScopeAvailable}
+                                onChange={(e) =>
+                                  setLocationScopes((prev) => ({
+                                    ...prev,
+                                    [acc.id]: { ...prev[acc.id], primary: e.target.value, subs: prev[acc.id]?.subs ?? '' },
+                                  }))
+                                }
+                              />
+                              {locationScopeAvailable && locationOptions.length > 0 && (
+                                <div className="location-chip-row">
+                                  {locationOptions.slice(0, 6).map((loc) => (
+                                    <button
+                                      key={`${acc.id}-primary-${loc}`}
+                                      type="button"
+                                      className="chip"
+                                      onClick={() =>
+                                        setLocationScopes((prev) => ({
+                                          ...prev,
+                                          [acc.id]: { ...prev[acc.id], primary: loc, subs: prev[acc.id]?.subs ?? '' },
+                                        }))
+                                      }
+                                    >
+                                      {loc}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
+                        </td>
+                        <td>
+                          {acc.role === 'l_operator' ? (
+                            <div className="location-input-group">
+                              <input
+                                className="inline-input"
+                                placeholder="쉼표로 구분"
+                                value={locationScopes[acc.id]?.subs ?? ''}
+                                list="locations-list"
+                                disabled={!locationScopeAvailable}
+                                onChange={(e) =>
+                                  setLocationScopes((prev) => ({
+                                    ...prev,
+                                    [acc.id]: { ...prev[acc.id], subs: e.target.value, primary: prev[acc.id]?.primary ?? '' },
+                                  }))
+                                }
+                              />
+                              {locationScopeAvailable && locationOptions.length > 0 && (
+                                <div className="location-chip-row">
+                                  {locationOptions.slice(0, 6).map((loc) => (
+                                    <button
+                                      key={`${acc.id}-subs-${loc}`}
+                                      type="button"
+                                      className="chip ghost-chip"
+                                      onClick={() =>
+                                        setLocationScopes((prev) => {
+                                          const existing = (prev[acc.id]?.subs || '')
+                                            .split(',')
+                                            .map((v) => v.trim())
+                                            .filter(Boolean);
+                                          if (existing.includes(loc)) return prev;
+                                          const combined = existing.length > 0 ? `${existing.join(', ')}, ${loc}` : loc;
+                                          return {
+                                            ...prev,
+                                            [acc.id]: { ...prev[acc.id], subs: combined, primary: prev[acc.id]?.primary ?? '' },
+                                          };
+                                        })
+                                      }
+                                    >
+                                      {loc}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
+                        </td>
+                        <td>
+                          {acc.role === 'l_operator' ? (
+                            <button
+                              className="ghost"
+                              type="button"
+                              onClick={() => saveAccountScope(acc.id)}
+                              disabled={!locationScopeAvailable}
+                              title={locationScopeAvailable ? undefined : '로케이션 범위 테이블이 없어 저장을 건너뜁니다'}
+                            >
+                              저장
+                            </button>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
+                        </td>
+                        <td>
+                          <label className="muted small-text" style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}>
+                            <input
+                              type="checkbox"
+                              checked={acc.approved}
+                              onChange={(e) => updateAccountApproval(acc.id, e.target.checked)}
+                            />
+                            승인 여부
+                          </label>
+                        </td>
+                        <td>{formatDate(acc.created_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="muted account-status-row">{accountsStatus}</div>
             </div>
-            <div className="muted">{accountsStatus}</div>
           </div>
         </div>
       )}
     </main>
+    <style jsx global>{`
+      .inventory-filters {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 0.75rem;
+        align-items: stretch;
+      }
+
+      .filter-stack {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+      }
+
+      .primary-stack {
+        width: 100%;
+        flex-direction: column;
+      }
+
+      .filter-stack.wrap {
+        justify-content: flex-start;
+      }
+
+      @media (min-width: 768px) {
+        .inventory-filters {
+          grid-template-columns: 2fr 1fr;
+          align-items: flex-start;
+        }
+        .primary-stack,
+        .secondary-stack {
+          width: 100%;
+          flex-direction: row;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .inventory-filters .inline-input,
+        .inventory-filters select,
+        .inventory-filters button {
+          width: 100%;
+        }
+        .filter-row.inventory-filters {
+          align-items: stretch;
+        }
+        .secondary-stack {
+          flex-direction: column;
+          align-items: stretch;
+        }
+      }
+
+      .responsive-table {
+        overflow-x: auto;
+      }
+
+      .history-table-wrapper {
+        max-height: 70vh;
+        overflow: auto;
+      }
+
+      .modal-card.wide-modal {
+        max-width: 95vw;
+        width: 1280px;
+        min-height: 75vh;
+        max-height: 90vh;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .wide-modal .section-heading {
+        position: sticky;
+        top: 0;
+        background: #fff;
+        z-index: 2;
+      }
+
+      .account-modal-body {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        padding: 0 0.75rem 0.75rem;
+      }
+
+      .account-table-wrapper {
+        max-height: 70vh;
+        overflow: auto;
+      }
+
+      .account-table thead th {
+        position: sticky;
+        top: 0;
+        background: #f8f8f8;
+        z-index: 1;
+      }
+
+      .account-table {
+        min-width: 1180px;
+      }
+
+      .account-table th:nth-child(7),
+      .account-table td:nth-child(7) {
+        min-width: 120px;
+      }
+
+      .account-status-row {
+        padding: 0.25rem 0.35rem;
+      }
+
+      .location-input-group {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+      }
+
+      .barcode-panel {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 0.5rem;
+      }
+
+      .barcode-preview {
+        display: block;
+        height: 36px;
+        width: 180px;
+      }
+
+      .location-chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+      }
+
+      .chip {
+        border: 1px solid #e2e2e2;
+        border-radius: 999px;
+        padding: 0.2rem 0.55rem;
+        background: #f7f7f7;
+        font-size: 0.85rem;
+        cursor: pointer;
+      }
+
+      .chip:hover {
+        background: #eef2ff;
+        border-color: #cdd4ff;
+      }
+
+      .ghost-chip {
+        background: #fff;
+      }
+
+      .stats {
+        display: grid;
+        gap: 0.75rem;
+        grid-template-columns: 1fr;
+      }
+
+      @media (min-width: 640px) {
+        .stats {
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        }
+      }
+
+      @media (max-width: 640px) {
+        .section-actions {
+          width: 100%;
+        }
+
+        .section-actions .filter-row {
+          width: 100%;
+        }
+
+        .pill-row.wrap {
+          gap: 0.35rem;
+        }
+      }
+
+      @media (max-width: 480px) {
+        .filter-row .filter-stack button,
+        .filter-row .filter-stack .inline-input,
+        .filter-row .filter-stack select {
+          flex: 1 1 100%;
+        }
+
+        .filter-row .filter-stack {
+          justify-content: stretch;
+        }
+
+        .alert-row {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 0.5rem;
+        }
+      }
+    `}</style>
+    </>
   );
 }

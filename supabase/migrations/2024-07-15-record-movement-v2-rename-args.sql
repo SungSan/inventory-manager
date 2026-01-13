@@ -1,0 +1,178 @@
+-- Ensure record_movement_v2 argument names match client payload keys (no p_ prefix) and keep compatibility wrapper
+create or replace function public.record_movement_v2(
+  album_version text,
+  artist text,
+  category text,
+  created_by uuid default null,
+  direction text,
+  idempotency_key text default null,
+  location text,
+  memo text default '',
+  option text default '',
+  quantity int
+) returns json as $$
+#variable_conflict use_variable
+declare
+  v_item_id uuid;
+  v_existing int;
+  v_new int;
+  v_movement_id uuid;
+  v_rowcount int;
+  v_idem text := nullif(btrim(idempotency_key), '');
+  v_location text := btrim(location);
+  v_direction text := upper(direction);
+  v_artist text := btrim(artist);
+  v_album text := btrim(album_version);
+  v_option text := coalesce(option, '');
+  v_memo text := nullif(btrim(memo), '');
+  v_qty int := quantity;
+  v_existing_opening integer;
+  v_existing_closing integer;
+begin
+  if v_direction not in ('IN','OUT','ADJUST') then
+    raise exception 'invalid direction';
+  end if;
+
+  if v_idem is not null then
+    select id, item_id, opening, closing
+      into v_movement_id, v_item_id, v_existing_opening, v_existing_closing
+      from public.movements
+     where idempotency_key = v_idem;
+
+    if found then
+      return json_build_object(
+        'ok', true,
+        'idempotent', true,
+        'movement_inserted', false,
+        'inventory_updated', false,
+        'movement_id', v_movement_id,
+        'item_id', v_item_id,
+        'opening', v_existing_opening,
+        'closing', v_existing_closing,
+        'message', 'idempotent hit'
+      );
+    end if;
+  end if;
+
+  insert into public.items as i (artist, category, album_version, option)
+  values (v_artist, category, v_album, v_option)
+  on conflict (artist, category, album_version, option)
+  do update set artist = excluded.artist
+  returning i.id into v_item_id;
+
+  insert into public.inventory(item_id, location, quantity)
+  values (v_item_id, v_location, 0)
+  on conflict (item_id, location) do nothing;
+
+  select quantity
+    into v_existing
+    from public.inventory inv
+   where inv.item_id = v_item_id
+     and inv.location = v_location
+   for update;
+
+  if v_direction = 'IN' then
+    v_new := v_existing + v_qty;
+  elsif v_direction = 'OUT' then
+    v_new := v_existing - v_qty;
+  else
+    v_new := v_qty;
+  end if;
+
+  update public.inventory inv
+     set quantity = v_new,
+         updated_at = now()
+   where inv.item_id = v_item_id
+     and inv.location = v_location;
+
+  get diagnostics v_rowcount = row_count;
+  if v_rowcount <= 0 then
+    raise exception 'inventory update failed';
+  end if;
+
+  insert into public.movements(
+    item_id,
+    location,
+    direction,
+    quantity,
+    memo,
+    created_by,
+    idempotency_key,
+    opening,
+    closing,
+    created_at
+  ) values (
+    v_item_id,
+    v_location,
+    v_direction,
+    v_qty,
+    v_memo,
+    v_created_by,
+    v_idem,
+    v_existing,
+    v_new,
+    now()
+  )
+  on conflict (idempotency_key) do nothing
+  returning id into v_movement_id;
+
+  if v_movement_id is null then
+    raise exception 'idempotency conflict';
+  end if;
+
+  return json_build_object(
+    'ok', true,
+    'idempotent', false,
+    'movement_inserted', true,
+    'inventory_updated', true,
+    'opening', v_existing,
+    'closing', v_new,
+    'item_id', v_item_id,
+    'movement_id', v_movement_id,
+    'message', 'ok'
+  );
+exception
+  when others then
+    raise;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+grant execute on function public.record_movement_v2(
+  text, text, text, uuid, text, text, text, text, text, int
+) to authenticated, service_role;
+
+create or replace function public.record_movement(
+  artist text,
+  category text,
+  album_version text,
+  option text,
+  location text,
+  quantity integer,
+  direction text,
+  memo text,
+  created_by uuid,
+  idempotency_key text
+) returns json
+language sql
+security definer
+set search_path = public
+as $$
+  select public.record_movement_v2(
+    album_version,
+    artist,
+    category,
+    created_by,
+    direction,
+    idempotency_key,
+    location,
+    memo,
+    option,
+    quantity
+  );
+$$;
+
+grant execute on function public.record_movement(
+  text, text, text, text, text, integer, text, text, uuid, text
+) to authenticated, service_role;
+
+select pg_notify('pgrst', 'reload schema');

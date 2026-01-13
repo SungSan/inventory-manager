@@ -4,7 +4,7 @@ import { cookies } from 'next/headers';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
-export type Role = 'admin' | 'operator' | 'viewer';
+export type Role = 'admin' | 'operator' | 'viewer' | 'l_operator';
 
 export type SessionData = IronSession;
 

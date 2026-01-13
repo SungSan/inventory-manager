@@ -21,14 +21,9 @@ Next.js(App Router) + Supabase 기반의 웹 재고관리 시스템입니다. ID
 
 ## 사전 준비(Supabase)
 1. Supabase 프로젝트를 생성하고 SQL Editor에서 `supabase/schema.sql`을 실행합니다.
-2. 첫 관리자 계정을 추가합니다(이메일/비밀번호 로그인용). 택1:
-   - **UI로 생성**: 앱 상단 "관리자 도구" → "신규 계정 발급"에서 이메일/비밀번호/역할을 입력 후 `계정 생성` 버튼.
-   - **SQL로 생성**: Supabase SQL Editor에서 아래를 실행.
-     ```sql
-     insert into users(email, password_hash, role)
-     values('admin@example.com', crypt('admin123', gen_salt('bf')), 'admin');
-     ```
-3. (선택) 레거시 JSON 데이터를 옮길 경우 `scripts/migrate_json.py`를 참고하거나 UI의 "레거시 데이터 이관" 안내 절차를 따라 실행합니다.
+2. 첫 관리자 계정을 추가합니다(이메일/비밀번호 로그인용). Supabase Auth 콘솔이나 `auth.admin.createUser`를 사용해 이메일/비밀번호 계정을 생성한 뒤, `users`/`user_profiles`에 role/approved/active 값을 맞춰 반영합니다.
+3. 추가된 Supabase 마이그레이션(`supabase/migrations/*.sql`)이 있다면 CLI(`supabase db push`)나 SQL Editor로 적용한 뒤 `notify pgrst, 'reload schema';` 알림까지 실행해 스키마 캐시를 즉시 갱신합니다. 배포 CI에서도 동일하게 수행해야 합니다.
+4. (선택) 레거시 JSON 데이터를 옮길 경우 `scripts/migrate_json.py`를 참고하거나 UI의 "레거시 데이터 이관" 안내 절차를 따라 실행합니다.
 
 ## 환경 변수
 `web/.env.example`을 복사해 값을 채웁니다.

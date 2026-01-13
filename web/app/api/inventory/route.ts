@@ -2,70 +2,93 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../lib/supabase';
 import { withAuth } from '../../../lib/auth';
 
-type InventoryLocation = {
-  id: string;
-  location: string;
-  quantity: number;
-};
+const MAX_LIMIT = 200;
+const DEFAULT_LIMIT = 50;
 
-type InventoryRow = {
-  key: string;
-  artist: string;
-  category: string;
-  album_version: string;
-  option: string;
-  total_quantity: number;
-  locations: InventoryLocation[];
-};
+function isMissingLocationScopeTable(error: any) {
+  const message = error?.message || '';
+  const code = error?.code || '';
+  return code === '42P01' || message.includes('user_location_permissions');
+}
 
-export async function GET() {
-  return withAuth(['admin', 'operator', 'viewer'], async () => {
-    const { data, error } = await supabaseAdmin
-      .from('inventory')
-      .select('id, quantity, location, items:items(artist, category, album_version, option)')
-      .order('updated_at', { ascending: false });
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const artist = searchParams.get('artist') || undefined;
+  const location = searchParams.get('location') || undefined;
+  const category = searchParams.get('category') || undefined;
+  const albumVersion = searchParams.get('album_version') || undefined;
+  const q = searchParams.get('q') || undefined;
+  const barcode = searchParams.get('barcode') || undefined;
+  const limitParam = Number(searchParams.get('limit'));
+  const offsetParam = Number(searchParams.get('offset'));
+  const limit = Number.isFinite(limitParam) ? Math.min(Math.max(1, limitParam), MAX_LIMIT) : DEFAULT_LIMIT;
+  const offset = Number.isFinite(offsetParam) && offsetParam > 0 ? offsetParam : 0;
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+  return withAuth(['admin', 'operator', 'viewer', 'l_operator'], async (session) => {
+    let enforcedLocation = location || undefined;
+    if (session.role === 'l_operator') {
+      const { data: scope, error: scopeError } = await supabaseAdmin
+        .from('user_location_permissions')
+        .select('primary_location')
+        .eq('user_id', session.userId)
+        .maybeSingle();
+      if (scopeError) {
+        if (isMissingLocationScopeTable(scopeError)) {
+          console.warn('location scope table missing, skipping enforcement');
+        } else {
+          console.error('location scope fetch error:', scopeError);
+          return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
+        }
+      } else if (!scope?.primary_location) {
+        return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
+      } else {
+        enforcedLocation = scope.primary_location;
+      }
     }
 
-    const grouped = new Map<string, InventoryRow>();
-    const order: string[] = [];
+    let query = supabaseAdmin
+      .from('inventory_view')
+      .select('inventory_id,item_id,artist,category,album_version,option,barcode,location,quantity', { count: 'exact' })
+      .order('artist', { ascending: true })
+      .order('album_version', { ascending: true })
+      .order('option', { ascending: true })
+      .order('location', { ascending: true })
+      .range(offset, offset + limit - 1);
 
-    (data || []).forEach((row: any) => {
-      const artist = row.items?.artist ?? '';
-      const category = row.items?.category ?? '';
-      const album_version = row.items?.album_version ?? '';
-      const option = row.items?.option ?? '';
-      const key = `${artist}|${category}|${album_version}|${option}`;
+    if (artist) query = query.eq('artist', artist);
+    if (enforcedLocation) query = query.eq('location', enforcedLocation);
+    if (category) query = query.eq('category', category);
+    if (barcode) query = query.eq('barcode', barcode);
+    if (albumVersion) {
+      const term = `%${albumVersion}%`;
+      query = query.ilike('album_version', term);
+    }
 
-      if (!grouped.has(key)) {
-        order.push(key);
-        grouped.set(key, {
-          key,
-          artist,
-          category,
-          album_version,
-          option,
-          total_quantity: 0,
-          locations: [],
-        });
+    if (q) {
+      const term = `%${q}%`;
+      query = query.or(
+        ['artist', 'album_version', 'option', 'location']
+          .map((col) => `${col}.ilike.${term}`)
+          .join(',')
+      );
+    }
+
+    const { data, error, count } = await query;
+    if (error) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    }
+
+    return NextResponse.json(
+      {
+        ok: true,
+        rows: data ?? [],
+        page: { limit, offset, totalRows: count ?? 0 },
+      },
+      {
+        headers: {
+          'Cache-Control': 'no-store',
+        },
       }
-
-      const entry = grouped.get(key)!;
-      entry.total_quantity += row.quantity ?? 0;
-      entry.locations.push({
-        id: row.id,
-        location: row.location,
-        quantity: row.quantity,
-      });
-    });
-
-    const rows: InventoryRow[] = order.map((key) => grouped.get(key)!).map((row) => ({
-      ...row,
-      locations: row.locations.sort((a, b) => a.location.localeCompare(b.location)),
-    }));
-
-    return NextResponse.json(rows);
+    );
   });
 }

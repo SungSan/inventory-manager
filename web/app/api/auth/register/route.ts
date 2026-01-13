@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../../../../lib/supabase';
 
 const CORPORATE_DOMAIN = 'sound-wave.co.kr';
@@ -13,16 +12,12 @@ function normalizeUsername(raw: string) {
 }
 
 export async function POST(req: Request) {
-  const { username, name, department, contact, purpose, password, access_token } = await req.json();
+  const { username, name, department, contact, purpose, password } = await req.json();
   const normalizedUsername = normalizeUsername((username ?? '').toString());
   const fullName = (name ?? '').toString().trim();
   const dept = (department ?? '').toString().trim();
   const contactInfo = (contact ?? '').toString().trim();
   const userPurpose = (purpose ?? '').toString().trim();
-
-  if (!access_token) {
-    return NextResponse.json({ error: 'OTP 인증 후 다시 시도하세요.' }, { status: 400 });
-  }
 
   if (!fullName || !dept) {
     return NextResponse.json({ error: '성함과 부서를 입력하세요.' }, { status: 400 });
@@ -35,44 +30,67 @@ export async function POST(req: Request) {
   const email = `${normalizedUsername}@${CORPORATE_DOMAIN}`;
 
   try {
-    const { data: authData, error: authError } = await supabaseAdmin.auth.getUser(access_token);
-    if (authError || !authData?.user) {
-      throw new Error(authError?.message || 'OTP 인증 정보를 확인할 수 없습니다.');
+    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+      email,
+      password: password.toString(),
+      email_confirm: true,
+      user_metadata: {
+        username: normalizedUsername,
+        full_name: fullName,
+        department: dept,
+        contact: contactInfo,
+        purpose: userPurpose,
+        role: 'viewer',
+      },
+    });
+
+    if (authError) {
+      throw new Error(authError.message);
     }
 
-    if (!authData.user.email || authData.user.email.toLowerCase() !== email.toLowerCase()) {
-      throw new Error('ID와 이메일이 일치하지 않습니다.');
+    const authId = authData?.user?.id;
+    if (!authId) {
+      throw new Error('auth user id 생성에 실패했습니다.');
     }
 
-    const authId = authData.user.id;
-
-    const passwordHash = await bcrypt.hash(password.toString(), 10);
-
-    await supabaseAdmin.from('users').upsert({
+    const { error: userError } = await supabaseAdmin.from('users').upsert({
       id: authId,
       email,
       role: 'viewer',
       approved: false,
-      active: true,
-      full_name: fullName || email,
-      department: dept,
-      contact: contactInfo,
-      purpose: userPurpose,
-      password_hash: passwordHash,
+      active: false,
     });
 
-    await supabaseAdmin.from('user_profiles').upsert({
+    if (userError) {
+      return NextResponse.json(
+        { ok: false, step: 'upsert_users', error: userError.message },
+        { status: 500 }
+      );
+    }
+
+    const { error: profileError } = await supabaseAdmin.from('user_profiles').upsert({
       user_id: authId,
       username: normalizedUsername,
       approved: false,
       role: 'viewer',
+      full_name: fullName,
+      department: dept,
+      contact: contactInfo,
+      purpose: userPurpose,
       requested_at: new Date().toISOString(),
       approved_at: null,
       approved_by: null,
     });
 
+    if (profileError) {
+      return NextResponse.json(
+        { ok: false, step: 'upsert_user_profiles', error: profileError.message },
+        { status: 500 }
+      );
+    }
+
     return NextResponse.json({ ok: true, pending: true });
   } catch (err: any) {
-    return NextResponse.json({ error: err?.message || '계정 생성 실패' }, { status: 400 });
+    return NextResponse.json({ ok: false, step: 'register', error: err?.message || '계정 생성 실패' }, { status: 400 });
   }
 }
