@@ -71,6 +71,13 @@ export async function POST(req: Request) {
       );
     }
 
+    if (!normalizedMemo) {
+      return NextResponse.json(
+        { ok: false, error: 'memo is required for transfer', step: 'validation' },
+        { status: 400 }
+      );
+    }
+
     if (!Number.isFinite(normalizedQuantity) || normalizedQuantity <= 0) {
       return NextResponse.json(
         { ok: false, error: 'quantity must be a positive number', step: 'validation' },

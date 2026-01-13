@@ -53,9 +53,13 @@ export async function POST(req: Request) {
     }
 
     const toLocation = String(body?.to_location ?? '').trim();
+    const memo = String(body?.memo ?? '').trim();
     const items = Array.isArray(body?.items) ? (body.items as BulkTransferItem[]) : [];
     if (!toLocation || items.length === 0) {
       return NextResponse.json({ ok: false, error: 'missing fields', step: 'validation' }, { status: 400 });
+    }
+    if (!memo) {
+      return NextResponse.json({ ok: false, error: 'memo is required for bulk transfer', step: 'validation' }, { status: 400 });
     }
 
     const createdBy = session.userId ?? (session as any)?.user?.id ?? (session as any)?.user_id ?? null;
@@ -138,7 +142,7 @@ export async function POST(req: Request) {
         direction: 'OUT',
         idempotency_key: `${itemIdempotency}-out`,
         location: from_location,
-        memo: 'bulk transfer',
+        memo,
         option: normalizedOption || '',
         quantity: normalizedQuantity,
       };
@@ -151,7 +155,7 @@ export async function POST(req: Request) {
         direction: 'IN',
         idempotency_key: `${itemIdempotency}-in`,
         location: toLocation,
-        memo: 'bulk transfer',
+        memo,
         option: normalizedOption || '',
         quantity: normalizedQuantity,
       };

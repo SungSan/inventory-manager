@@ -353,6 +353,7 @@ export default function Home() {
   const [bulkTransferMode, setBulkTransferMode] = useState(false);
   const [bulkSelectedKeys, setBulkSelectedKeys] = useState<string[]>([]);
   const [bulkTransferToLocation, setBulkTransferToLocation] = useState('');
+  const [bulkTransferMemo, setBulkTransferMemo] = useState('');
   const [bulkTransferStatus, setBulkTransferStatus] = useState('');
   const [bulkTransferReport, setBulkTransferReport] = useState<{
     successCount: number;
@@ -953,8 +954,13 @@ export default function Home() {
         : transferPayload.from_location.trim();
     const toLocation = transferPayload.to_location.trim();
     const quantityValue = Number(transferPayload.quantity);
+    const memoValue = transferPayload.memo.trim();
     if (!artistValue || !albumVersion || !fromLocation || !toLocation || !quantityValue) {
       alert('전산이관은 품목, 보낸/받는 로케이션, 수량을 모두 입력해야 합니다.');
+      return;
+    }
+    if (!memoValue) {
+      alert('전산이관 메모는 필수입니다.');
       return;
     }
 
@@ -997,7 +1003,7 @@ export default function Home() {
           fromLocation,
           toLocation,
           quantity: Number(quantityValue),
-          memo: transferPayload.memo ?? '',
+          memo: memoValue,
           barcode: transferPayload.barcode ?? '',
           idempotencyKey,
         })
@@ -1034,12 +1040,17 @@ export default function Home() {
       return;
     }
     const toLocation = bulkTransferToLocation.trim();
+    const memoValue = bulkTransferMemo.trim();
     if (!toLocation) {
       alert('받는 곳을 선택하세요.');
       return;
     }
     if (bulkSelectedRows.length === 0) {
       alert('일괄 이관할 항목을 선택하세요.');
+      return;
+    }
+    if (!memoValue) {
+      alert('일괄 이관 메모는 필수입니다.');
       return;
     }
 
@@ -1111,6 +1122,7 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to_location: toLocation,
+          memo: memoValue,
           items,
           idempotencyKey,
         }),
@@ -1810,6 +1822,7 @@ export default function Home() {
   useEffect(() => {
     if (!bulkTransferMode) {
       setBulkSelectedKeys([]);
+      setBulkTransferMemo('');
       setBulkTransferStatus('');
       setBulkTransferReport(null);
     }
@@ -2191,7 +2204,7 @@ export default function Home() {
                   </div>
                   <div className="form-row">
                     <label className="wide">
-                      <span>메모</span>
+                      <span>메모 (필수)</span>
                       <input
                         value={movement.memo}
                         onChange={(e) => setMovement({ ...movement, memo: e.target.value })}
@@ -2344,7 +2357,7 @@ export default function Home() {
                   <div className="actions-row">
                     <button
                       type="button"
-                      disabled={isSubmitting || transferBlockedForScope}
+                      disabled={isSubmitting || transferBlockedForScope || !transferPayload.memo.trim()}
                       onClick={submitTransfer}
                     >
                       {transferBlockedForScope
@@ -2735,6 +2748,12 @@ export default function Home() {
                       <span className="muted small-text">전량 이관 기준</span>
                     </div>
                     <div className="bulk-transfer-controls">
+                      <input
+                        className="inline-input"
+                        placeholder="메모 (필수)"
+                        value={bulkTransferMemo}
+                        onChange={(e) => setBulkTransferMemo(e.target.value)}
+                      />
                       <select
                         value={bulkTransferToLocation}
                         onChange={(e) => setBulkTransferToLocation(e.target.value)}
@@ -2773,7 +2792,8 @@ export default function Home() {
                           !bulkTransferAllowed ||
                           transferBlockedForScope ||
                           bulkSelectedKeys.length === 0 ||
-                          !bulkTransferToLocation
+                          !bulkTransferToLocation ||
+                          !bulkTransferMemo.trim()
                         }
                         onClick={submitBulkTransfer}
                       >
@@ -3436,7 +3456,8 @@ export default function Home() {
       }
 
       .bulk-transfer-controls button,
-      .bulk-transfer-controls select {
+      .bulk-transfer-controls select,
+      .bulk-transfer-controls input {
         min-height: 40px;
       }
 
