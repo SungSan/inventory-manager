@@ -14,6 +14,7 @@ type InventoryRow = {
   category: string;
   album_version: string;
   option: string;
+  barcode: string;
   total_quantity: number;
   locations: InventoryLocation[];
 };
@@ -22,7 +23,7 @@ export async function GET() {
   return withAuth(['admin', 'operator', 'viewer'], async () => {
     const { data, error } = await supabaseAdmin
       .from('inventory')
-      .select('id, quantity, location, items:items(artist, category, album_version, option)')
+      .select('id, quantity, location, items:items(artist, category, album_version, option, barcode)')
       .order('updated_at', { ascending: false });
 
     if (error) {
@@ -33,10 +34,11 @@ export async function GET() {
     const order: string[] = [];
 
     (data || []).forEach((row: any) => {
-      const artist = row.items?.artist ?? '';
-      const category = row.items?.category ?? '';
-      const album_version = row.items?.album_version ?? '';
-      const option = row.items?.option ?? '';
+      const item = Array.isArray(row.items) ? row.items[0] ?? {} : row.items ?? {};
+      const artist = item.artist ?? '';
+      const category = item.category ?? '';
+      const album_version = item.album_version ?? '';
+      const option = item.option ?? '';
       const key = `${artist}|${category}|${album_version}|${option}`;
 
       if (!grouped.has(key)) {
@@ -47,12 +49,16 @@ export async function GET() {
           category,
           album_version,
           option,
+          barcode: item.barcode ?? '',
           total_quantity: 0,
           locations: [],
         });
       }
 
       const entry = grouped.get(key)!;
+      if (!entry.barcode && item.barcode) {
+        entry.barcode = item.barcode;
+      }
       entry.total_quantity += row.quantity ?? 0;
       entry.locations.push({
         id: row.id,

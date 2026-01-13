@@ -14,6 +14,7 @@ type InventoryRow = {
   category: string;
   album_version: string;
   option: string;
+  barcode: string;
   total_quantity: number;
   locations: InventoryLocation[];
 };
@@ -42,6 +43,8 @@ type AdminLog = {
   created_at: string;
 };
 
+type MovementDirection = 'IN' | 'OUT' | 'ADJUST';
+
 type MovementPayload = {
   artist: string;
   category: 'album' | 'md';
@@ -49,13 +52,14 @@ type MovementPayload = {
   option: string;
   location: string;
   quantity: number;
-  direction: 'IN' | 'OUT' | 'ADJUST';
+  direction: MovementDirection;
   memo: string;
 };
 
 type Role = 'admin' | 'operator' | 'viewer';
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes of inactivity triggers logout
+const BARCODE_REGEX = /^[0-9A-Za-z._-]+$/;
 
 const EMPTY_MOVEMENT: MovementPayload = {
   artist: '',
@@ -104,6 +108,34 @@ function formatDate(value: string) {
   });
 }
 
+function buildBarcodePattern(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!BARCODE_REGEX.test(trimmed) || trimmed.length > 64) return null;
+  const bits = trimmed
+    .split('')
+    .map((char) => char.charCodeAt(0).toString(2).padStart(8, '0'))
+    .join('0');
+  return `101${bits}101`;
+}
+
+function BarcodePreview({ value }: { value: string }) {
+  const pattern = useMemo(() => buildBarcodePattern(value), [value]);
+  if (!pattern) return null;
+  const barWidth = 2;
+  const height = 64;
+  const width = pattern.length * barWidth;
+  return (
+    <svg className="barcode-image" width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+      {pattern.split('').map((bit, index) =>
+        bit === '1' ? (
+          <rect key={index} x={index * barWidth} y={0} width={barWidth} height={height} fill="#111827" />
+        ) : null
+      )}
+    </svg>
+  );
+}
+
 function aggregateLocations(rows: InventoryRow[]) {
   const byLocation: Record<string, number> = {};
   rows.forEach((row) => {
@@ -122,6 +154,10 @@ export default function Home() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [stock, setStock] = useState<InventoryRow[]>([]);
   const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyPageSize, setHistoryPageSize] = useState(50);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyStatus, setHistoryStatus] = useState('');
   const [movement, setMovement] = useState<MovementPayload>(EMPTY_MOVEMENT);
   const [selectedStockKeys, setSelectedStockKeys] = useState<string[]>([]);
   const [focusedStockKey, setFocusedStockKey] = useState<string | null>(null);
@@ -350,9 +386,42 @@ export default function Home() {
   }
 
   async function reloadHistory() {
-    const histRes = await fetch('/api/history');
+    const params = new URLSearchParams();
+    params.set('page', String(historyPage));
+    params.set('pageSize', String(historyPageSize));
+    if (historyFilters.search) params.set('search', historyFilters.search);
+    if (historyFilters.direction) params.set('direction', historyFilters.direction);
+    if (historyFilters.from) params.set('from', historyFilters.from);
+    if (historyFilters.to) params.set('to', historyFilters.to);
+    const histRes = await fetch(`/api/history?${params.toString()}`);
     if (histRes.ok) {
-      setHistory(await histRes.json());
+      const payload = await histRes.json();
+      if (Array.isArray(payload)) {
+        const total = payload.length;
+        setHistory(payload);
+        setHistoryTotal(total);
+        const totalPages = Math.max(1, Math.ceil(total / historyPageSize));
+        if (historyPage > totalPages) {
+          setHistoryPage(totalPages);
+        }
+      } else {
+        const total = payload.total ?? 0;
+        setHistory(payload.data || []);
+        setHistoryTotal(total);
+        const totalPages = Math.max(1, Math.ceil(total / historyPageSize));
+        if (historyPage > totalPages) {
+          setHistoryPage(totalPages);
+        }
+      }
+      setHistoryStatus('');
+    } else {
+      const text = await histRes.text();
+      console.error('history_fetch_failed', {
+        step: 'history_fetch',
+        status: histRes.status,
+        message: text || histRes.statusText,
+      });
+      setHistoryStatus('이력 불러오기 실패');
     }
   }
 
@@ -372,7 +441,7 @@ export default function Home() {
     }
   }
 
-  async function submitMovement(direction: 'IN' | 'OUT') {
+  async function submitMovement(direction: MovementDirection) {
     const artistValue = movement.artist.trim();
     const albumVersion = movement.album_version.trim();
     const locationValue = movement.location.trim();
@@ -485,6 +554,7 @@ export default function Home() {
         category: row.category,
         album_version: row.album_version,
         option: row.option,
+        barcode: row.barcode,
         location: row.locations[0].location,
         quantity: row.locations[0].quantity,
       });
@@ -514,6 +584,7 @@ export default function Home() {
         category: row.category,
         album_version: row.album_version,
         option: row.option,
+        barcode: row.barcode,
         location: row.locations[0].location,
         quantity: row.locations[0].quantity,
       });
@@ -522,6 +593,15 @@ export default function Home() {
 
   async function saveInventoryEdit() {
     if (!editDraft) return;
+    const barcodeValue = editDraft.barcode?.trim() ?? '';
+    if (barcodeValue && (!BARCODE_REGEX.test(barcodeValue) || barcodeValue.length > 64)) {
+      setInventoryActionStatus('바코드는 1~64자의 영문/숫자/.-_만 허용됩니다.');
+      console.error('inventory_update_validation', {
+        step: 'inventory_update_validate',
+        barcode: barcodeValue,
+      });
+      return;
+    }
     setInventoryActionStatus('재고 수정 중...');
     const res = await fetch(`/api/inventory/${editDraft.id}`, {
       method: 'PATCH',
@@ -534,6 +614,11 @@ export default function Home() {
       await refresh();
     } else {
       const text = await res.text();
+      console.error('inventory_update_failed', {
+        step: 'inventory_update',
+        status: res.status,
+        message: text || res.statusText,
+      });
       setInventoryActionStatus(`수정 실패: ${text || res.status}`);
       alert(text || '수정 실패');
     }
@@ -563,7 +648,7 @@ export default function Home() {
   const filteredStock = useMemo(() => {
     return stock.filter((row) => {
       const locationText = row.locations.map((loc) => `${loc.location} ${loc.quantity}`).join(' ');
-      const matchesSearch = [row.artist, row.album_version, row.option, locationText]
+      const matchesSearch = [row.artist, row.album_version, row.option, row.barcode, locationText]
         .join(' ')
         .toLowerCase()
         .includes(stockFilters.search.toLowerCase());
@@ -592,28 +677,22 @@ export default function Home() {
     [stock]
   );
 
-  const filteredHistory = useMemo(() => {
-    const fromDate = historyFilters.from ? new Date(historyFilters.from) : null;
-    const toDate = historyFilters.to ? new Date(`${historyFilters.to}T23:59:59`) : null;
-    return history.filter((row) => {
-      const matchesDirection = !historyFilters.direction || row.direction === historyFilters.direction;
-      const matchesSearch = [
-        row.artist,
-        row.album_version,
-        row.option,
-        row.location,
-        row.created_by,
-        row.memo ?? ''
-      ]
-        .join(' ')
-        .toLowerCase()
-        .includes(historyFilters.search.toLowerCase());
-      const created = new Date(row.created_at);
-      const matchesFrom = !fromDate || created >= fromDate;
-      const matchesTo = !toDate || created <= toDate;
-      return matchesDirection && matchesSearch && matchesFrom && matchesTo;
-    });
-  }, [history, historyFilters]);
+  const historyTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(historyTotal / historyPageSize)),
+    [historyTotal, historyPageSize]
+  );
+
+  const historyPageNumbers = useMemo(() => {
+    const pages = new Set<number>();
+    const start = Math.max(1, historyPage - 2);
+    const end = Math.min(historyTotalPages, historyPage + 2);
+    for (let i = start; i <= end; i += 1) {
+      pages.add(i);
+    }
+    pages.add(1);
+    pages.add(historyTotalPages);
+    return Array.from(pages).sort((a, b) => a - b);
+  }, [historyPage, historyTotalPages]);
 
   const totalQuantity = useMemo(
     () => filteredStock.reduce((sum, row) => sum + row.total_quantity, 0),
@@ -624,6 +703,32 @@ export default function Home() {
     [filteredStock]
   );
   const locationBreakdown = useMemo(() => aggregateLocations(filteredStock), [filteredStock]);
+  const inventoryExportHref = useMemo(() => {
+    const params = new URLSearchParams();
+    params.set('type', 'inventory');
+    if (stockFilters.search) params.set('search', stockFilters.search);
+    if (stockFilters.category) params.set('category', stockFilters.category);
+    if (stockFilters.location) params.set('location', stockFilters.location);
+    if (stockFilters.artist) params.set('artist', stockFilters.artist);
+    return `/api/export?${params.toString()}`;
+  }, [stockFilters]);
+
+  const historyExportHref = useMemo(() => {
+    const params = new URLSearchParams();
+    params.set('type', 'history');
+    if (historyFilters.search) params.set('search', historyFilters.search);
+    if (historyFilters.direction) params.set('direction', historyFilters.direction);
+    if (historyFilters.from) params.set('from', historyFilters.from);
+    if (historyFilters.to) params.set('to', historyFilters.to);
+    return `/api/export?${params.toString()}`;
+  }, [historyFilters]);
+
+  const focusedStock = useMemo(
+    () => (focusedStockKey ? stock.find((row) => row.key === focusedStockKey) ?? null : null),
+    [focusedStockKey, stock]
+  );
+  const focusedBarcode = focusedStock?.barcode?.trim() ?? '';
+  const focusedBarcodePattern = useMemo(() => buildBarcodePattern(focusedBarcode), [focusedBarcode]);
 
   useEffect(() => {
     if (logoutTimeout.current) {
@@ -677,6 +782,28 @@ export default function Home() {
   }, [activePanel, history.length, stock.length]);
 
   useEffect(() => {
+    setHistoryPage(1);
+  }, [historyFilters.search, historyFilters.direction, historyFilters.from, historyFilters.to]);
+
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [historyPageSize]);
+
+  useEffect(() => {
+    if (!isLoggedIn || activePanel !== 'history') return;
+    reloadHistory();
+  }, [
+    activePanel,
+    historyPage,
+    historyPageSize,
+    historyFilters.search,
+    historyFilters.direction,
+    historyFilters.from,
+    historyFilters.to,
+    isLoggedIn,
+  ]);
+
+  useEffect(() => {
     if (!focusedStockKey) {
       setEditDraft(null);
       return;
@@ -690,6 +817,7 @@ export default function Home() {
         category: match.category,
         album_version: match.album_version,
         option: match.option,
+        barcode: match.barcode,
         location: defaultLocation.location,
         quantity: defaultLocation.quantity,
       });
@@ -1037,7 +1165,7 @@ export default function Home() {
               <div className="filter-row">
                 <input
                   className="inline-input"
-                  placeholder="검색 (아티스트/버전/옵션/위치)"
+                  placeholder="검색 (아티스트/버전/옵션/바코드/위치)"
                   value={stockFilters.search}
                   onChange={(e) => setStockFilters({ ...stockFilters, search: e.target.value })}
                 />
@@ -1074,7 +1202,7 @@ export default function Home() {
                   <option value="album">앨범</option>
                   <option value="md">MD</option>
                 </select>
-                <a className="ghost button-link" href="/api/export?type=inventory">엑셀 다운로드</a>
+                <a className="ghost button-link" href={inventoryExportHref}>엑셀 다운로드</a>
               </div>
             }
           >
@@ -1108,6 +1236,7 @@ export default function Home() {
                 <th>카테고리</th>
                 <th>앨범/버전</th>
                 <th>옵션</th>
+                <th>바코드</th>
                 <th>로케이션</th>
                 <th className="align-right">현재고</th>
                 <th>관리</th>
@@ -1125,6 +1254,7 @@ export default function Home() {
                     <td>{row.category}</td>
                     <td>{row.album_version}</td>
                     <td>{row.option}</td>
+                    <td>{row.barcode || '-'}</td>
                     <td>
                       <div className="pill-row wrap">
                         {row.locations.map((loc) => (
@@ -1143,6 +1273,7 @@ export default function Home() {
                                 category: row.category,
                                 album_version: row.album_version,
                                 option: row.option,
+                                barcode: row.barcode,
                                 location: loc.location,
                                 quantity: loc.quantity,
                               });
@@ -1175,6 +1306,7 @@ export default function Home() {
                                   category: row.category,
                                   album_version: row.album_version,
                                   option: row.option,
+                                  barcode: row.barcode,
                                   location: loc.location,
                                   quantity: loc.quantity,
                                 });
@@ -1202,7 +1334,7 @@ export default function Home() {
                   </tr>
                   {sessionRole !== 'viewer' && editDraft && focusedStockKey === row.key && (
                     <tr className="inline-editor-row">
-                      <td colSpan={7}>
+                      <td colSpan={8}>
                         <div className="inline-editor">
                           <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
                             <h3>선택 재고 편집</h3>
@@ -1241,6 +1373,14 @@ export default function Home() {
                               />
                             </label>
                             <label>
+                              <span>바코드</span>
+                              <input
+                                value={editDraft.barcode ?? ''}
+                                onChange={(e) => setEditDraft({ ...editDraft, barcode: e.target.value })}
+                                placeholder="영문/숫자/.-_ (최대 64자)"
+                              />
+                            </label>
+                            <label>
                               <span>로케이션</span>
                               <input
                                 value={editDraft.location}
@@ -1273,6 +1413,33 @@ export default function Home() {
             </tbody>
           </table>
         </div>
+        {focusedStock && (
+          <div className="detail-panel">
+            <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
+              <h3>선택 재고 상세</h3>
+              <span className="muted">선택된 품목의 바코드와 기본 정보를 확인합니다.</span>
+            </div>
+            <div className="detail-grid">
+              <div>
+                <p className="mini-label">품목</p>
+                <p className="muted">{focusedStock.artist} · {focusedStock.album_version} · {focusedStock.option}</p>
+              </div>
+              <div>
+                <p className="mini-label">바코드</p>
+                <p className="muted">{focusedBarcode || '-'}</p>
+                {focusedBarcode ? (
+                  focusedBarcodePattern ? (
+                    <BarcodePreview value={focusedBarcode} />
+                  ) : (
+                    <p className="muted">바코드 이미지를 렌더링할 수 없습니다.</p>
+                  )
+                ) : (
+                  <p className="muted">바코드 정보가 없습니다.</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </Section>
         </>
       )}
@@ -1314,14 +1481,14 @@ export default function Home() {
                 onChange={(e) => setHistoryFilters({ ...historyFilters, to: e.target.value })}
               />
             </label>
-            <a className="ghost button-link" href="/api/export?type=history">엑셀 다운로드</a>
+            <a className="ghost button-link" href={historyExportHref}>엑셀 다운로드</a>
           </div>
         }
       >
         <p className="muted" style={{ margin: '0 0 0.5rem' }}>
           기본적으로 최근 7일 데이터를 보여주며, 달력으로 기간을 직접 선택하고 유형으로 필터링할 수 있습니다.
         </p>
-        <div className="table-wrapper">
+        <div className="table-wrapper history-table">
           <table className="table">
             <thead>
               <tr>
@@ -1338,7 +1505,7 @@ export default function Home() {
               </tr>
             </thead>
             <tbody>
-              {filteredHistory.map((h, idx) => (
+              {history.map((h, idx) => (
                 <tr key={`${h.created_at}-${idx}`}>
                   <td>{formatDate(h.created_at)}</td>
                   <td>
@@ -1356,6 +1523,50 @@ export default function Home() {
               ))}
             </tbody>
           </table>
+        </div>
+        <div className="pagination-row">
+          <div className="pagination-info">
+            <span className="muted">총 {historyTotal.toLocaleString()}건</span>
+            {historyStatus && <span className="muted">{historyStatus}</span>}
+          </div>
+          <div className="pagination-controls">
+            <button
+              className="ghost small"
+              onClick={() => setHistoryPage((prev) => Math.max(1, prev - 1))}
+              disabled={historyPage <= 1}
+            >
+              이전
+            </button>
+            <div className="page-number-row">
+              {historyPageNumbers.map((page) => (
+                <button
+                  key={page}
+                  className={page === historyPage ? 'tab active' : 'tab'}
+                  onClick={() => setHistoryPage(page)}
+                >
+                  {page}
+                </button>
+              ))}
+            </div>
+            <button
+              className="ghost small"
+              onClick={() => setHistoryPage((prev) => Math.min(historyTotalPages, prev + 1))}
+              disabled={historyPage >= historyTotalPages}
+            >
+              다음
+            </button>
+            <label className="compact">
+              <span>페이지 크기</span>
+              <select
+                value={historyPageSize}
+                onChange={(e) => setHistoryPageSize(Number(e.target.value))}
+              >
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+                <option value={200}>200</option>
+              </select>
+            </label>
+          </div>
         </div>
       </Section>
       )}
