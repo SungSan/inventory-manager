@@ -725,6 +725,7 @@ export default function Home() {
     filters?: typeof stockFilters;
     fetchMeta?: boolean;
     prefix?: string;
+    suppressErrors?: boolean;
   }) {
     const nextFilters = options?.filters ?? stockFilters;
     const nextOffset = options?.offset ?? inventoryPage.offset;
@@ -752,7 +753,9 @@ export default function Home() {
         return;
       }
     }
-    setStatus('재고 불러오기 실패');
+    if (!options?.suppressErrors) {
+      setStatus('재고 불러오기 실패');
+    }
   }
 
   function applyInventoryFilters(next: typeof stockFilters) {
@@ -797,7 +800,7 @@ export default function Home() {
     reloadInventory({ offset: clamped, fetchMeta: true });
   }
 
-  async function reloadHistory(options?: { page?: number; pageSize?: number }) {
+  async function reloadHistory(options?: { page?: number; pageSize?: number; suppressErrors?: boolean }) {
     const params = new URLSearchParams();
     if (historyFilters.from) params.set('startDate', historyFilters.from);
     if (historyFilters.to) params.set('endDate', historyFilters.to);
@@ -827,7 +830,7 @@ export default function Home() {
         pageSize: payload?.page?.pageSize ?? nextPageSize,
         totalRows: payload?.page?.totalRows ?? rows.length,
       });
-    } else {
+    } else if (!options?.suppressErrors) {
       const payload = await histRes.json().catch(() => null);
       const message = payload?.error || payload?.message || '입출고 이력 불러오기 실패';
       setStatus(message);
@@ -933,7 +936,10 @@ export default function Home() {
         return;
       }
 
-      await Promise.all([reloadInventory(), reloadHistory()]);
+      await Promise.all([
+        reloadInventory({ suppressErrors: true }),
+        reloadHistory({ suppressErrors: true }),
+      ]);
       setStatus(duplicated ? '중복 요청으로 기존 결과 유지' : '기록 완료');
       setMovement((prev) => ({ ...EMPTY_MOVEMENT, direction: prev.direction }));
     } catch (err: any) {
@@ -1160,7 +1166,10 @@ export default function Home() {
         setBulkTransferStatus(`일괄 이관 완료: 성공 ${successCount}건 · 실패 ${failureCount}건`);
       }
 
-      await Promise.all([reloadInventory(), reloadHistory()]);
+      await Promise.all([
+        reloadInventory({ suppressErrors: true }),
+        reloadHistory({ suppressErrors: true }),
+      ]);
     } catch (err: any) {
       const message = err?.message || '일괄 이관 처리 중 오류가 발생했습니다.';
       setBulkTransferStatus(`일괄 이관 실패: ${message}`);
