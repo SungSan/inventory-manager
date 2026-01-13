@@ -134,67 +134,40 @@ export async function POST(req: Request) {
       }
 
       const itemIdempotency = `${baseIdempotency}-${idx}`;
-      const outPayload: Record<string, any> = {
+      const transferPayload: Record<string, any> = {
         album_version: trimmedAlbum,
         artist: trimmedArtist,
-        barcode: normalizedBarcode || '',
+        barcode: normalizedBarcode || null,
         category: normalizedCategory,
         created_by: createdBy,
-        direction: 'OUT',
-        idempotency_key: `${itemIdempotency}-out`,
-        location: from_location,
+        from_location,
+        idempotency_key: itemIdempotency,
         memo,
         option: normalizedOption || '',
         quantity: normalizedQuantity,
-      };
-
-      const inPayload: Record<string, any> = {
-        album_version: trimmedAlbum,
-        artist: trimmedArtist,
-        barcode: normalizedBarcode || '',
-        category: normalizedCategory,
-        created_by: createdBy,
-        direction: 'IN',
-        idempotency_key: `${itemIdempotency}-in`,
-        location: toLocation,
-        memo,
-        option: normalizedOption || '',
-        quantity: normalizedQuantity,
+        to_location: toLocation,
       };
 
       try {
-        const { data: outData, error: outError } = await supabaseAdmin.rpc('record_movement', outPayload);
-        if (outError) {
-          console.error('bulk transfer record_movement OUT failed', {
-            message: outError.message,
-            details: (outError as any)?.details,
-            hint: (outError as any)?.hint,
-            code: (outError as any)?.code,
-            payload: outPayload,
+        const { data, error } = await supabaseAdmin.rpc('record_transfer_bulk', transferPayload);
+        if (error) {
+          console.error('bulk transfer record_transfer_bulk failed', {
+            message: error.message,
+            details: (error as any)?.details,
+            hint: (error as any)?.hint,
+            code: (error as any)?.code,
+            payload: transferPayload,
           });
-          failures.push({ item, step: 'record_movement_out', error: outError.message });
+          failures.push({ item, step: 'record_transfer_bulk', error: error.message });
           continue;
         }
 
-        const { data: inData, error: inError } = await supabaseAdmin.rpc('record_movement', inPayload);
-        if (inError) {
-          console.error('bulk transfer record_movement IN failed', {
-            message: inError.message,
-            details: (inError as any)?.details,
-            hint: (inError as any)?.hint,
-            code: (inError as any)?.code,
-            payload: inPayload,
-          });
-          failures.push({ item, step: 'record_movement_in', error: inError.message });
+        if (!data) {
+          failures.push({ item, step: 'record_transfer_bulk', error: 'empty response from rpc' });
           continue;
         }
 
-        if (!outData || !inData) {
-          failures.push({ item, step: 'record_movement', error: 'empty response from rpc' });
-          continue;
-        }
-
-        successes.push({ item, result: { out: outData, in: inData } });
+        successes.push({ item, result: data });
       } catch (error: any) {
         console.error('bulk transfer unexpected error', { error, item });
         failures.push({ item, step: 'exception', error: error?.message || 'transfer failed' });
