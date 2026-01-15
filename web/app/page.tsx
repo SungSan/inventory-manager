@@ -11,6 +11,7 @@ type InventoryLocation = {
   editableId?: string | null;
   item_id?: string | null;
   inventory_id?: string | null;
+  location_prefix?: string;
 };
 
 type InventoryRow = {
@@ -19,6 +20,7 @@ type InventoryRow = {
   category: string;
   album_version: string;
   option: string;
+  location_prefix: string;
   total_quantity: number;
   locations: InventoryLocation[];
   inventory_id?: string | null;
@@ -264,6 +266,13 @@ function normalizeStockToApiRows(rows: InventoryRow[]): InventoryApiRow[] {
   );
 }
 
+function getLocationPrefix(location?: string | null) {
+  const value = String(location ?? '').trim();
+  if (!value) return '';
+  const [prefix] = value.split('-');
+  return prefix || value;
+}
+
 function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
   const grouped = new Map<string, InventoryRow>();
 
@@ -272,7 +281,8 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
     const category = row.category ?? '';
     const album_version = row.album_version ?? '';
     const option = row.option ?? '';
-    const key = `${artist}|${category}|${album_version}|${option}`;
+    const locationPrefix = getLocationPrefix(row.location);
+    const key = `${artist}|${category}|${album_version}|${option}|${locationPrefix}`;
     const qty = Number(row.quantity ?? 0);
 
     if (!grouped.has(key)) {
@@ -282,6 +292,7 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
         category,
         album_version,
         option,
+        location_prefix: locationPrefix,
         total_quantity: 0,
         locations: [],
         inventory_id: row.inventory_id ?? null,
@@ -307,6 +318,7 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
       inventory_id: row.inventory_id ?? null,
       item_id: row.item_id ?? null,
       location: row.location,
+      location_prefix: locationPrefix,
       quantity: qty,
     });
   });
@@ -341,6 +353,11 @@ export default function Home() {
   const [transferPayload, setTransferPayload] = useState<TransferPayload>(EMPTY_TRANSFER);
   const [activeTab, setActiveTab] = useState<'movement' | 'transfer' | 'bulk_transfer'>('movement');
   const [bulkSelectedKeys, setBulkSelectedKeys] = useState<string[]>([]);
+  const [locationDetailKey, setLocationDetailKey] = useState<string | null>(null);
+  const [locationDetailDrafts, setLocationDetailDrafts] = useState<Record<string, string>>({});
+  const [detailNewLocation, setDetailNewLocation] = useState('');
+  const [detailNewQuantity, setDetailNewQuantity] = useState(0);
+  const [detailStatus, setDetailStatus] = useState('');
   const [mobileFormOpen, setMobileFormOpen] = useState(false);
   const [selectedStockKeys, setSelectedStockKeys] = useState<string[]>([]);
   const [focusedStockKey, setFocusedStockKey] = useState<string | null>(null);
@@ -664,7 +681,6 @@ export default function Home() {
   async function fetchInventoryMeta(filters: typeof stockFilters, options?: { prefix?: string }) {
     const params = new URLSearchParams();
     if (filters.artist) params.set('artist', filters.artist);
-    if (filters.location) params.set('location', filters.location);
     if (filters.category) params.set('category', filters.category);
     if (filters.q) params.set('q', filters.q);
     if (filters.albumVersion) params.set('album_version', filters.albumVersion);
@@ -691,7 +707,6 @@ export default function Home() {
   function buildInventoryParams(filters: typeof stockFilters, limit?: number, offset?: number) {
     const params = new URLSearchParams();
     if (filters.artist) params.set('artist', filters.artist);
-    if (filters.location) params.set('location', filters.location);
     if (filters.category) params.set('category', filters.category);
     if (filters.q) params.set('q', filters.q);
     if (filters.albumVersion) params.set('album_version', filters.albumVersion);
@@ -713,30 +728,33 @@ export default function Home() {
     const nextOffset = options?.offset ?? inventoryPage.offset;
     const nextLimit = options?.limit ?? inventoryPage.limit;
 
-    const params = buildInventoryParams(nextFilters, nextLimit, nextOffset);
+    try {
+      const allRows = await fetchAllInventory(nextFilters);
+      const grouped = groupInventoryRows(allRows);
+      const prefix = nextFilters.location?.trim();
+      const filtered = prefix ? grouped.filter((row) => row.location_prefix === prefix) : grouped;
+      const totalRows = filtered.length;
+      const offset = Math.max(0, Math.min(nextOffset, Math.max(0, totalRows - 1)));
+      const paged = filtered.slice(offset, offset + nextLimit);
 
-    const stockRes = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
-    if (stockRes.ok) {
-      const payload = await stockRes.json();
-      if (payload?.ok) {
-        if (options?.filters) {
-          setStockFilters(options.filters);
-        }
-        setInventoryPage({
-          limit: payload.page?.limit ?? nextLimit,
-          offset: payload.page?.offset ?? nextOffset,
-          totalRows: payload.page?.totalRows ?? 0,
-        });
-        setStock(groupInventoryRows(payload.rows || []));
-
-        if (options?.fetchMeta !== false) {
-          await fetchInventoryMeta(nextFilters, { prefix: options?.prefix ?? nextFilters.q });
-        }
-        return;
+      if (options?.filters) {
+        setStockFilters(options.filters);
       }
-    }
-    if (!options?.suppressErrors) {
-      setStatus('재고 불러오기 실패');
+      setInventoryPage({
+        limit: nextLimit,
+        offset,
+        totalRows,
+      });
+      setStock(paged);
+
+      if (options?.fetchMeta !== false) {
+        await fetchInventoryMeta(nextFilters, { prefix: options?.prefix ?? nextFilters.location ?? nextFilters.q });
+      }
+      return;
+    } catch (error) {
+      if (!options?.suppressErrors) {
+        setStatus('재고 불러오기 실패');
+      }
     }
   }
 
@@ -744,7 +762,7 @@ export default function Home() {
     const nextOffset = 0;
     setInventoryPage((prev) => ({ ...prev, offset: nextOffset }));
     setStockFilters(next);
-    reloadInventory({ filters: next, offset: nextOffset, prefix: next.q, fetchMeta: true });
+    reloadInventory({ filters: next, offset: nextOffset, prefix: next.location || next.q, fetchMeta: true });
   }
 
   function handleInventorySearchSubmit(e?: React.FormEvent) {
@@ -1263,6 +1281,141 @@ export default function Home() {
     setBulkSelectedKeys([]);
   }
 
+  function openLocationDetail(row: InventoryRow) {
+    setLocationDetailKey(row.key);
+    setDetailNewLocation('');
+    setDetailNewQuantity(0);
+    setDetailStatus('');
+  }
+
+  const locationDetailRow = useMemo(() => {
+    if (!locationDetailKey) return null;
+    return stock.find((row) => row.key === locationDetailKey) ?? null;
+  }, [locationDetailKey, stock]);
+
+  useEffect(() => {
+    if (!locationDetailRow) {
+      setLocationDetailDrafts({});
+      if (locationDetailKey) {
+        setLocationDetailKey(null);
+      }
+      return;
+    }
+    const drafts: Record<string, string> = {};
+    locationDetailRow.locations.forEach((loc) => {
+      const id = loc.editableId ?? loc.inventory_id ?? loc.id;
+      if (!id) return;
+      drafts[id] = loc.location;
+    });
+    setLocationDetailDrafts(drafts);
+  }, [locationDetailRow]);
+
+  async function addLocationDetail() {
+    if (!locationDetailRow) return;
+    if (sessionRole === 'viewer') {
+      alert('조회 권한만 있습니다.');
+      return;
+    }
+    const locationValue = detailNewLocation.trim();
+    const quantityValue = Number(detailNewQuantity);
+    if (!locationValue) {
+      alert('로케이션을 입력하세요.');
+      return;
+    }
+    if (!Number.isFinite(quantityValue) || quantityValue <= 0) {
+      alert('입고 수량은 1 이상이어야 합니다.');
+      return;
+    }
+    setDetailStatus('로케이션 추가 중...');
+    try {
+      const idempotencyKey = `detail-add-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const res = await fetch('/api/movements', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          artist: locationDetailRow.artist,
+          category: locationDetailRow.category,
+          album_version: locationDetailRow.album_version,
+          option: locationDetailRow.option,
+          location: locationValue,
+          quantity: quantityValue,
+          direction: 'IN',
+          memo: '',
+          barcode: locationDetailRow.barcode ?? '',
+          idempotencyKey,
+        }),
+      });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok || payload?.ok !== true) {
+        const message = payload?.error || payload?.message || `로케이션 추가 실패 (${res.status})`;
+        setDetailStatus(message);
+        alert(message);
+        return;
+      }
+      setDetailStatus('로케이션 추가 완료');
+      setDetailNewLocation('');
+      setDetailNewQuantity(0);
+      await refresh();
+    } catch (err: any) {
+      const message = err?.message || '로케이션 추가 중 오류가 발생했습니다.';
+      setDetailStatus(message);
+      alert(message);
+    }
+  }
+
+  async function renameLocationDetail(id: string, nextLocation: string, quantity: number) {
+    if (sessionRole === 'viewer') {
+      alert('조회 권한만 있습니다.');
+      return;
+    }
+    if (!id) return;
+    if (quantity > 0) {
+      alert('수량이 0인 경우에만 로케이션을 변경할 수 있습니다.');
+      return;
+    }
+    const trimmed = nextLocation.trim();
+    if (!trimmed) {
+      alert('로케이션을 입력하세요.');
+      return;
+    }
+    setDetailStatus('로케이션 변경 중...');
+    const res = await fetch(`/api/inventory/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ location: trimmed }),
+    });
+    if (res.ok) {
+      setDetailStatus('로케이션 변경 완료');
+      await refresh();
+    } else {
+      const text = await res.text();
+      setDetailStatus(`로케이션 변경 실패: ${text || res.status}`);
+      alert(text || '로케이션 변경 실패');
+    }
+  }
+
+  async function deleteLocationDetail(id: string, quantity: number) {
+    if (sessionRole !== 'admin') {
+      alert('로케이션 삭제는 관리자만 가능합니다.');
+      return;
+    }
+    if (quantity > 0) {
+      alert('수량이 0인 경우에만 로케이션을 삭제할 수 있습니다.');
+      return;
+    }
+    if (!confirm('해당 로케이션을 삭제하시겠습니까?')) return;
+    setDetailStatus('로케이션 삭제 중...');
+    const res = await fetch(`/api/inventory/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      setDetailStatus('로케이션 삭제 완료');
+      await refresh();
+    } else {
+      const text = await res.text();
+      setDetailStatus(`로케이션 삭제 실패: ${text || res.status}`);
+      alert(text || '로케이션 삭제 실패');
+    }
+  }
+
   async function saveInventoryEdit() {
     if (!editDraft) return;
     if (!editDraft.id) {
@@ -1317,6 +1470,7 @@ export default function Home() {
     }
 
   const albumVersionFilter = stockFilters.albumVersion.trim().toLowerCase();
+  const locationPrefixFilter = stockFilters.location.trim();
 
   const baseStock = useMemo(() => {
     if (!albumVersionFilter) return stock;
@@ -1330,11 +1484,10 @@ export default function Home() {
   const anomalyCount = Math.max(anomalousStock.length, Number(inventoryMeta.anomalyCount ?? 0));
 
   const filteredStock = useMemo(() => {
-    if (showAnomalies) {
-      return anomalousStock;
-    }
-    return baseStock;
-  }, [anomalousStock, baseStock, showAnomalies]);
+    const base = showAnomalies ? anomalousStock : baseStock;
+    if (!locationPrefixFilter) return base;
+    return base.filter((row) => row.location_prefix === locationPrefixFilter);
+  }, [anomalousStock, baseStock, showAnomalies, locationPrefixFilter]);
 
   const bulkSelectedRows = useMemo(() => {
     if (bulkSelectedKeys.length === 0) return [];
@@ -1347,10 +1500,10 @@ export default function Home() {
     [inventoryMeta.locations, locationPresets]
   );
 
-  const filterLocationOptions = useMemo(
-    () => Array.from(new Set(inventoryMeta.locations)).filter(Boolean).sort(),
-    [inventoryMeta.locations]
-  );
+  const filterLocationOptions = useMemo(() => {
+    const prefixes = inventoryMeta.locations.map((loc) => getLocationPrefix(loc));
+    return Array.from(new Set(prefixes)).filter(Boolean).sort();
+  }, [inventoryMeta.locations]);
 
   const artistOptions = useMemo(
     () => Array.from(new Set(inventoryMeta.artists)).filter(Boolean).sort(),
@@ -1405,13 +1558,13 @@ export default function Home() {
     writeFile(workbook, filename);
   }
 
-  async function fetchAllInventoryForExport() {
+  async function fetchAllInventory(filters: typeof stockFilters) {
     const pageLimit = 200;
     let offset = 0;
     let total = Number.MAX_SAFE_INTEGER;
     const rows: InventoryApiRow[] = [];
     while (offset < total) {
-      const params = buildInventoryParams(stockFilters, pageLimit, offset);
+      const params = buildInventoryParams(filters, pageLimit, offset);
       const res = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
       if (!res.ok) break;
       const payload = await res.json();
@@ -1424,10 +1577,18 @@ export default function Home() {
     return rows;
   }
 
+  async function fetchAllInventoryForExport() {
+    return fetchAllInventory(stockFilters);
+  }
+
   async function exportInventory() {
     setInventoryActionStatus('엑셀 내보내는 중...');
     const allRows = await fetchAllInventoryForExport();
-    const sourceRows: InventoryApiRow[] = allRows.length ? allRows : normalizeStockToApiRows(stock);
+    const prefix = stockFilters.location.trim();
+    const filteredRows = prefix
+      ? allRows.filter((row) => getLocationPrefix(row.location) === prefix)
+      : allRows;
+    const sourceRows: InventoryApiRow[] = filteredRows.length ? filteredRows : normalizeStockToApiRows(stock);
     const grouped = groupInventoryRows(sourceRows);
     const rows = grouped.map((row) => {
       console.info('export_map_row', { step: 'export_map_row', key: row.key, barcode: row.barcode ?? '' });
@@ -1522,19 +1683,14 @@ export default function Home() {
   const totalQuantity = inventoryMeta.summary.totalQuantity;
   const distinctItems = inventoryMeta.summary.uniqueItems;
   const locationBreakdown = useMemo(() => {
-    const fromSummary = Object.entries(inventoryMeta.summary.byLocation || {}).sort(
-      (a, b) => Number(b[1]) - Number(a[1])
-    );
-    if (fromSummary.length > 0) return fromSummary;
-
     const aggregate = new Map<string, number>();
     filteredStock.forEach((row) => {
-      row.locations.forEach((loc) => {
-        aggregate.set(loc.location, (aggregate.get(loc.location) ?? 0) + Number(loc.quantity ?? 0));
-      });
+      const prefix = row.location_prefix || getLocationPrefix(row.locations[0]?.location);
+      if (!prefix) return;
+      aggregate.set(prefix, (aggregate.get(prefix) ?? 0) + Number(row.total_quantity ?? 0));
     });
     return Array.from(aggregate.entries()).sort((a, b) => Number(b[1]) - Number(a[1]));
-  }, [filteredStock, inventoryMeta.summary.byLocation]);
+  }, [filteredStock]);
   const totalPages = Math.max(1, Math.ceil((inventoryPage.totalRows || 0) / inventoryPage.limit));
   const currentPage = Math.min(totalPages, Math.floor(inventoryPage.offset / inventoryPage.limit) + 1);
   const canPrevPage = inventoryPage.offset > 0;
@@ -2199,6 +2355,99 @@ export default function Home() {
         </div>
       )}
 
+      {locationDetailRow && (
+        <div className="modal-backdrop">
+          <div className="modal-card wide-modal">
+            <div className="section-heading" style={{ marginBottom: '0.75rem' }}>
+              <div>
+                <p className="mini-label">로케이션 상세보기</p>
+                <h3>
+                  {locationDetailRow.artist} · {locationDetailRow.album_version} · {locationDetailRow.option || '-'}
+                </h3>
+                <div className="muted small-text">
+                  창고: {locationDetailRow.location_prefix} · 합계 {locationDetailRow.total_quantity.toLocaleString()}
+                </div>
+              </div>
+              <button className="ghost" onClick={() => setLocationDetailKey(null)}>
+                닫기
+              </button>
+            </div>
+            <div className="form-row">
+              <label>
+                <span>새 로케이션 (full)</span>
+                <input
+                  value={detailNewLocation}
+                  onChange={(e) => setDetailNewLocation(e.target.value)}
+                  placeholder={`${locationDetailRow.location_prefix}-S-P01-00`}
+                  disabled={sessionRole === 'viewer'}
+                />
+              </label>
+              <label className="compact">
+                <span>입고 수량</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={detailNewQuantity}
+                  onChange={(e) => setDetailNewQuantity(Number(e.target.value))}
+                  disabled={sessionRole === 'viewer'}
+                />
+              </label>
+              <div className="actions-row">
+                <button type="button" onClick={addLocationDetail} disabled={sessionRole === 'viewer'}>
+                  로케이션 추가
+                </button>
+                <span className="muted small-text">입고 수량을 입력하면 신규 로케이션이 생성됩니다.</span>
+              </div>
+            </div>
+            <div className="detail-location-list">
+              {locationDetailRow.locations.map((loc) => {
+                const locationId = loc.editableId ?? loc.inventory_id ?? loc.id ?? '';
+                const isEditable = Number(loc.quantity ?? 0) === 0 && sessionRole !== 'viewer';
+                return (
+                  <div key={`detail-${locationId}-${loc.location}`} className="detail-location-row">
+                    <div>
+                      <strong>{loc.location}</strong>
+                      <div className="muted small-text">수량 {Number(loc.quantity ?? 0).toLocaleString()}</div>
+                    </div>
+                    <div className="detail-location-actions">
+                      <input
+                        value={locationDetailDrafts[locationId] ?? loc.location}
+                        disabled={!isEditable || !locationId}
+                        onChange={(e) =>
+                          setLocationDetailDrafts((prev) => ({ ...prev, [locationId]: e.target.value }))
+                        }
+                        placeholder="로케이션 변경"
+                      />
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={!isEditable || !locationId}
+                        onClick={() =>
+                          renameLocationDetail(locationId, locationDetailDrafts[locationId] ?? loc.location, Number(loc.quantity ?? 0))
+                        }
+                      >
+                        변경
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost danger"
+                        disabled={sessionRole !== 'admin' || Number(loc.quantity ?? 0) !== 0 || !locationId}
+                        onClick={() => deleteLocationDetail(locationId, Number(loc.quantity ?? 0))}
+                      >
+                        삭제
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="muted small-text" style={{ marginTop: '0.75rem' }}>
+              {detailStatus}
+            </div>
+          </div>
+        </div>
+      )}
+
       {activePanel === 'admin' && showAdmin && (
         <div ref={adminRef} className="panel-anchor">
         <Section
@@ -2434,11 +2683,16 @@ export default function Home() {
                       <div>옵션: {row.option || '-'}</div>
                       <div>바코드: {row.barcode || '-'}</div>
                       <div className="inventory-card-locations">
-                        {row.locations.map((loc) => (
-                          <span key={`${row.key}-${loc.id}`} className="pill">
-                            {loc.location}: {loc.quantity.toLocaleString()}
-                          </span>
-                        ))}
+                        <button
+                          type="button"
+                          className="pill"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openLocationDetail(row);
+                          }}
+                        >
+                          {row.location_prefix}: {row.total_quantity.toLocaleString()}
+                        </button>
                       </div>
                     </div>
                   </button>
@@ -2501,33 +2755,16 @@ export default function Home() {
                           <td title={row.barcode ?? ''}>{row.barcode || '-'}</td>
                           <td>
                             <div className="pill-row wrap">
-                              {row.locations.map((loc) => (
-                                <button
-                                  key={`${row.key}-${loc.id}`}
-                                  className="ghost small"
+                              <button
+                                key={`${row.key}-prefix`}
+                                className="ghost small"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  if (activeTab === 'bulk_transfer') return;
-                                  if (selectionDisabled) return;
-                                  setSelectedStockKeys((prev) =>
-                                    prev.includes(row.key) ? prev : [...prev, row.key]
-                                  );
-                                  setFocusedStockKey(row.key);
-                                  setEditDraft({
-                                    id: loc.editableId ?? loc.id,
-                                    artist: row.artist,
-                                    category: row.category,
-                                    album_version: row.album_version,
-                                    option: row.option,
-                                    barcode: row.barcode ?? '',
-                                    location: loc.location,
-                                    quantity: loc.quantity,
-                                  });
+                                  openLocationDetail(row);
                                 }}
-                                >
-                                  {loc.location}: {loc.quantity.toLocaleString()}
-                                </button>
-                              ))}
+                              >
+                                {row.location_prefix}
+                              </button>
                             </div>
                           </td>
                           <td className="align-right">{row.total_quantity.toLocaleString()}</td>
@@ -3443,6 +3680,34 @@ export default function Home() {
       .bulk-transfer-report ul {
         margin: 0.25rem 0 0;
         padding-left: 1.1rem;
+      }
+
+      .detail-location-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        margin-top: 0.75rem;
+      }
+
+      .detail-location-row {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        padding: 0.6rem 0.75rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        background: #f9fafb;
+      }
+
+      .detail-location-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+      }
+
+      .detail-location-actions input {
+        min-width: 200px;
       }
 
       @media (min-width: 640px) {

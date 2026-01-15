@@ -478,7 +478,7 @@ export default function BulkTransferPanel({
         </label>
       </div>
       <div className="bulk-transfer-actions">
-        <button type="button" className="ghost" onClick={onSelectAll}>
+        <button type="button" className="ghost" onClick={onSelectAll} disabled={!onSelectAll}>
           전체 선택
         </button>
         <button type="button" className="ghost" onClick={onClearSelection}>
