@@ -89,6 +89,8 @@ export async function POST(req: Request) {
     const baseIdempotency = String(body?.idempotencyKey ?? '').trim() || `bulk-transfer-${randomUUID()}`;
     const successes: Array<{ item: BulkTransferItem; result: { out: any; in: any } }> = [];
     const failures: Array<{ item: BulkTransferItem; step: string; error: string }> = [];
+    const transferUrl = new URL('/api/transfer', req.url);
+    const cookieHeader = req.headers.get('cookie') ?? '';
 
     for (let idx = 0; idx < items.length; idx += 1) {
       const item = items[idx];
@@ -143,31 +145,37 @@ export async function POST(req: Request) {
         artist: trimmedArtist,
         barcode: normalizedBarcode || null,
         category: normalizedCategory,
-        created_by: createdBy,
-        from_location,
-        idempotency_key: itemIdempotency,
+        fromLocation: from_location,
+        idempotencyKey: itemIdempotency,
         memo,
         option: normalizedOption || '',
         quantity: normalizedQuantity,
-        to_location: toLocation,
+        toLocation,
       };
 
       try {
-        console.log('[BULK TRANSFER] rpc=record_transfer_bulk');
-        const { data, error } = await supabaseAdmin.rpc('record_transfer_bulk', transferPayload);
-        if (error) {
-          console.error('bulk transfer record_transfer_bulk failed', {
-            message: error.message,
-            details: (error as any)?.details,
-            hint: (error as any)?.hint,
-            code: (error as any)?.code,
-            payload: transferPayload,
+        const res = await fetch(transferUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            cookie: cookieHeader,
+          },
+          body: JSON.stringify(transferPayload),
+        });
+        const payload = await res.json().catch(() => null);
+        if (!res.ok || payload?.ok !== true) {
+          const message = payload?.error || payload?.message || `transfer failed (${res.status})`;
+          console.error('bulk transfer single transfer failed', {
+            status: res.status,
+            payload,
+            message,
+            item,
           });
-          failures.push({ item, step: 'record_transfer_bulk', error: error.message });
+          failures.push({ item, step: 'transfer', error: message });
           continue;
         }
 
-        successes.push({ item, result: data ?? null });
+        successes.push({ item, result: payload?.result ?? null });
       } catch (error: any) {
         console.error('bulk transfer unexpected error', { error, item });
         failures.push({ item, step: 'exception', error: error?.message || 'transfer failed' });

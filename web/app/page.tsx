@@ -716,6 +716,27 @@ export default function Home() {
     return params;
   }
 
+  async function fetchInventoryPage(
+    filters: typeof stockFilters,
+    options?: { limit?: number; offset?: number }
+  ): Promise<{ rows: InventoryRow[]; page: { limit: number; offset: number; totalRows: number } }> {
+    const params = buildInventoryParams(filters, options?.limit, options?.offset);
+    params.set('view', 'prefix');
+    const res = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
+    if (!res.ok) {
+      const message = await res.text();
+      throw new Error(message || `inventory fetch failed (${res.status})`);
+    }
+    const payload = await res.json().catch(() => null);
+    if (!payload?.ok) {
+      throw new Error(payload?.error || 'inventory fetch failed');
+    }
+    return {
+      rows: Array.isArray(payload.rows) ? payload.rows : [],
+      page: payload.page ?? { limit: options?.limit ?? 0, offset: options?.offset ?? 0, totalRows: 0 },
+    };
+  }
+
   async function reloadInventory(options?: {
     offset?: number;
     limit?: number;
@@ -729,23 +750,23 @@ export default function Home() {
     const nextLimit = options?.limit ?? inventoryPage.limit;
 
     try {
-      const allRows = await fetchAllInventory(nextFilters);
-      const grouped = groupInventoryRows(allRows);
-      const prefix = nextFilters.location?.trim();
-      const filtered = prefix ? grouped.filter((row) => row.location_prefix === prefix) : grouped;
-      const totalRows = filtered.length;
-      const offset = Math.max(0, Math.min(nextOffset, Math.max(0, totalRows - 1)));
-      const paged = filtered.slice(offset, offset + nextLimit);
-
       if (options?.filters) {
         setStockFilters(options.filters);
       }
+      let payload = await fetchInventoryPage(nextFilters, { limit: nextLimit, offset: nextOffset });
+      let totalRows = payload.page.totalRows ?? payload.rows.length;
+      const clampedOffset = Math.max(0, Math.min(nextOffset, Math.max(0, totalRows - 1)));
+      if (clampedOffset !== nextOffset) {
+        payload = await fetchInventoryPage(nextFilters, { limit: nextLimit, offset: clampedOffset });
+        totalRows = payload.page.totalRows ?? payload.rows.length;
+      }
+      const offset = payload.page.offset ?? clampedOffset;
       setInventoryPage({
-        limit: nextLimit,
+        limit: payload.page.limit ?? nextLimit,
         offset,
         totalRows,
       });
-      setStock(paged);
+      setStock(payload.rows);
 
       if (options?.fetchMeta !== false) {
         await fetchInventoryMeta(nextFilters, { prefix: options?.prefix ?? nextFilters.location ?? nextFilters.q });
