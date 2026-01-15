@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { utils, writeFile } from 'xlsx';
 import { getSupabaseClient } from '../lib/supabaseClient';
+import BulkTransferPanel from '../components/BulkTransferPanel';
 
 type InventoryLocation = {
   id: string;
@@ -109,30 +110,6 @@ type TransferPayload = {
   memo: string;
   barcode?: string;
   item_id?: string | null;
-};
-
-type BulkTransferItem = {
-  artist: string;
-  category: 'album' | 'md';
-  album_version: string;
-  option: string;
-  from_location: string;
-  quantity: number;
-  barcode?: string | null;
-  item_id?: string | null;
-};
-
-type BulkTransferFailure = {
-  item: BulkTransferItem;
-  label: string;
-  error: string;
-};
-
-type BulkTransferReport = {
-  successCount: number;
-  failureCount: number;
-  failures: string[];
-  failureItems: BulkTransferFailure[];
 };
 
 type Role = 'admin' | 'operator' | 'viewer' | 'l_operator' | 'manager';
@@ -362,14 +339,8 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [movement, setMovement] = useState<MovementPayload>(EMPTY_MOVEMENT);
   const [transferPayload, setTransferPayload] = useState<TransferPayload>(EMPTY_TRANSFER);
-  const [movementMode, setMovementMode] = useState<'movement' | 'transfer'>('movement');
-  const [bulkTransferMode, setBulkTransferMode] = useState(false);
+  const [activeTab, setActiveTab] = useState<'movement' | 'transfer' | 'bulk_transfer'>('movement');
   const [bulkSelectedKeys, setBulkSelectedKeys] = useState<string[]>([]);
-  const [bulkTransferToLocation, setBulkTransferToLocation] = useState('');
-  const [bulkTransferMemo, setBulkTransferMemo] = useState('');
-  const [bulkTransferQuantities, setBulkTransferQuantities] = useState<Record<string, string>>({});
-  const [bulkTransferStatus, setBulkTransferStatus] = useState('');
-  const [bulkTransferReport, setBulkTransferReport] = useState<BulkTransferReport | null>(null);
   const [mobileFormOpen, setMobileFormOpen] = useState(false);
   const [selectedStockKeys, setSelectedStockKeys] = useState<string[]>([]);
   const [focusedStockKey, setFocusedStockKey] = useState<string | null>(null);
@@ -1053,368 +1024,6 @@ export default function Home() {
     }
   }
 
-  function getBulkRowLocation(row: InventoryRow) {
-    if (row.locations.length !== 1) return null;
-    const location = row.locations[0];
-    const quantity = Number(location?.quantity ?? 0);
-    if (!location || !Number.isFinite(quantity)) return null;
-    return { location, quantity };
-  }
-
-  function parseBulkQuantity(value: string | undefined) {
-    if (value === undefined || value.trim() === '') {
-      return { kind: 'empty' as const };
-    }
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
-      return { kind: 'invalid' as const };
-    }
-    return { kind: 'value' as const, value: parsed };
-  }
-
-  async function submitBulkTransfer() {
-    if (!bulkTransferAllowed) {
-      alert('일괄 이관 권한이 없습니다.');
-      return;
-    }
-    const toLocation = bulkTransferToLocation.trim();
-    const memoValue = bulkTransferMemo.trim();
-    if (!toLocation) {
-      alert('받는 곳을 선택하세요.');
-      return;
-    }
-    if (bulkSelectedRows.length === 0) {
-      alert('일괄 이관할 항목을 선택하세요.');
-      return;
-    }
-    if (!memoValue) {
-      alert('일괄 이관 메모는 필수입니다.');
-      return;
-    }
-
-    if (sessionRole === 'l_operator' || sessionRole === 'manager') {
-      const primary = sessionScope?.primary_location?.trim();
-      const subs = (sessionScope?.sub_locations ?? []).map((v) => v.trim()).filter(Boolean);
-      if (!primary) {
-        alert('담당 로케이션이 지정되지 않아 전산이관을 진행할 수 없습니다.');
-        return;
-      }
-      if (subs.length === 0 || !subs.includes(toLocation)) {
-        alert('받는 곳은 서브 로케이션 중에서만 선택할 수 있습니다.');
-        return;
-      }
-    }
-
-    console.info('bulk_prepare', {
-      step: 'bulk_prepare',
-      selectedCount: bulkSelectedRows.length,
-      toLocation,
-    });
-
-    const invalidRows: InventoryRow[] = [];
-    const items: BulkTransferItem[] = [];
-
-    bulkSelectedRows.forEach((row) => {
-      const locationInfo = getBulkRowLocation(row);
-      if (!locationInfo) {
-        invalidRows.push(row);
-        return;
-      }
-      const { location, quantity: availableQuantity } = locationInfo;
-      if (availableQuantity <= 0) {
-        invalidRows.push(row);
-        return;
-      }
-      if (
-        (sessionRole === 'l_operator' || sessionRole === 'manager') &&
-        sessionScope?.primary_location &&
-        location.location !== sessionScope.primary_location
-      ) {
-        invalidRows.push(row);
-        return;
-      }
-
-      const parsed = parseBulkQuantity(bulkTransferQuantities[row.key]);
-      if (parsed.kind === 'invalid') {
-        invalidRows.push(row);
-        return;
-      }
-
-      let requestedQuantity = availableQuantity;
-      if (parsed.kind === 'value') {
-        requestedQuantity = parsed.value;
-      }
-
-      if (requestedQuantity < 0 || requestedQuantity > availableQuantity) {
-        invalidRows.push(row);
-        return;
-      }
-
-      if (requestedQuantity === 0) {
-        return;
-      }
-
-      items.push({
-        artist: row.artist,
-        category: row.category as BulkTransferItem['category'],
-        album_version: row.album_version,
-        option: row.option ?? '',
-        from_location: location.location,
-        quantity: requestedQuantity,
-        barcode: row.barcode ?? null,
-        item_id: row.item_id ?? null,
-      });
-    });
-
-    console.info('bulk_validate', {
-      step: 'bulk_validate',
-      validCount: items.length,
-      invalidCount: invalidRows.length,
-    });
-
-    if (invalidRows.length > 0) {
-      alert(`복수 로케이션, 수량 0, 또는 수량 입력 오류인 항목 ${invalidRows.length}개가 있습니다.`);
-      return;
-    }
-
-    if (items.length === 0) {
-      alert('이관할 수량이 0인 항목은 자동으로 제외됩니다.');
-      return;
-    }
-
-    const confirmed = confirm(`${items.length}개 항목을 ${toLocation}로 이관합니다. 계속할까요?`);
-    if (!confirmed) return;
-
-    setIsSubmitting(true);
-    setBulkTransferStatus('일괄 이관 처리 중...');
-    setBulkTransferReport(null);
-    markActivity();
-
-    try {
-      const baseKey = `bulk-transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      let successCount = 0;
-      const failures: BulkTransferFailure[] = [];
-
-      for (const item of items) {
-        const itemIdLabel = item.item_id ?? `${item.artist}-${item.album_version}-${item.option || '-'}`;
-        const idempotencyKey = `${baseKey}:${itemIdLabel}:${item.from_location}:${toLocation}:${item.quantity}`;
-        console.info('bulk_transfer_item', {
-          step: 'bulk_transfer_item',
-          item_id: item.item_id,
-          from: item.from_location,
-          to: toLocation,
-          quantity: item.quantity,
-        });
-        try {
-          const res = await fetch('/api/transfer', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              artist: item.artist,
-              category: item.category,
-              album_version: item.album_version,
-              option: item.option ?? '',
-              fromLocation: item.from_location,
-              toLocation,
-              quantity: item.quantity,
-              memo: memoValue,
-              barcode: item.barcode ?? '',
-              idempotencyKey,
-            })
-          });
-
-          const payload = await res.json().catch(() => null);
-          if (!res.ok || payload?.ok !== true) {
-            const message = payload?.error || payload?.message || `전산이관 실패 (${res.status})`;
-            console.error('bulk_error', {
-              step: 'bulk_error',
-              item_id: item.item_id,
-              from: item.from_location,
-              to: toLocation,
-              quantity: item.quantity,
-              error: message,
-            });
-            const label = `${item.artist} / ${item.album_version} / ${item.option || '-'} (${item.from_location})`;
-            failures.push({ item, label, error: message });
-          } else {
-            successCount += 1;
-          }
-        } catch (err: any) {
-          const message = err?.message || '전산이관 실패';
-          console.error('bulk_error', {
-            step: 'bulk_error',
-            item_id: item.item_id,
-            from: item.from_location,
-            to: toLocation,
-            quantity: item.quantity,
-            error: message,
-          });
-          const label = `${item.artist} / ${item.album_version} / ${item.option || '-'} (${item.from_location})`;
-          failures.push({ item, label, error: message });
-        }
-      }
-
-      const failureMessages = failures.map((failure) => `${failure.label}: ${failure.error}`);
-      const failureCount = failures.length;
-
-      setBulkTransferReport({
-        successCount,
-        failureCount,
-        failures: failureMessages,
-        failureItems: failures,
-      });
-
-      if (failureCount === 0) {
-        setBulkTransferStatus(`일괄 이관 완료: ${successCount}건`);
-        setBulkSelectedKeys([]);
-      } else {
-        setBulkTransferStatus(`일괄 이관 완료: 성공 ${successCount}건 · 실패 ${failureCount}건`);
-      }
-
-      console.info('bulk_done', {
-        step: 'bulk_done',
-        successCount,
-        failureCount,
-      });
-
-      await Promise.all([
-        reloadInventory({ suppressErrors: true }),
-        reloadHistory({ suppressErrors: true }),
-      ]);
-    } catch (err: any) {
-      const message = err?.message || '일괄 이관 처리 중 오류가 발생했습니다.';
-      console.error('bulk_error', { step: 'bulk_error', error: message });
-      setBulkTransferStatus(`일괄 이관 실패: ${message}`);
-      alert(message);
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  async function retryBulkTransferFailures() {
-    if (!bulkTransferReport || bulkTransferReport.failureItems.length === 0) return;
-    if (!bulkTransferToLocation.trim()) {
-      alert('받는 곳을 선택하세요.');
-      return;
-    }
-    if (!bulkTransferMemo.trim()) {
-      alert('일괄 이관 메모는 필수입니다.');
-      return;
-    }
-    if (sessionRole === 'l_operator' || sessionRole === 'manager') {
-      const primary = sessionScope?.primary_location?.trim();
-      const subs = (sessionScope?.sub_locations ?? []).map((v) => v.trim()).filter(Boolean);
-      if (!primary) {
-        alert('담당 로케이션이 지정되지 않아 전산이관을 진행할 수 없습니다.');
-        return;
-      }
-      if (subs.length === 0 || !subs.includes(bulkTransferToLocation.trim())) {
-        alert('받는 곳은 서브 로케이션 중에서만 선택할 수 있습니다.');
-        return;
-      }
-    }
-    const failureItems = bulkTransferReport.failureItems.map((failure) => failure.item);
-    setBulkTransferStatus('실패 항목 재시도 중...');
-    setBulkTransferReport(null);
-    setIsSubmitting(true);
-    try {
-      const baseKey = `bulk-transfer-retry-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      let successCount = 0;
-      const failures: BulkTransferFailure[] = [];
-      for (const item of failureItems) {
-        const itemIdLabel = item.item_id ?? `${item.artist}-${item.album_version}-${item.option || '-'}`;
-        const idempotencyKey = `${baseKey}:${itemIdLabel}:${item.from_location}:${bulkTransferToLocation}:${item.quantity}`;
-        console.info('bulk_transfer_item', {
-          step: 'bulk_transfer_item',
-          item_id: item.item_id,
-          from: item.from_location,
-          to: bulkTransferToLocation,
-          quantity: item.quantity,
-        });
-        try {
-          const res = await fetch('/api/transfer', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              artist: item.artist,
-              category: item.category,
-              album_version: item.album_version,
-              option: item.option ?? '',
-              fromLocation: item.from_location,
-              toLocation: bulkTransferToLocation,
-              quantity: item.quantity,
-              memo: bulkTransferMemo.trim(),
-              barcode: item.barcode ?? '',
-              idempotencyKey,
-            })
-          });
-          const payload = await res.json().catch(() => null);
-          if (!res.ok || payload?.ok !== true) {
-            const message = payload?.error || payload?.message || `전산이관 실패 (${res.status})`;
-            console.error('bulk_error', {
-              step: 'bulk_error',
-              item_id: item.item_id,
-              from: item.from_location,
-              to: bulkTransferToLocation,
-              quantity: item.quantity,
-              error: message,
-            });
-            const label = `${item.artist} / ${item.album_version} / ${item.option || '-'} (${item.from_location})`;
-            failures.push({ item, label, error: message });
-          } else {
-            successCount += 1;
-          }
-        } catch (err: any) {
-          const message = err?.message || '전산이관 실패';
-          console.error('bulk_error', {
-            step: 'bulk_error',
-            item_id: item.item_id,
-            from: item.from_location,
-            to: bulkTransferToLocation,
-            quantity: item.quantity,
-            error: message,
-          });
-          const label = `${item.artist} / ${item.album_version} / ${item.option || '-'} (${item.from_location})`;
-          failures.push({ item, label, error: message });
-        }
-      }
-
-      const failureMessages = failures.map((failure) => `${failure.label}: ${failure.error}`);
-      const failureCount = failures.length;
-
-      setBulkTransferReport({
-        successCount,
-        failureCount,
-        failures: failureMessages,
-        failureItems: failures,
-      });
-
-      if (failureCount === 0) {
-        setBulkTransferStatus(`재시도 완료: ${successCount}건`);
-      } else {
-        setBulkTransferStatus(`재시도 완료: 성공 ${successCount}건 · 실패 ${failureCount}건`);
-      }
-
-      console.info('bulk_done', {
-        step: 'bulk_done',
-        successCount,
-        failureCount,
-      });
-
-      await Promise.all([
-        reloadInventory({ suppressErrors: true }),
-        reloadHistory({ suppressErrors: true }),
-      ]);
-    } catch (err: any) {
-      const message = err?.message || '일괄 이관 재시도 중 오류가 발생했습니다.';
-      console.error('bulk_error', { step: 'bulk_error', error: message });
-      setBulkTransferStatus(`재시도 실패: ${message}`);
-      alert(message);
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
   function resetTransferForm() {
     setTransferPayload({
       ...EMPTY_TRANSFER,
@@ -1732,37 +1341,6 @@ export default function Home() {
     const lookup = new Map(stock.map((row) => [row.key, row]));
     return bulkSelectedKeys.map((key) => lookup.get(key)).filter(Boolean) as InventoryRow[];
   }, [bulkSelectedKeys, stock]);
-
-  const bulkQuantityErrors = useMemo(() => {
-    const errors: Record<string, string> = {};
-    bulkSelectedRows.forEach((row) => {
-      const locationInfo = getBulkRowLocation(row);
-      if (!locationInfo) {
-        errors[row.key] = '로케이션이 하나인 항목만 일괄 이관 가능합니다.';
-        return;
-      }
-      const available = Number(locationInfo.quantity ?? 0);
-      if (!Number.isFinite(available) || available <= 0) {
-        errors[row.key] = '현재고가 0 이하입니다.';
-        return;
-      }
-      const parsed = parseBulkQuantity(bulkTransferQuantities[row.key]);
-      if (parsed.kind === 'invalid') {
-        errors[row.key] = '정수만 입력할 수 있습니다.';
-        return;
-      }
-      if (parsed.kind === 'value') {
-        if (parsed.value < 0) {
-          errors[row.key] = '0 이상만 입력할 수 있습니다.';
-          return;
-        }
-        if (parsed.value > available) {
-          errors[row.key] = '현재고를 초과할 수 없습니다.';
-        }
-      }
-    });
-    return errors;
-  }, [bulkSelectedRows, bulkTransferQuantities]);
 
   const locationOptions = useMemo(
     () => Array.from(new Set([...locationPresets, ...inventoryMeta.locations])).filter(Boolean).sort(),
@@ -2104,28 +1682,6 @@ export default function Home() {
   }, [selectedStockKeys, focusedStockKey]);
 
   useEffect(() => {
-    if (!bulkTransferMode) {
-      setBulkSelectedKeys([]);
-      setBulkTransferMemo('');
-      setBulkTransferStatus('');
-      setBulkTransferReport(null);
-      setBulkTransferQuantities({});
-    }
-  }, [bulkTransferMode]);
-
-  useEffect(() => {
-    setBulkTransferQuantities((prev) => {
-      const next: Record<string, string> = {};
-      bulkSelectedKeys.forEach((key) => {
-        if (key in prev) {
-          next[key] = prev[key];
-        }
-      });
-      return next;
-    });
-  }, [bulkSelectedKeys]);
-
-  useEffect(() => {
     if (activePanel !== 'stock') {
       setMobileFormOpen(false);
     }
@@ -2151,9 +1707,9 @@ export default function Home() {
       <div className="mode-toggle">
         <button
           type="button"
-          className={movementMode === 'movement' ? 'primary' : 'ghost'}
+          className={activeTab === 'movement' ? 'primary' : 'ghost'}
           onClick={() => {
-            setMovementMode('movement');
+            setActiveTab('movement');
             setTransferPayload(EMPTY_TRANSFER);
           }}
         >
@@ -2161,30 +1717,27 @@ export default function Home() {
         </button>
         <button
           type="button"
-          className={movementMode === 'transfer' ? 'primary' : 'ghost'}
+          className={activeTab === 'transfer' ? 'primary' : 'ghost'}
           onClick={() => {
-            setMovementMode('transfer');
+            setActiveTab('transfer');
             setMovement(EMPTY_MOVEMENT);
             resetTransferForm();
           }}
         >
           전산이관
         </button>
-        {movementMode === 'transfer' && (
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => {
-              setMovementMode('movement');
-              setTransferPayload(EMPTY_TRANSFER);
-            }}
-          >
-            전산이관 취소
-          </button>
-        )}
+        <button
+          type="button"
+          className={activeTab === 'bulk_transfer' ? 'primary' : 'ghost'}
+          onClick={() => setActiveTab('bulk_transfer')}
+          disabled={!bulkTransferAllowed}
+          title={bulkTransferAllowed ? undefined : '일괄 이관 권한 필요'}
+        >
+          일괄이관
+        </button>
       </div>
 
-      {movementMode === 'movement' ? (
+      {activeTab === 'movement' ? (
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -2272,7 +1825,7 @@ export default function Home() {
           </div>
           <div className="actions-row">
             <button type="button" disabled={isSubmitting} onClick={() => submitMovement('IN')}>
-              {isSubmitting && movementMode === 'movement' ? '처리 중...' : '입고'}
+              {isSubmitting && activeTab === 'movement' ? '처리 중...' : '입고'}
             </button>
             <button
               type="button"
@@ -2280,22 +1833,11 @@ export default function Home() {
               className="secondary"
               onClick={() => submitMovement('OUT')}
             >
-              {isSubmitting && movementMode === 'movement' ? '처리 중...' : '출고'}
-            </button>
-            <button
-              type="button"
-              disabled={isSubmitting}
-              className="ghost"
-              onClick={() => {
-                setMovementMode('transfer');
-                setMovement(EMPTY_MOVEMENT);
-              }}
-            >
-              전산이관으로 전환
+              {isSubmitting && activeTab === 'movement' ? '처리 중...' : '출고'}
             </button>
           </div>
         </form>
-      ) : (
+      ) : activeTab === 'transfer' ? (
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -2425,7 +1967,7 @@ export default function Home() {
             >
               {transferBlockedForScope
                 ? '서브 로케이션 필요'
-                : isSubmitting && movementMode === 'transfer'
+                : isSubmitting && activeTab === 'transfer'
                 ? '처리 중...'
                 : '전산이관'}
             </button>
@@ -2434,166 +1976,26 @@ export default function Home() {
             </button>
           </div>
         </form>
-      )}
-      {bulkTransferMode && (
-        <div className="bulk-transfer-panel">
-          <div className="bulk-transfer-header">
-            <strong>일괄 이관 설정</strong>
-            <span className="muted small-text">미입력=전량 이관 · 0 입력=해당 항목 제외</span>
-          </div>
-          <div className="form-row">
-            <label className="wide">
-              <span>메모 (필수)</span>
-              <input
-                value={bulkTransferMemo}
-                onChange={(e) => setBulkTransferMemo(e.target.value)}
-                placeholder="일괄 이관 사유/비고"
-              />
-            </label>
-          </div>
-          <div className="form-row">
-            <label>
-              <span>받는 곳</span>
-              <select
-                value={bulkTransferToLocation}
-                onChange={(e) => setBulkTransferToLocation(e.target.value)}
-                disabled={
-                  sessionRole === 'l_operator' || sessionRole === 'manager'
-                    ? !sessionScope?.sub_locations || sessionScope.sub_locations.length === 0
-                    : locationOptions.length === 0
-                }
-              >
-                <option value="" disabled>
-                  {sessionRole === 'l_operator' || sessionRole === 'manager'
-                    ? sessionScope?.sub_locations && sessionScope.sub_locations.length > 0
-                      ? '받는 곳 선택'
-                      : '서브 로케이션 없음'
-                    : locationOptions.length > 0
-                    ? '받는 곳 선택'
-                    : '로케이션 없음'}
-                </option>
-                {(sessionRole === 'l_operator' || sessionRole === 'manager'
-                  ? sessionScope?.sub_locations ?? []
-                  : locationOptions
-                ).map((loc) => (
-                  <option key={`bulk-inline-${loc}`} value={loc}>
-                    {loc}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="compact">
-              <span>선택된 항목</span>
-              <input value={`${bulkSelectedKeys.length}개`} readOnly />
-            </label>
-          </div>
-          <div className="bulk-transfer-actions">
-            <button type="button" className="ghost" onClick={() => selectAllBulk(filteredStock)}>
-              전체 선택
-            </button>
-            <button type="button" className="ghost" onClick={clearBulkSelection}>
-              선택 해제
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              onClick={() => {
-                const next: Record<string, string> = {};
-                bulkSelectedRows.forEach((row) => {
-                  const locationInfo = getBulkRowLocation(row);
-                  if (!locationInfo) return;
-                  next[row.key] = String(Math.max(0, Math.floor(locationInfo.quantity)));
-                });
-                setBulkTransferQuantities(next);
-              }}
-            >
-              전체 수량 자동 채우기
-            </button>
-          </div>
-          <div className="bulk-transfer-list">
-            {bulkSelectedRows.length === 0 && (
-              <div className="muted small-text">일괄 이관할 항목을 선택하세요.</div>
-            )}
-            {bulkSelectedRows.map((row) => {
-              const locationInfo = getBulkRowLocation(row);
-              const available = locationInfo ? Number(locationInfo.quantity ?? 0) : 0;
-              const error = bulkQuantityErrors[row.key];
-              return (
-                <div key={`bulk-item-${row.key}`} className="bulk-transfer-item">
-                  <div className="bulk-transfer-item-main">
-                    <strong>{row.artist}</strong>
-                    <div className="muted small-text">
-                      {row.album_version} / {row.option || '-'}
-                    </div>
-                    <div className="muted small-text">
-                      위치: {locationInfo?.location.location ?? '복수 로케이션'} · 현재고 {available.toLocaleString()}
-                    </div>
-                  </div>
-                  <div className="bulk-transfer-item-input">
-                    <label>
-                      <span>이관 수량</span>
-                      <input
-                        type="number"
-                        min={0}
-                        step={1}
-                        value={bulkTransferQuantities[row.key] ?? ''}
-                        onChange={(e) =>
-                          setBulkTransferQuantities((prev) => ({ ...prev, [row.key]: e.target.value }))
-                        }
-                        placeholder="미입력=전량"
-                      />
-                    </label>
-                    {error && <span className="bulk-transfer-error">{error}</span>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <div className="bulk-transfer-footer">
-            <button
-              type="button"
-              className="primary"
-              disabled={
-                isSubmitting ||
-                !bulkTransferAllowed ||
-                transferBlockedForScope ||
-                bulkSelectedKeys.length === 0 ||
-                !bulkTransferToLocation ||
-                !bulkTransferMemo.trim() ||
-                Object.keys(bulkQuantityErrors).length > 0
-              }
-              onClick={submitBulkTransfer}
-            >
-              {isSubmitting ? '처리 중...' : '일괄 이관 실행'}
-            </button>
-            {bulkTransferReport?.failureItems?.length ? (
-              <button type="button" className="ghost" disabled={isSubmitting} onClick={retryBulkTransferFailures}>
-                실패 항목 재시도
-              </button>
-            ) : null}
-          </div>
-          <div className="bulk-transfer-status muted small-text">
-            {bulkTransferStatus || '선택 후 일괄 이관을 실행하세요.'}
-            {bulkTransferReport && (
-              <div className="bulk-transfer-report">
-                <strong>
-                  성공 {bulkTransferReport.successCount}건 · 실패 {bulkTransferReport.failureCount}건
-                </strong>
-                {bulkTransferReport.failures.length > 0 && (
-                  <ul>
-                    {bulkTransferReport.failures.slice(0, 4).map((failure) => (
-                      <li key={failure}>{failure}</li>
-                    ))}
-                    {bulkTransferReport.failures.length > 4 && (
-                      <li>외 {bulkTransferReport.failures.length - 4}건</li>
-                    )}
-                  </ul>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      ) : activeTab === 'bulk_transfer' ? (
+        <BulkTransferPanel
+          selectedItems={bulkSelectedRows}
+          availableToLocations={
+            sessionRole === 'l_operator' || sessionRole === 'manager'
+              ? sessionScope?.sub_locations ?? []
+              : locationOptions
+          }
+          role={sessionRole}
+          sessionScope={sessionScope}
+          onDone={async () => {
+            await Promise.all([
+              reloadInventory({ suppressErrors: true }),
+              reloadHistory({ suppressErrors: true }),
+            ]);
+          }}
+          onClearSelection={clearBulkSelection}
+          onSelectAll={() => selectAllBulk(filteredStock)}
+        />
+      ) : null}
     </>
   );
 
@@ -2990,12 +2392,12 @@ export default function Home() {
               <div className="bulk-toggle-row">
                 <button
                   type="button"
-                  className={bulkTransferMode ? 'primary' : 'ghost'}
+                  className={activeTab === 'bulk_transfer' ? 'primary' : 'ghost'}
                   disabled={!bulkTransferAllowed}
-                  onClick={() => setBulkTransferMode((prev) => !prev)}
+                  onClick={() => setActiveTab('bulk_transfer')}
                   title={bulkTransferAllowed ? undefined : '일괄 이관 권한 필요'}
                 >
-                  {bulkTransferMode ? '일괄 이관 모드 해제' : '일괄 이관 모드'}
+                  일괄 이관 탭으로 이동
                 </button>
                 <span className="muted small-text">복수 항목을 선택해 전량 이관할 수 있습니다.</span>
               </div>
@@ -3046,7 +2448,7 @@ export default function Home() {
                 <table className="table">
                   <thead>
                     <tr>
-                      {bulkTransferMode && <th className="bulk-check-column">선택</th>}
+                      {activeTab === 'bulk_transfer' && <th className="bulk-check-column">선택</th>}
                       <th>아티스트</th>
                       <th>카테고리</th>
                       <th>앨범/버전</th>
@@ -3068,18 +2470,18 @@ export default function Home() {
                             .filter(Boolean)
                             .join(' ')}
                           onClick={() => {
-                            if (bulkTransferMode) {
+                            if (activeTab === 'bulk_transfer') {
                               toggleBulkSelection(row.key);
                               return;
                             }
                             handleStockClick(row);
                           }}
                           onDoubleClick={() => {
-                            if (bulkTransferMode) return;
+                            if (activeTab === 'bulk_transfer') return;
                             handleStockDoubleClick(row);
                           }}
                         >
-                          {bulkTransferMode && (
+                          {activeTab === 'bulk_transfer' && (
                             <td className="bulk-check-cell">
                               <label className="bulk-check-label">
                                 <input
@@ -3105,7 +2507,7 @@ export default function Home() {
                                   className="ghost small"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  if (bulkTransferMode) return;
+                                  if (activeTab === 'bulk_transfer') return;
                                   if (selectionDisabled) return;
                                   setSelectedStockKeys((prev) =>
                                     prev.includes(row.key) ? prev : [...prev, row.key]
@@ -3138,10 +2540,10 @@ export default function Home() {
                               <div className="row-actions">
                                 <button
                                   className="ghost small"
-                                  disabled={bulkTransferMode}
+                                  disabled={activeTab === 'bulk_transfer'}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    if (bulkTransferMode) return;
+                                    if (activeTab === 'bulk_transfer') return;
                                     setSelectedStockKeys((prev) =>
                                       prev.includes(row.key) ? prev : [...prev, row.key]
                                     );
@@ -3166,10 +2568,10 @@ export default function Home() {
                                 {sessionRole === 'admin' && (
                                   <button
                                     className="ghost danger small"
-                                    disabled={bulkTransferMode}
+                                    disabled={activeTab === 'bulk_transfer'}
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      if (bulkTransferMode) return;
+                                      if (activeTab === 'bulk_transfer') return;
                                       setSelectedStockKeys((prev) =>
                                         prev.includes(row.key) ? prev : [...prev, row.key]
                                       );
@@ -3187,7 +2589,7 @@ export default function Home() {
                         {editPanelEnabled && !selectionDisabled && sessionRole !== 'viewer' && editDraft &&
                           focusedStockKey === row.key && (
                           <tr className="inline-editor-row">
-                            <td colSpan={bulkTransferMode ? 9 : 8}>
+                            <td colSpan={activeTab === 'bulk_transfer' ? 9 : 8}>
                               <div className="inline-editor">
                                 <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
                                   <h3>선택 재고 편집</h3>
