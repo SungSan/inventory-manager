@@ -25,6 +25,7 @@ function normalizeRole(value: any): Role | undefined {
   const cleaned = raw.replace(/^['"]+|['"]+$/g, '');
   const normalized = cleaned.toLowerCase().replace(/-/g, '_');
   if (normalized === 'l_operator') return 'l_operator';
+  if (normalized === 'manager') return 'manager';
   if (normalized === 'operator' || normalized === 'admin' || normalized === 'viewer') return normalized as Role;
   return undefined;
 }
@@ -132,7 +133,7 @@ export async function PATCH(req: Request) {
     }
 
     if (typeof role !== 'undefined') {
-      const allowed: Role[] = ['admin', 'operator', 'viewer', 'l_operator'];
+      const allowed: Role[] = ['admin', 'operator', 'viewer', 'l_operator', 'manager'];
       if (!normalizedRoleFromPayload || !allowed.includes(normalizedRoleFromPayload)) {
         return NextResponse.json({ ok: false, step: 'validation', error: 'invalid role' }, { status: 400 });
       }
@@ -224,11 +225,11 @@ export async function PATCH(req: Request) {
     if (hasScope) {
       const primary = typeof primary_location === 'string' ? primary_location.trim() : '';
       const subs = Array.isArray(sub_locations) ? sub_locations.filter(Boolean) : [];
-      const shouldPersistScope = effectiveRole === 'l_operator';
+      const shouldPersistScope = effectiveRole === 'l_operator' || effectiveRole === 'manager';
 
       if (shouldPersistScope && !primary) {
         return NextResponse.json(
-          { ok: false, step: 'location_scope_validation', error: 'primary_location is required for l_operator' },
+          { ok: false, step: 'location_scope_validation', error: 'primary_location is required for l_operator or manager' },
           { status: 400 }
         );
       }

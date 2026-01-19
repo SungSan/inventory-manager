@@ -51,7 +51,7 @@ async function loadItemBarcode(params: {
 }
 
 export async function POST(req: Request) {
-  return withAuth(['admin', 'operator', 'l_operator'], async (session) => {
+  return withAuth(['admin', 'operator', 'l_operator', 'manager'], async (session) => {
     logSupabaseRef();
     let body: any;
     try {
@@ -137,8 +137,8 @@ export async function POST(req: Request) {
         { status: 401 }
       );
     }
-    const scope = session.role === 'l_operator' ? await loadLocationScope(createdBy) : null;
-    if (session.role === 'l_operator') {
+    const scope = session.role === 'l_operator' || session.role === 'manager' ? await loadLocationScope(createdBy) : null;
+    if (session.role === 'l_operator' || session.role === 'manager') {
       if (!scope?.primary_location) {
         return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
       }
@@ -174,10 +174,6 @@ export async function POST(req: Request) {
       quantity: normalizedQuantity,
     };
 
-    if (normalizedBarcode) {
-      payload.barcode = normalizedBarcode;
-    }
-
     payload.location = effectiveLocation;
 
     try {
@@ -212,7 +208,18 @@ export async function POST(req: Request) {
       }
 
       const result = data as any;
-      return NextResponse.json({ ok: true, result });
+      let barcodeUpdateError: string | null = null;
+      if (normalizedBarcode && result?.item_id) {
+        const { error: barcodeError } = await supabaseAdmin
+          .from('items')
+          .update({ barcode: normalizedBarcode })
+          .eq('id', result.item_id);
+        if (barcodeError) {
+          barcodeUpdateError = barcodeError.message;
+          console.error('barcode update failed', { barcodeError, itemId: result.item_id });
+        }
+      }
+      return NextResponse.json({ ok: true, result, barcodeUpdateError });
     } catch (error: any) {
       console.error({ step: 'record_movement_unexpected', payload, error });
       const message = error?.message || '입출고 처리 중 오류가 발생했습니다.';

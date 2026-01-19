@@ -1,19 +1,47 @@
+import argparse
 import json
 import os
 import sys
 import uuid
-from typing import Dict, Any
+from typing import Any, Dict
+
 import requests
 
-SUPABASE_URL = os.environ.get('SUPABASE_URL')
-SERVICE_ROLE = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
-JSON_PATH = os.environ.get('SOURCE_JSON', 'inventory_data.json')
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Migrate legacy JSON data to Supabase.")
+    parser.add_argument(
+        "--supabase-url",
+        default=os.environ.get("SUPABASE_URL"),
+        help="Supabase project URL (env: SUPABASE_URL).",
+    )
+    parser.add_argument(
+        "--service-role-key",
+        default=os.environ.get("SUPABASE_SERVICE_ROLE_KEY"),
+        help="Supabase service role key (env: SUPABASE_SERVICE_ROLE_KEY).",
+    )
+    parser.add_argument(
+        "--source-json",
+        default=os.environ.get("SOURCE_JSON", "inventory_data.json"),
+        help="Path to legacy JSON data (env: SOURCE_JSON).",
+    )
+    return parser.parse_args()
+
+
+args = parse_args()
+SUPABASE_URL = args.supabase_url
+SERVICE_ROLE = args.service_role_key
+JSON_PATH = args.source_json
 
 if not SUPABASE_URL or not SERVICE_ROLE:
-    print('Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY')
+    print("Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (env or flags).")
     sys.exit(1)
 
-with open(JSON_PATH, 'r', encoding='utf-8') as f:
+if not os.path.exists(JSON_PATH):
+    print(f"Source JSON not found: {JSON_PATH}")
+    sys.exit(1)
+
+with open(JSON_PATH, "r", encoding="utf-8") as f:
     data = json.load(f)
 
 session = requests.Session()

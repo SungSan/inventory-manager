@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { utils, writeFile } from 'xlsx';
 import { getSupabaseClient } from '../lib/supabaseClient';
+import BulkTransferPanel from '../components/BulkTransferPanel';
 
 type InventoryLocation = {
   id: string;
@@ -10,6 +11,7 @@ type InventoryLocation = {
   editableId?: string | null;
   item_id?: string | null;
   inventory_id?: string | null;
+  location_prefix?: string;
 };
 
 type InventoryRow = {
@@ -18,6 +20,7 @@ type InventoryRow = {
   category: string;
   album_version: string;
   option: string;
+  location_prefix: string;
   total_quantity: number;
   locations: InventoryLocation[];
   inventory_id?: string | null;
@@ -111,7 +114,7 @@ type TransferPayload = {
   item_id?: string | null;
 };
 
-type Role = 'admin' | 'operator' | 'viewer' | 'l_operator';
+type Role = 'admin' | 'operator' | 'viewer' | 'l_operator' | 'manager';
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes of inactivity triggers logout
 const CORPORATE_DOMAIN = 'sound-wave.co.kr';
@@ -263,6 +266,13 @@ function normalizeStockToApiRows(rows: InventoryRow[]): InventoryApiRow[] {
   );
 }
 
+function getLocationPrefix(location?: string | null) {
+  const value = String(location ?? '').trim();
+  if (!value) return '';
+  const [prefix] = value.split('-');
+  return prefix || value;
+}
+
 function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
   const grouped = new Map<string, InventoryRow>();
 
@@ -271,7 +281,8 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
     const category = row.category ?? '';
     const album_version = row.album_version ?? '';
     const option = row.option ?? '';
-    const key = `${artist}|${category}|${album_version}|${option}`;
+    const locationPrefix = getLocationPrefix(row.location);
+    const key = `${artist}|${category}|${album_version}|${option}|${locationPrefix}`;
     const qty = Number(row.quantity ?? 0);
 
     if (!grouped.has(key)) {
@@ -281,6 +292,7 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
         category,
         album_version,
         option,
+        location_prefix: locationPrefix,
         total_quantity: 0,
         locations: [],
         inventory_id: row.inventory_id ?? null,
@@ -306,6 +318,7 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
       inventory_id: row.inventory_id ?? null,
       item_id: row.item_id ?? null,
       location: row.location,
+      location_prefix: locationPrefix,
       quantity: qty,
     });
   });
@@ -338,7 +351,14 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [movement, setMovement] = useState<MovementPayload>(EMPTY_MOVEMENT);
   const [transferPayload, setTransferPayload] = useState<TransferPayload>(EMPTY_TRANSFER);
-  const [movementMode, setMovementMode] = useState<'movement' | 'transfer'>('movement');
+  const [activeTab, setActiveTab] = useState<'movement' | 'transfer' | 'bulk_transfer'>('movement');
+  const [bulkSelectedKeys, setBulkSelectedKeys] = useState<string[]>([]);
+  const [locationDetailKey, setLocationDetailKey] = useState<string | null>(null);
+  const [locationDetailDrafts, setLocationDetailDrafts] = useState<Record<string, string>>({});
+  const [detailNewLocation, setDetailNewLocation] = useState('');
+  const [detailNewQuantity, setDetailNewQuantity] = useState(0);
+  const [detailStatus, setDetailStatus] = useState('');
+  const [mobileFormOpen, setMobileFormOpen] = useState(false);
   const [selectedStockKeys, setSelectedStockKeys] = useState<string[]>([]);
   const [focusedStockKey, setFocusedStockKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<InventoryEditDraft | null>(null);
@@ -661,7 +681,6 @@ export default function Home() {
   async function fetchInventoryMeta(filters: typeof stockFilters, options?: { prefix?: string }) {
     const params = new URLSearchParams();
     if (filters.artist) params.set('artist', filters.artist);
-    if (filters.location) params.set('location', filters.location);
     if (filters.category) params.set('category', filters.category);
     if (filters.q) params.set('q', filters.q);
     if (filters.albumVersion) params.set('album_version', filters.albumVersion);
@@ -688,7 +707,6 @@ export default function Home() {
   function buildInventoryParams(filters: typeof stockFilters, limit?: number, offset?: number) {
     const params = new URLSearchParams();
     if (filters.artist) params.set('artist', filters.artist);
-    if (filters.location) params.set('location', filters.location);
     if (filters.category) params.set('category', filters.category);
     if (filters.q) params.set('q', filters.q);
     if (filters.albumVersion) params.set('album_version', filters.albumVersion);
@@ -698,47 +716,74 @@ export default function Home() {
     return params;
   }
 
+  async function fetchInventoryPage(
+    filters: typeof stockFilters,
+    options?: { limit?: number; offset?: number }
+  ): Promise<{ rows: InventoryRow[]; page: { limit: number; offset: number; totalRows: number } }> {
+    const params = buildInventoryParams(filters, options?.limit, options?.offset);
+    params.set('view', 'prefix');
+    const res = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
+    if (!res.ok) {
+      const message = await res.text();
+      throw new Error(message || `inventory fetch failed (${res.status})`);
+    }
+    const payload = await res.json().catch(() => null);
+    if (!payload?.ok) {
+      throw new Error(payload?.error || 'inventory fetch failed');
+    }
+    return {
+      rows: Array.isArray(payload.rows) ? payload.rows : [],
+      page: payload.page ?? { limit: options?.limit ?? 0, offset: options?.offset ?? 0, totalRows: 0 },
+    };
+  }
+
   async function reloadInventory(options?: {
     offset?: number;
     limit?: number;
     filters?: typeof stockFilters;
     fetchMeta?: boolean;
     prefix?: string;
+    suppressErrors?: boolean;
   }) {
     const nextFilters = options?.filters ?? stockFilters;
     const nextOffset = options?.offset ?? inventoryPage.offset;
     const nextLimit = options?.limit ?? inventoryPage.limit;
 
-    const params = buildInventoryParams(nextFilters, nextLimit, nextOffset);
+    try {
+      if (options?.filters) {
+        setStockFilters(options.filters);
+      }
+      let payload = await fetchInventoryPage(nextFilters, { limit: nextLimit, offset: nextOffset });
+      let totalRows = payload.page.totalRows ?? payload.rows.length;
+      const clampedOffset = Math.max(0, Math.min(nextOffset, Math.max(0, totalRows - 1)));
+      if (clampedOffset !== nextOffset) {
+        payload = await fetchInventoryPage(nextFilters, { limit: nextLimit, offset: clampedOffset });
+        totalRows = payload.page.totalRows ?? payload.rows.length;
+      }
+      const offset = payload.page.offset ?? clampedOffset;
+      setInventoryPage({
+        limit: payload.page.limit ?? nextLimit,
+        offset,
+        totalRows,
+      });
+      setStock(payload.rows);
 
-    const stockRes = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
-    if (stockRes.ok) {
-      const payload = await stockRes.json();
-      if (payload?.ok) {
-        if (options?.filters) {
-          setStockFilters(options.filters);
-        }
-        setInventoryPage({
-          limit: payload.page?.limit ?? nextLimit,
-          offset: payload.page?.offset ?? nextOffset,
-          totalRows: payload.page?.totalRows ?? 0,
-        });
-        setStock(groupInventoryRows(payload.rows || []));
-
-        if (options?.fetchMeta !== false) {
-          await fetchInventoryMeta(nextFilters, { prefix: options?.prefix ?? nextFilters.q });
-        }
-        return;
+      if (options?.fetchMeta !== false) {
+        await fetchInventoryMeta(nextFilters, { prefix: options?.prefix ?? nextFilters.location ?? nextFilters.q });
+      }
+      return;
+    } catch (error) {
+      if (!options?.suppressErrors) {
+        setStatus('재고 불러오기 실패');
       }
     }
-    setStatus('재고 불러오기 실패');
   }
 
   function applyInventoryFilters(next: typeof stockFilters) {
     const nextOffset = 0;
     setInventoryPage((prev) => ({ ...prev, offset: nextOffset }));
     setStockFilters(next);
-    reloadInventory({ filters: next, offset: nextOffset, prefix: next.q, fetchMeta: true });
+    reloadInventory({ filters: next, offset: nextOffset, prefix: next.location || next.q, fetchMeta: true });
   }
 
   function handleInventorySearchSubmit(e?: React.FormEvent) {
@@ -776,7 +821,7 @@ export default function Home() {
     reloadInventory({ offset: clamped, fetchMeta: true });
   }
 
-  async function reloadHistory(options?: { page?: number; pageSize?: number }) {
+  async function reloadHistory(options?: { page?: number; pageSize?: number; suppressErrors?: boolean }) {
     const params = new URLSearchParams();
     if (historyFilters.from) params.set('startDate', historyFilters.from);
     if (historyFilters.to) params.set('endDate', historyFilters.to);
@@ -806,7 +851,7 @@ export default function Home() {
         pageSize: payload?.page?.pageSize ?? nextPageSize,
         totalRows: payload?.page?.totalRows ?? rows.length,
       });
-    } else {
+    } else if (!options?.suppressErrors) {
       const payload = await histRes.json().catch(() => null);
       const message = payload?.error || payload?.message || '입출고 이력 불러오기 실패';
       setStatus(message);
@@ -912,7 +957,10 @@ export default function Home() {
         return;
       }
 
-      await Promise.all([reloadInventory(), reloadHistory()]);
+      await Promise.all([
+        reloadInventory({ suppressErrors: true }),
+        reloadHistory({ suppressErrors: true }),
+      ]);
       setStatus(duplicated ? '중복 요청으로 기존 결과 유지' : '기록 완료');
       setMovement((prev) => ({ ...EMPTY_MOVEMENT, direction: prev.direction }));
     } catch (err: any) {
@@ -928,17 +976,22 @@ export default function Home() {
     const artistValue = transferPayload.artist.trim();
     const albumVersion = transferPayload.album_version.trim();
     const fromLocation =
-      sessionRole === 'l_operator' && sessionScope?.primary_location
+      (sessionRole === 'l_operator' || sessionRole === 'manager') && sessionScope?.primary_location
         ? sessionScope.primary_location.trim()
         : transferPayload.from_location.trim();
     const toLocation = transferPayload.to_location.trim();
     const quantityValue = Number(transferPayload.quantity);
+    const memoValue = transferPayload.memo.trim();
     if (!artistValue || !albumVersion || !fromLocation || !toLocation || !quantityValue) {
       alert('전산이관은 품목, 보낸/받는 로케이션, 수량을 모두 입력해야 합니다.');
       return;
     }
+    if (!memoValue) {
+      alert('전산이관 메모는 필수입니다.');
+      return;
+    }
 
-    if (sessionRole === 'l_operator') {
+    if (sessionRole === 'l_operator' || sessionRole === 'manager') {
       const primary = sessionScope?.primary_location?.trim();
       const subs = (sessionScope?.sub_locations ?? []).map((v) => v.trim()).filter(Boolean);
       if (!primary) {
@@ -977,7 +1030,7 @@ export default function Home() {
           fromLocation,
           toLocation,
           quantity: Number(quantityValue),
-          memo: transferPayload.memo ?? '',
+          memo: memoValue,
           barcode: transferPayload.barcode ?? '',
           idempotencyKey,
         })
@@ -996,7 +1049,9 @@ export default function Home() {
       const baseTransfer = {
         ...EMPTY_TRANSFER,
         from_location:
-          sessionRole === 'l_operator' && sessionScope?.primary_location ? sessionScope.primary_location : '',
+          (sessionRole === 'l_operator' || sessionRole === 'manager') && sessionScope?.primary_location
+            ? sessionScope.primary_location
+            : '',
       };
       setTransferPayload(baseTransfer);
     } catch (err: any) {
@@ -1012,7 +1067,9 @@ export default function Home() {
     setTransferPayload({
       ...EMPTY_TRANSFER,
       from_location:
-        sessionRole === 'l_operator' && sessionScope?.primary_location ? sessionScope.primary_location : '',
+        (sessionRole === 'l_operator' || sessionRole === 'manager') && sessionScope?.primary_location
+          ? sessionScope.primary_location
+          : '',
     });
   }
 
@@ -1175,7 +1232,7 @@ export default function Home() {
     });
   }
 
-  function handleStockDoubleClick(row: InventoryRow) {
+  function applyStockRowToForms(row: InventoryRow) {
     setSelectedStockKeys((prev) => (prev.includes(row.key) ? prev : [...prev, row.key]));
     setFocusedStockKey(row.key);
     const hasMultipleLocations = row.locations.length > 1;
@@ -1200,7 +1257,7 @@ export default function Home() {
       option: row.option,
       barcode: row.barcode ?? '',
       from_location:
-        sessionRole === 'l_operator' && sessionScope?.primary_location
+        (sessionRole === 'l_operator' || sessionRole === 'manager') && sessionScope?.primary_location
           ? sessionScope.primary_location
           : row.locations[0]?.location ?? prev.from_location,
       to_location: prev.to_location,
@@ -1222,10 +1279,162 @@ export default function Home() {
         category: row.category,
         album_version: row.album_version,
         option: row.option,
+        location_prefix: row.location_prefix,
         barcode: row.barcode ?? '',
         location: row.locations[0].location,
         quantity: row.locations[0].quantity,
       });
+    }
+  }
+
+  function handleStockDoubleClick(row: InventoryRow) {
+    applyStockRowToForms(row);
+  }
+
+  function toggleBulkSelection(key: string) {
+    setBulkSelectedKeys((prev) => (prev.includes(key) ? prev.filter((id) => id !== key) : [...prev, key]));
+  }
+
+  function selectAllBulk(rows: InventoryRow[]) {
+    setBulkSelectedKeys(rows.map((row) => row.key));
+  }
+
+  function clearBulkSelection() {
+    setBulkSelectedKeys([]);
+  }
+
+  function openLocationDetail(row: InventoryRow) {
+    setLocationDetailKey(row.key);
+    setDetailNewLocation('');
+    setDetailNewQuantity(0);
+    setDetailStatus('');
+  }
+
+  const locationDetailRow = useMemo(() => {
+    if (!locationDetailKey) return null;
+    return stock.find((row) => row.key === locationDetailKey) ?? null;
+  }, [locationDetailKey, stock]);
+
+  useEffect(() => {
+    if (!locationDetailRow) {
+      setLocationDetailDrafts({});
+      if (locationDetailKey) {
+        setLocationDetailKey(null);
+      }
+      return;
+    }
+    const drafts: Record<string, string> = {};
+    locationDetailRow.locations.forEach((loc) => {
+      const id = loc.editableId ?? loc.inventory_id ?? loc.id;
+      if (!id) return;
+      drafts[id] = loc.location;
+    });
+    setLocationDetailDrafts(drafts);
+  }, [locationDetailRow]);
+
+  async function addLocationDetail() {
+    if (!locationDetailRow) return;
+    if (sessionRole === 'viewer') {
+      alert('조회 권한만 있습니다.');
+      return;
+    }
+    const locationValue = detailNewLocation.trim();
+    const quantityValue = Number(detailNewQuantity);
+    if (!locationValue) {
+      alert('로케이션을 입력하세요.');
+      return;
+    }
+    if (!Number.isFinite(quantityValue) || quantityValue <= 0) {
+      alert('입고 수량은 1 이상이어야 합니다.');
+      return;
+    }
+    setDetailStatus('로케이션 추가 중...');
+    try {
+      const idempotencyKey = `detail-add-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const res = await fetch('/api/movements', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          artist: locationDetailRow.artist,
+          category: locationDetailRow.category,
+          album_version: locationDetailRow.album_version,
+          option: locationDetailRow.option,
+          location: locationValue,
+          quantity: quantityValue,
+          direction: 'IN',
+          memo: '',
+          barcode: locationDetailRow.barcode ?? '',
+          idempotencyKey,
+        }),
+      });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok || payload?.ok !== true) {
+        const message = payload?.error || payload?.message || `로케이션 추가 실패 (${res.status})`;
+        setDetailStatus(message);
+        alert(message);
+        return;
+      }
+      setDetailStatus('로케이션 추가 완료');
+      setDetailNewLocation('');
+      setDetailNewQuantity(0);
+      await refresh();
+    } catch (err: any) {
+      const message = err?.message || '로케이션 추가 중 오류가 발생했습니다.';
+      setDetailStatus(message);
+      alert(message);
+    }
+  }
+
+  async function renameLocationDetail(id: string, nextLocation: string, quantity: number) {
+    if (sessionRole === 'viewer') {
+      alert('조회 권한만 있습니다.');
+      return;
+    }
+    if (!id) return;
+    if (quantity > 0) {
+      alert('수량이 0인 경우에만 로케이션을 변경할 수 있습니다.');
+      return;
+    }
+    const trimmed = nextLocation.trim();
+    if (!trimmed) {
+      alert('로케이션을 입력하세요.');
+      return;
+    }
+    setDetailStatus('로케이션 변경 중...');
+    const res = await fetch(`/api/inventory/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ location: trimmed }),
+    });
+    if (res.ok) {
+      setDetailStatus('로케이션 변경 완료');
+      await refresh();
+    } else {
+      const text = await res.text();
+      setDetailStatus(`로케이션 변경 실패: ${text || res.status}`);
+      alert(text || '로케이션 변경 실패');
+    }
+  }
+
+  async function deleteLocationDetail(id: string, quantity: number) {
+    if (sessionRole !== 'admin') {
+      alert('로케이션 삭제는 관리자만 가능합니다.');
+      return;
+    }
+    if (quantity > 0) {
+      alert('수량이 0인 경우에만 로케이션을 삭제할 수 있습니다.');
+      return;
+    }
+    if (!confirm('해당 로케이션을 삭제하시겠습니까?')) return;
+    setDetailStatus('로케이션 삭제 중...');
+    const res = await fetch(`/api/inventory/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      setDetailStatus('로케이션 삭제 완료');
+      await refresh();
+    } else {
+      const text = await res.text();
+      setDetailStatus(`로케이션 삭제 실패: ${text || res.status}`);
+      alert(text || '로케이션 삭제 실패');
     }
   }
 
@@ -1283,6 +1492,7 @@ export default function Home() {
     }
 
   const albumVersionFilter = stockFilters.albumVersion.trim().toLowerCase();
+  const locationPrefixFilter = stockFilters.location.trim();
 
   const baseStock = useMemo(() => {
     if (!albumVersionFilter) return stock;
@@ -1296,21 +1506,26 @@ export default function Home() {
   const anomalyCount = Math.max(anomalousStock.length, Number(inventoryMeta.anomalyCount ?? 0));
 
   const filteredStock = useMemo(() => {
-    if (showAnomalies) {
-      return anomalousStock;
-    }
-    return baseStock;
-  }, [anomalousStock, baseStock, showAnomalies]);
+    const base = showAnomalies ? anomalousStock : baseStock;
+    if (!locationPrefixFilter) return base;
+    return base.filter((row) => row.location_prefix === locationPrefixFilter);
+  }, [anomalousStock, baseStock, showAnomalies, locationPrefixFilter]);
+
+  const bulkSelectedRows = useMemo(() => {
+    if (bulkSelectedKeys.length === 0) return [];
+    const lookup = new Map(stock.map((row) => [row.key, row]));
+    return bulkSelectedKeys.map((key) => lookup.get(key)).filter(Boolean) as InventoryRow[];
+  }, [bulkSelectedKeys, stock]);
 
   const locationOptions = useMemo(
     () => Array.from(new Set([...locationPresets, ...inventoryMeta.locations])).filter(Boolean).sort(),
     [inventoryMeta.locations, locationPresets]
   );
 
-  const filterLocationOptions = useMemo(
-    () => Array.from(new Set(inventoryMeta.locations)).filter(Boolean).sort(),
-    [inventoryMeta.locations]
-  );
+  const filterLocationOptions = useMemo(() => {
+    const prefixes = inventoryMeta.locations.map((loc) => getLocationPrefix(loc));
+    return Array.from(new Set(prefixes)).filter(Boolean).sort();
+  }, [inventoryMeta.locations]);
 
   const artistOptions = useMemo(
     () => Array.from(new Set(inventoryMeta.artists)).filter(Boolean).sort(),
@@ -1365,13 +1580,13 @@ export default function Home() {
     writeFile(workbook, filename);
   }
 
-  async function fetchAllInventoryForExport() {
+  async function fetchAllInventory(filters: typeof stockFilters) {
     const pageLimit = 200;
     let offset = 0;
     let total = Number.MAX_SAFE_INTEGER;
     const rows: InventoryApiRow[] = [];
     while (offset < total) {
-      const params = buildInventoryParams(stockFilters, pageLimit, offset);
+      const params = buildInventoryParams(filters, pageLimit, offset);
       const res = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
       if (!res.ok) break;
       const payload = await res.json();
@@ -1384,10 +1599,18 @@ export default function Home() {
     return rows;
   }
 
+  async function fetchAllInventoryForExport() {
+    return fetchAllInventory(stockFilters);
+  }
+
   async function exportInventory() {
     setInventoryActionStatus('엑셀 내보내는 중...');
     const allRows = await fetchAllInventoryForExport();
-    const sourceRows: InventoryApiRow[] = allRows.length ? allRows : normalizeStockToApiRows(stock);
+    const prefix = stockFilters.location.trim();
+    const filteredRows = prefix
+      ? allRows.filter((row) => getLocationPrefix(row.location) === prefix)
+      : allRows;
+    const sourceRows: InventoryApiRow[] = filteredRows.length ? filteredRows : normalizeStockToApiRows(stock);
     const grouped = groupInventoryRows(sourceRows);
     const rows = grouped.map((row) => {
       console.info('export_map_row', { step: 'export_map_row', key: row.key, barcode: row.barcode ?? '' });
@@ -1482,25 +1705,23 @@ export default function Home() {
   const totalQuantity = inventoryMeta.summary.totalQuantity;
   const distinctItems = inventoryMeta.summary.uniqueItems;
   const locationBreakdown = useMemo(() => {
-    const fromSummary = Object.entries(inventoryMeta.summary.byLocation || {}).sort(
-      (a, b) => Number(b[1]) - Number(a[1])
-    );
-    if (fromSummary.length > 0) return fromSummary;
-
     const aggregate = new Map<string, number>();
     filteredStock.forEach((row) => {
-      row.locations.forEach((loc) => {
-        aggregate.set(loc.location, (aggregate.get(loc.location) ?? 0) + Number(loc.quantity ?? 0));
-      });
+      const prefix = row.location_prefix || getLocationPrefix(row.locations[0]?.location);
+      if (!prefix) return;
+      aggregate.set(prefix, (aggregate.get(prefix) ?? 0) + Number(row.total_quantity ?? 0));
     });
     return Array.from(aggregate.entries()).sort((a, b) => Number(b[1]) - Number(a[1]));
-  }, [filteredStock, inventoryMeta.summary.byLocation]);
+  }, [filteredStock]);
   const totalPages = Math.max(1, Math.ceil((inventoryPage.totalRows || 0) / inventoryPage.limit));
   const currentPage = Math.min(totalPages, Math.floor(inventoryPage.offset / inventoryPage.limit) + 1);
   const canPrevPage = inventoryPage.offset > 0;
   const canNextPage = inventoryPage.offset + inventoryPage.limit < inventoryPage.totalRows;
   const transferBlockedForScope =
-    sessionRole === 'l_operator' && (!sessionScope?.primary_location || (sessionScope.sub_locations ?? []).length === 0);
+    (sessionRole === 'l_operator' || sessionRole === 'manager') &&
+    (!sessionScope?.primary_location || (sessionScope.sub_locations ?? []).length === 0);
+  const bulkTransferAllowed =
+    sessionRole === 'admin' || sessionRole === 'operator' || sessionRole === 'l_operator' || sessionRole === 'manager';
 
   useEffect(() => {
     if (logoutTimeout.current) {
@@ -1533,7 +1754,7 @@ export default function Home() {
   }, [anomalyCount, showAnomalies]);
 
   useEffect(() => {
-    if (sessionRole === 'l_operator' && sessionScope?.primary_location) {
+    if ((sessionRole === 'l_operator' || sessionRole === 'manager') && sessionScope?.primary_location) {
       setTransferPayload((prev) => ({ ...prev, from_location: sessionScope.primary_location ?? '' }));
     }
   }, [sessionRole, sessionScope]);
@@ -1619,6 +1840,7 @@ export default function Home() {
         category: match.category,
         album_version: match.album_version,
         option: match.option,
+        location_prefix: match.location_prefix,
         barcode: match.barcode ?? '',
         location: defaultLocation.location,
         quantity: defaultLocation.quantity,
@@ -1638,6 +1860,12 @@ export default function Home() {
     setInventoryActionStatus('');
   }, [selectedStockKeys, focusedStockKey]);
 
+  useEffect(() => {
+    if (activePanel !== 'stock') {
+      setMobileFormOpen(false);
+    }
+  }, [activePanel]);
+
   const selectionDisabled = sessionRole === 'operator';
 
   useEffect(() => {
@@ -1652,6 +1880,316 @@ export default function Home() {
     fetchSessionInfo();
     refresh();
     }, []);
+
+  const movementPanelContent = (
+    <>
+      <div className="mode-toggle">
+        <button
+          type="button"
+          className={activeTab === 'movement' ? 'primary' : 'ghost'}
+          onClick={() => {
+            setActiveTab('movement');
+            setTransferPayload(EMPTY_TRANSFER);
+          }}
+        >
+          입/출고
+        </button>
+        <button
+          type="button"
+          className={activeTab === 'transfer' ? 'primary' : 'ghost'}
+          onClick={() => {
+            setActiveTab('transfer');
+            setMovement(EMPTY_MOVEMENT);
+            resetTransferForm();
+          }}
+        >
+          전산이관
+        </button>
+        <button
+          type="button"
+          className={activeTab === 'bulk_transfer' ? 'primary' : 'ghost'}
+          onClick={() => setActiveTab('bulk_transfer')}
+          disabled={!bulkTransferAllowed}
+          title={bulkTransferAllowed ? undefined : '일괄 이관 권한 필요'}
+        >
+          일괄이관
+        </button>
+      </div>
+
+      {activeTab === 'movement' ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            submitMovement('IN');
+          }}
+        >
+          <div className="form-row">
+            <label>
+              <span>아티스트</span>
+              <input
+                value={movement.artist}
+                onChange={(e) => setMovement({ ...movement, artist: e.target.value })}
+                placeholder="예: ARTIST"
+              />
+            </label>
+            <label className="compact">
+              <span>카테고리</span>
+              <select
+                value={movement.category}
+                onChange={(e) => setMovement({ ...movement, category: e.target.value as MovementPayload['category'] })}
+              >
+                <option value="album">앨범</option>
+                <option value="md">MD</option>
+              </select>
+            </label>
+            <label>
+              <span>앨범/버전</span>
+              <input
+                value={movement.album_version}
+                onChange={(e) => setMovement({ ...movement, album_version: e.target.value })}
+                placeholder="앨범명/버전"
+              />
+            </label>
+            <label>
+              <span>옵션</span>
+              <input
+                value={movement.option}
+                onChange={(e) => setMovement({ ...movement, option: e.target.value })}
+                placeholder="포카/키트 등"
+              />
+            </label>
+            <label>
+              <span>바코드</span>
+              <input
+                value={movement.barcode || ''}
+                onChange={(e) => setMovement({ ...movement, barcode: e.target.value })}
+                placeholder="바코드 (MD 권장)"
+                disabled={movementBarcodeLocked}
+                readOnly={movementBarcodeLocked}
+              />
+            </label>
+            <label>
+              <span>로케이션</span>
+              <input
+                list="location-options"
+                value={movement.location}
+                onChange={(e) => setMovement({ ...movement, location: e.target.value })}
+                placeholder="창고/선반"
+              />
+              <datalist id="location-options">
+                {locationOptions.map((loc) => (
+                  <option key={loc} value={loc} />
+                ))}
+              </datalist>
+            </label>
+            <label className="compact">
+              <span>수량</span>
+              <input
+                type="number"
+                value={movement.quantity}
+                min={1}
+                onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
+              />
+            </label>
+          </div>
+          <div className="form-row">
+            <label className="wide">
+              <span>메모 (필수)</span>
+              <input
+                value={movement.memo}
+                onChange={(e) => setMovement({ ...movement, memo: e.target.value })}
+                placeholder="작업 사유/비고"
+              />
+            </label>
+          </div>
+          <div className="actions-row">
+            <button type="button" disabled={isSubmitting} onClick={() => submitMovement('IN')}>
+              {isSubmitting && activeTab === 'movement' ? '처리 중...' : '입고'}
+            </button>
+            <button
+              type="button"
+              disabled={isSubmitting}
+              className="secondary"
+              onClick={() => submitMovement('OUT')}
+            >
+              {isSubmitting && activeTab === 'movement' ? '처리 중...' : '출고'}
+            </button>
+          </div>
+        </form>
+      ) : activeTab === 'transfer' ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            submitTransfer();
+          }}
+        >
+          <div className="form-row">
+            <label>
+              <span>아티스트</span>
+              <input
+                value={transferPayload.artist}
+                onChange={(e) => setTransferPayload({ ...transferPayload, artist: e.target.value })}
+                placeholder="예: ARTIST"
+              />
+            </label>
+            <label className="compact">
+              <span>카테고리</span>
+              <select
+                value={transferPayload.category}
+                onChange={(e) =>
+                  setTransferPayload({ ...transferPayload, category: e.target.value as TransferPayload['category'] })
+                }
+              >
+                <option value="album">앨범</option>
+                <option value="md">MD</option>
+              </select>
+            </label>
+            <label>
+              <span>앨범/버전</span>
+              <input
+                value={transferPayload.album_version}
+                onChange={(e) => setTransferPayload({ ...transferPayload, album_version: e.target.value })}
+                placeholder="앨범명/버전"
+              />
+            </label>
+            <label>
+              <span>옵션</span>
+              <input
+                value={transferPayload.option}
+                onChange={(e) => setTransferPayload({ ...transferPayload, option: e.target.value })}
+                placeholder="포카/키트 등"
+              />
+            </label>
+            <label>
+              <span>바코드</span>
+              <input
+                value={transferPayload.barcode || ''}
+                onChange={(e) => setTransferPayload({ ...transferPayload, barcode: e.target.value })}
+                placeholder="바코드 (MD 권장)"
+                disabled={transferBarcodeLocked}
+                readOnly={transferBarcodeLocked}
+              />
+            </label>
+            <label>
+              <span>수량</span>
+              <input
+                type="number"
+                value={transferPayload.quantity}
+                min={1}
+                onChange={(e) => setTransferPayload({ ...transferPayload, quantity: Number(e.target.value) })}
+              />
+            </label>
+          </div>
+          <div className="form-row">
+            <label>
+              <span>보내는 곳</span>
+              <input
+                list="location-options"
+                value={
+                  (sessionRole === 'l_operator' || sessionRole === 'manager') && sessionScope?.primary_location
+                    ? sessionScope.primary_location
+                    : transferPayload.from_location
+                }
+                disabled={
+                  (sessionRole === 'l_operator' || sessionRole === 'manager') && !!sessionScope?.primary_location
+                }
+                onChange={(e) => setTransferPayload({ ...transferPayload, from_location: e.target.value })}
+                placeholder="출발 로케이션"
+              />
+            </label>
+            <label>
+              <span>받는 곳</span>
+              <select
+                value={transferPayload.to_location}
+                onChange={(e) => setTransferPayload({ ...transferPayload, to_location: e.target.value })}
+                disabled={
+                  sessionRole === 'l_operator' || sessionRole === 'manager'
+                    ? !sessionScope?.sub_locations || sessionScope.sub_locations.length === 0
+                    : locationOptions.length === 0
+                }
+              >
+                <option value="" disabled>
+                  {sessionRole === 'l_operator' || sessionRole === 'manager'
+                    ? sessionScope?.sub_locations && sessionScope.sub_locations.length > 0
+                      ? '받는 곳 선택'
+                      : '서브 로케이션 없음'
+                    : locationOptions.length > 0
+                    ? '받는 곳 선택'
+                    : '로케이션 없음'}
+                </option>
+                {(sessionRole === 'l_operator' || sessionRole === 'manager'
+                  ? sessionScope?.sub_locations ?? []
+                  : locationOptions
+                ).map((loc) => (
+                  <option key={loc} value={loc}>
+                    {loc}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="form-row">
+            <label className="wide">
+              <span>메모 (필수)</span>
+              <input
+                value={transferPayload.memo}
+                onChange={(e) => setTransferPayload({ ...transferPayload, memo: e.target.value })}
+                placeholder="작업 사유/비고"
+              />
+            </label>
+          </div>
+          <div className="actions-row">
+            <button
+              type="button"
+              disabled={isSubmitting || transferBlockedForScope || !transferPayload.memo.trim()}
+              onClick={submitTransfer}
+            >
+              {transferBlockedForScope
+                ? '서브 로케이션 필요'
+                : isSubmitting && activeTab === 'transfer'
+                ? '처리 중...'
+                : '전산이관'}
+            </button>
+            <button type="button" className="ghost" onClick={resetTransferForm}>
+              초기화
+            </button>
+          </div>
+        </form>
+      ) : activeTab === 'bulk_transfer' ? (
+        <BulkTransferPanel
+          selectedItems={bulkSelectedRows}
+          availableToLocations={
+            sessionRole === 'l_operator' || sessionRole === 'manager'
+              ? sessionScope?.sub_locations ?? []
+              : locationOptions
+          }
+          role={sessionRole}
+          sessionScope={sessionScope}
+          onDone={async () => {
+            await Promise.all([
+              reloadInventory({ suppressErrors: true }),
+              reloadHistory({ suppressErrors: true }),
+            ]);
+          }}
+          onClearSelection={clearBulkSelection}
+          onSelectAll={() => selectAllBulk(filteredStock)}
+        />
+      ) : null}
+    </>
+  );
+
+  const movementPanel = (
+    <Section
+      title="입/출고 등록"
+      actions={
+        <div className="section-actions">
+          <button className="ghost" onClick={() => setMovement(EMPTY_MOVEMENT)}>입력값 초기화</button>
+        </div>
+      }
+    >
+      {movementPanelContent}
+    </Section>
+  );
 
   return (
     <>
@@ -1701,6 +2239,23 @@ export default function Home() {
         >
           관리자 페이지
         </button>
+      </div>
+
+      <div className={`mobile-form-modal ${mobileFormOpen ? 'open' : ''}`} aria-hidden={!mobileFormOpen}>
+        <div className="mobile-form-sheet">
+          <div className="mobile-form-header">
+            <strong>입/출고 등록</strong>
+            <div className="actions-row">
+              <button type="button" className="ghost" onClick={() => setMovement(EMPTY_MOVEMENT)}>
+                입력값 초기화
+              </button>
+              <button type="button" className="ghost" onClick={() => setMobileFormOpen(false)}>
+                닫기
+              </button>
+            </div>
+          </div>
+          {movementPanelContent}
+        </div>
       </div>
 
       {!isLoggedIn ? (
@@ -1823,6 +2378,99 @@ export default function Home() {
         </div>
       )}
 
+      {locationDetailRow && (
+        <div className="modal-backdrop">
+          <div className="modal-card wide-modal">
+            <div className="section-heading" style={{ marginBottom: '0.75rem' }}>
+              <div>
+                <p className="mini-label">로케이션 상세보기</p>
+                <h3>
+                  {locationDetailRow.artist} · {locationDetailRow.album_version} · {locationDetailRow.option || '-'}
+                </h3>
+                <div className="muted small-text">
+                  창고: {locationDetailRow.location_prefix} · 합계 {locationDetailRow.total_quantity.toLocaleString()}
+                </div>
+              </div>
+              <button className="ghost" onClick={() => setLocationDetailKey(null)}>
+                닫기
+              </button>
+            </div>
+            <div className="form-row">
+              <label>
+                <span>새 로케이션 (full)</span>
+                <input
+                  value={detailNewLocation}
+                  onChange={(e) => setDetailNewLocation(e.target.value)}
+                  placeholder={`${locationDetailRow.location_prefix}-S-P01-00`}
+                  disabled={sessionRole === 'viewer'}
+                />
+              </label>
+              <label className="compact">
+                <span>입고 수량</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={detailNewQuantity}
+                  onChange={(e) => setDetailNewQuantity(Number(e.target.value))}
+                  disabled={sessionRole === 'viewer'}
+                />
+              </label>
+              <div className="actions-row">
+                <button type="button" onClick={addLocationDetail} disabled={sessionRole === 'viewer'}>
+                  로케이션 추가
+                </button>
+                <span className="muted small-text">입고 수량을 입력하면 신규 로케이션이 생성됩니다.</span>
+              </div>
+            </div>
+            <div className="detail-location-list">
+              {locationDetailRow.locations.map((loc) => {
+                const locationId = loc.editableId ?? loc.inventory_id ?? loc.id ?? '';
+                const isEditable = Number(loc.quantity ?? 0) === 0 && sessionRole !== 'viewer';
+                return (
+                  <div key={`detail-${locationId}-${loc.location}`} className="detail-location-row">
+                    <div>
+                      <strong>{loc.location}</strong>
+                      <div className="muted small-text">수량 {Number(loc.quantity ?? 0).toLocaleString()}</div>
+                    </div>
+                    <div className="detail-location-actions">
+                      <input
+                        value={locationDetailDrafts[locationId] ?? loc.location}
+                        disabled={!isEditable || !locationId}
+                        onChange={(e) =>
+                          setLocationDetailDrafts((prev) => ({ ...prev, [locationId]: e.target.value }))
+                        }
+                        placeholder="로케이션 변경"
+                      />
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={!isEditable || !locationId}
+                        onClick={() =>
+                          renameLocationDetail(locationId, locationDetailDrafts[locationId] ?? loc.location, Number(loc.quantity ?? 0))
+                        }
+                      >
+                        변경
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost danger"
+                        disabled={sessionRole !== 'admin' || Number(loc.quantity ?? 0) !== 0 || !locationId}
+                        onClick={() => deleteLocationDetail(locationId, Number(loc.quantity ?? 0))}
+                      >
+                        삭제
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="muted small-text" style={{ marginTop: '0.75rem' }}>
+              {detailStatus}
+            </div>
+          </div>
+        </div>
+      )}
+
       {activePanel === 'admin' && showAdmin && (
         <div ref={adminRef} className="panel-anchor">
         <Section
@@ -1891,302 +2539,8 @@ export default function Home() {
 
       {activePanel === 'stock' && (
         <div className="split-panels" ref={stockRef}>
-          <div className="left-sticky">
-            <Section
-              title="입/출고 등록"
-              actions={
-                <div className="section-actions">
-                  <button className="ghost" onClick={() => setMovement(EMPTY_MOVEMENT)}>입력값 초기화</button>
-                </div>
-              }
-            >
-              <div className="mode-toggle">
-                <button
-                  type="button"
-                  className={movementMode === 'movement' ? 'primary' : 'ghost'}
-                  onClick={() => {
-                    setMovementMode('movement');
-                    setTransferPayload(EMPTY_TRANSFER);
-                  }}
-                >
-                  입/출고
-                </button>
-                <button
-                  type="button"
-                  className={movementMode === 'transfer' ? 'primary' : 'ghost'}
-                  onClick={() => {
-                    setMovementMode('transfer');
-                    setMovement(EMPTY_MOVEMENT);
-                    resetTransferForm();
-                  }}
-                >
-                  전산이관
-                </button>
-                {movementMode === 'transfer' && (
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => {
-                      setMovementMode('movement');
-                      setTransferPayload(EMPTY_TRANSFER);
-                    }}
-                  >
-                    전산이관 취소
-                  </button>
-                )}
-              </div>
-
-              {movementMode === 'movement' ? (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    submitMovement('IN');
-                  }}
-                >
-                  <div className="form-row">
-                    <label>
-                      <span>아티스트</span>
-                      <input
-                        value={movement.artist}
-                        onChange={(e) => setMovement({ ...movement, artist: e.target.value })}
-                        placeholder="예: ARTIST"
-                      />
-                    </label>
-                    <label className="compact">
-                      <span>카테고리</span>
-                      <select
-                        value={movement.category}
-                        onChange={(e) => setMovement({ ...movement, category: e.target.value as MovementPayload['category'] })}
-                      >
-                        <option value="album">앨범</option>
-                        <option value="md">MD</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>앨범/버전</span>
-                      <input
-                        value={movement.album_version}
-                        onChange={(e) => setMovement({ ...movement, album_version: e.target.value })}
-                        placeholder="앨범명/버전"
-                      />
-                    </label>
-                    <label>
-                      <span>옵션</span>
-                      <input
-                        value={movement.option}
-                        onChange={(e) => setMovement({ ...movement, option: e.target.value })}
-                        placeholder="포카/키트 등"
-                      />
-                    </label>
-                    <label>
-                      <span>바코드</span>
-                      <input
-                        value={movement.barcode || ''}
-                        onChange={(e) => setMovement({ ...movement, barcode: e.target.value })}
-                        placeholder="바코드 (MD 권장)"
-                        disabled={movementBarcodeLocked}
-                        readOnly={movementBarcodeLocked}
-                      />
-                    </label>
-                    <label>
-                      <span>로케이션</span>
-                      <input
-                        list="location-options"
-                        value={movement.location}
-                        onChange={(e) => setMovement({ ...movement, location: e.target.value })}
-                        placeholder="창고/선반"
-                      />
-                      <datalist id="location-options">
-                        {locationOptions.map((loc) => (
-                          <option key={loc} value={loc} />
-                        ))}
-                      </datalist>
-                    </label>
-                    <label className="compact">
-                      <span>수량</span>
-                      <input
-                        type="number"
-                        value={movement.quantity}
-                        min={1}
-                        onChange={(e) => setMovement({ ...movement, quantity: Number(e.target.value) })}
-                      />
-                    </label>
-                  </div>
-                  <div className="form-row">
-                    <label className="wide">
-                      <span>메모</span>
-                      <input
-                        value={movement.memo}
-                        onChange={(e) => setMovement({ ...movement, memo: e.target.value })}
-                        placeholder="작업 사유/비고"
-                      />
-                    </label>
-                  </div>
-                  <div className="actions-row">
-                    <button type="button" disabled={isSubmitting} onClick={() => submitMovement('IN')}>
-                      {isSubmitting && movementMode === 'movement' ? '처리 중...' : '입고'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isSubmitting}
-                      className="secondary"
-                      onClick={() => submitMovement('OUT')}
-                    >
-                      {isSubmitting && movementMode === 'movement' ? '처리 중...' : '출고'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isSubmitting}
-                      className="ghost"
-                      onClick={() => {
-                        setMovementMode('transfer');
-                        setMovement(EMPTY_MOVEMENT);
-                      }}
-                    >
-                      전산이관으로 전환
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    submitTransfer();
-                  }}
-                >
-                  <div className="form-row">
-                    <label>
-                      <span>아티스트</span>
-                      <input
-                        value={transferPayload.artist}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, artist: e.target.value })}
-                        placeholder="예: ARTIST"
-                      />
-                    </label>
-                    <label className="compact">
-                      <span>카테고리</span>
-                      <select
-                        value={transferPayload.category}
-                        onChange={(e) =>
-                          setTransferPayload({ ...transferPayload, category: e.target.value as TransferPayload['category'] })
-                        }
-                      >
-                        <option value="album">앨범</option>
-                        <option value="md">MD</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>앨범/버전</span>
-                      <input
-                        value={transferPayload.album_version}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, album_version: e.target.value })}
-                        placeholder="앨범명/버전"
-                      />
-                    </label>
-                    <label>
-                      <span>옵션</span>
-                      <input
-                        value={transferPayload.option}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, option: e.target.value })}
-                        placeholder="포카/키트 등"
-                      />
-                    </label>
-                    <label>
-                      <span>바코드</span>
-                      <input
-                        value={transferPayload.barcode || ''}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, barcode: e.target.value })}
-                        placeholder="바코드 (MD 권장)"
-                        disabled={transferBarcodeLocked}
-                        readOnly={transferBarcodeLocked}
-                      />
-                    </label>
-                    <label>
-                      <span>수량</span>
-                      <input
-                        type="number"
-                        value={transferPayload.quantity}
-                        min={1}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, quantity: Number(e.target.value) })}
-                      />
-                    </label>
-                  </div>
-                  <div className="form-row">
-                    <label>
-                      <span>보내는 곳</span>
-                      <input
-                        list="location-options"
-                        value={
-                          sessionRole === 'l_operator' && sessionScope?.primary_location
-                            ? sessionScope.primary_location
-                            : transferPayload.from_location
-                        }
-                        disabled={sessionRole === 'l_operator' && !!sessionScope?.primary_location}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, from_location: e.target.value })}
-                        placeholder="출발 로케이션"
-                      />
-                    </label>
-                    <label>
-                      <span>받는 곳</span>
-                      <select
-                        value={transferPayload.to_location}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, to_location: e.target.value })}
-                        disabled={
-                          sessionRole === 'l_operator'
-                            ? !sessionScope?.sub_locations || sessionScope.sub_locations.length === 0
-                            : locationOptions.length === 0
-                        }
-                      >
-                        <option value="" disabled>
-                          {sessionRole === 'l_operator'
-                            ? sessionScope?.sub_locations && sessionScope.sub_locations.length > 0
-                              ? '받는 곳 선택'
-                              : '서브 로케이션 없음'
-                            : locationOptions.length > 0
-                            ? '받는 곳 선택'
-                            : '로케이션 없음'}
-                        </option>
-                        {(sessionRole === 'l_operator' ? sessionScope?.sub_locations ?? [] : locationOptions).map((loc) => (
-                          <option key={loc} value={loc}>
-                            {loc}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                  <div className="form-row">
-                    <label className="wide">
-                      <span>메모</span>
-                      <input
-                        value={transferPayload.memo}
-                        onChange={(e) => setTransferPayload({ ...transferPayload, memo: e.target.value })}
-                        placeholder="작업 사유/비고"
-                      />
-                    </label>
-                  </div>
-                  <div className="actions-row">
-                    <button
-                      type="button"
-                      disabled={isSubmitting || transferBlockedForScope}
-                      onClick={submitTransfer}
-                    >
-                      {transferBlockedForScope
-                        ? '서브 로케이션 필요'
-                        : isSubmitting && movementMode === 'transfer'
-                        ? '처리 중...'
-                        : '전산이관'}
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={resetTransferForm}
-                    >
-                      초기화
-                    </button>
-                  </div>
-                </form>
-              )}
-            </Section>
+          <div className="left-sticky desktop-only">
+            {movementPanel}
           </div>
           <div className="right-panel">
             <Section
@@ -2307,10 +2661,71 @@ export default function Home() {
                   </div>
                 </div>
               </div>
-              <div className="table-wrapper responsive-table">
+              <div className="bulk-toggle-row">
+                <button
+                  type="button"
+                  className={activeTab === 'bulk_transfer' ? 'primary' : 'ghost'}
+                  disabled={!bulkTransferAllowed}
+                  onClick={() => setActiveTab('bulk_transfer')}
+                  title={bulkTransferAllowed ? undefined : '일괄 이관 권한 필요'}
+                >
+                  일괄 이관 탭으로 이동
+                </button>
+                <span className="muted small-text">복수 항목을 선택해 전량 이관할 수 있습니다.</span>
+              </div>
+              <div className="inventory-cards">
+                <div className="inventory-cards-header">
+                  <strong>현재 재고</strong>
+                  <button type="button" className="ghost" onClick={() => setMobileFormOpen(true)}>
+                    입/출고 등록 열기
+                  </button>
+                </div>
+                {filteredStock.length === 0 && (
+                  <div className="muted">표시할 재고가 없습니다.</div>
+                )}
+                {filteredStock.map((row) => (
+                  <button
+                    type="button"
+                    key={`card-${row.key}`}
+                    className="inventory-card"
+                    onClick={() => {
+                      applyStockRowToForms(row);
+                      setMobileFormOpen(true);
+                    }}
+                  >
+                    <div className="inventory-card-header">
+                      <div>
+                        <strong>{row.artist}</strong>
+                        <div className="muted small-text">{row.album_version}</div>
+                      </div>
+                      <div className="inventory-card-qty">
+                        {row.total_quantity.toLocaleString()}개
+                      </div>
+                    </div>
+                    <div className="inventory-card-body">
+                      <div>옵션: {row.option || '-'}</div>
+                      <div>바코드: {row.barcode || '-'}</div>
+                      <div className="inventory-card-locations">
+                        <button
+                          type="button"
+                          className="pill"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openLocationDetail(row);
+                          }}
+                        >
+                          {row.location_prefix}: {row.total_quantity.toLocaleString()}
+                        </button>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+              <div className="table-wrapper responsive-table inventory-table">
                 <table className="table">
                   <thead>
                     <tr>
+                      {activeTab === 'bulk_transfer' && <th className="bulk-check-column">선택</th>}
                       <th>아티스트</th>
                       <th>카테고리</th>
                       <th>앨범/버전</th>
@@ -2325,10 +2740,37 @@ export default function Home() {
                     {filteredStock.map((row) => (
                       <React.Fragment key={row.key}>
                         <tr
-                          className={selectedStockKeys.includes(row.key) ? 'selected-row' : ''}
-                          onClick={() => handleStockClick(row)}
-                          onDoubleClick={() => handleStockDoubleClick(row)}
+                          className={[
+                            selectedStockKeys.includes(row.key) ? 'selected-row' : '',
+                            bulkSelectedKeys.includes(row.key) ? 'bulk-selected-row' : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' ')}
+                          onClick={() => {
+                            if (activeTab === 'bulk_transfer') {
+                              toggleBulkSelection(row.key);
+                              return;
+                            }
+                            handleStockClick(row);
+                          }}
+                          onDoubleClick={() => {
+                            if (activeTab === 'bulk_transfer') return;
+                            handleStockDoubleClick(row);
+                          }}
                         >
+                          {activeTab === 'bulk_transfer' && (
+                            <td className="bulk-check-cell">
+                              <label className="bulk-check-label">
+                                <input
+                                  type="checkbox"
+                                  checked={bulkSelectedKeys.includes(row.key)}
+                                  onChange={() => toggleBulkSelection(row.key)}
+                                  aria-label={`${row.artist} ${row.album_version} 선택`}
+                                />
+                                <span className="bulk-check-text">선택</span>
+                              </label>
+                            </td>
+                          )}
                           <td>{row.artist}</td>
                           <td>{row.category}</td>
                           <td>{row.album_version}</td>
@@ -2336,32 +2778,16 @@ export default function Home() {
                           <td title={row.barcode ?? ''}>{row.barcode || '-'}</td>
                           <td>
                             <div className="pill-row wrap">
-                              {row.locations.map((loc) => (
-                                <button
-                                  key={`${row.key}-${loc.id}`}
-                                  className="ghost small"
+                              <button
+                                key={`${row.key}-prefix`}
+                                className="ghost small"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  if (selectionDisabled) return;
-                                  setSelectedStockKeys((prev) =>
-                                    prev.includes(row.key) ? prev : [...prev, row.key]
-                                  );
-                                  setFocusedStockKey(row.key);
-                                  setEditDraft({
-                                    id: loc.editableId ?? loc.id,
-                                    artist: row.artist,
-                                    category: row.category,
-                                    album_version: row.album_version,
-                                    option: row.option,
-                                    barcode: row.barcode ?? '',
-                                    location: loc.location,
-                                    quantity: loc.quantity,
-                                  });
+                                  openLocationDetail(row);
                                 }}
-                                >
-                                  {loc.location}: {loc.quantity.toLocaleString()}
-                                </button>
-                              ))}
+                              >
+                                {row.location_prefix}
+                              </button>
                             </div>
                           </td>
                           <td className="align-right">{row.total_quantity.toLocaleString()}</td>
@@ -2374,8 +2800,10 @@ export default function Home() {
                               <div className="row-actions">
                                 <button
                                   className="ghost small"
+                                  disabled={activeTab === 'bulk_transfer'}
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    if (activeTab === 'bulk_transfer') return;
                                     setSelectedStockKeys((prev) =>
                                       prev.includes(row.key) ? prev : [...prev, row.key]
                                     );
@@ -2388,6 +2816,7 @@ export default function Home() {
                                         category: row.category,
                                         album_version: row.album_version,
                                         option: row.option,
+                                        location_prefix: row.location_prefix,
                                         barcode: row.barcode ?? '',
                                         location: loc.location,
                                         quantity: loc.quantity,
@@ -2400,8 +2829,10 @@ export default function Home() {
                                 {sessionRole === 'admin' && (
                                   <button
                                     className="ghost danger small"
+                                    disabled={activeTab === 'bulk_transfer'}
                                     onClick={(e) => {
                                       e.stopPropagation();
+                                      if (activeTab === 'bulk_transfer') return;
                                       setSelectedStockKeys((prev) =>
                                         prev.includes(row.key) ? prev : [...prev, row.key]
                                       );
@@ -2419,7 +2850,7 @@ export default function Home() {
                         {editPanelEnabled && !selectionDisabled && sessionRole !== 'viewer' && editDraft &&
                           focusedStockKey === row.key && (
                           <tr className="inline-editor-row">
-                            <td colSpan={8}>
+                            <td colSpan={activeTab === 'bulk_transfer' ? 9 : 8}>
                               <div className="inline-editor">
                                 <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
                                   <h3>선택 재고 편집</h3>
@@ -2777,13 +3208,14 @@ export default function Home() {
                             onChange={(e) => updateAccountRole(acc.id, e.target.value as Role)}
                           >
                             <option value="admin">admin</option>
+                            <option value="manager">manager</option>
                             <option value="operator">operator</option>
                             <option value="l_operator">l-operator</option>
                             <option value="viewer">viewer</option>
                           </select>
                         </td>
                         <td>
-                          {acc.role === 'l_operator' ? (
+                          {acc.role === 'l_operator' || acc.role === 'manager' ? (
                             <div className="location-input-group">
                               <input
                                 className="inline-input"
@@ -2823,7 +3255,7 @@ export default function Home() {
                           )}
                         </td>
                         <td>
-                          {acc.role === 'l_operator' ? (
+                          {acc.role === 'l_operator' || acc.role === 'manager' ? (
                             <div className="location-input-group">
                               <input
                                 className="inline-input"
@@ -2871,7 +3303,7 @@ export default function Home() {
                           )}
                         </td>
                         <td>
-                          {acc.role === 'l_operator' ? (
+                          {acc.role === 'l_operator' || acc.role === 'manager' ? (
                             <button
                               className="ghost"
                               type="button"
@@ -3027,6 +3459,7 @@ export default function Home() {
         align-items: center;
         gap: 0.75rem;
         margin-bottom: 0.5rem;
+        overflow-x: auto;
       }
 
       .barcode-preview {
@@ -3036,6 +3469,7 @@ export default function Home() {
         height: 80px;
         width: 100%;
         max-width: 520px;
+        overflow-x: auto;
       }
 
       .location-chip-row {
@@ -3068,6 +3502,238 @@ export default function Home() {
         grid-template-columns: 1fr;
       }
 
+      .desktop-only {
+        display: block;
+      }
+
+      .inventory-cards {
+        display: none;
+        flex-direction: column;
+        gap: 0.75rem;
+        margin: 0.75rem 0;
+      }
+
+      .inventory-cards-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+      }
+
+      .inventory-card {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 0.75rem;
+        background: #fff;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .inventory-card-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.75rem;
+        align-items: flex-start;
+      }
+
+      .inventory-card-qty {
+        font-weight: 700;
+        color: #1f2937;
+      }
+
+      .inventory-card-body {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+        color: #374151;
+      }
+
+      .inventory-card-locations {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+      }
+
+      .mobile-form-modal {
+        display: none;
+      }
+
+      .mobile-form-modal.open {
+        display: flex;
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.5);
+        align-items: stretch;
+        justify-content: center;
+        z-index: 50;
+      }
+
+      .mobile-form-sheet {
+        background: #fff;
+        width: 100vw;
+        height: 100vh;
+        padding: 1rem;
+        overflow-y: auto;
+      }
+
+      .mobile-form-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.75rem;
+      }
+
+      .bulk-toggle-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+        margin: 0.75rem 0 0.5rem;
+      }
+
+      .bulk-check-column {
+        width: 64px;
+      }
+
+      .bulk-check-cell {
+        padding: 0;
+      }
+
+      .bulk-check-label {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 40px;
+        gap: 0.35rem;
+        padding: 0.25rem;
+        cursor: pointer;
+      }
+
+      .bulk-check-label input {
+        width: 18px;
+        height: 18px;
+      }
+
+      .bulk-check-text {
+        font-size: 0.75rem;
+        color: #333;
+      }
+
+      .bulk-selected-row {
+        background: #eef5ff;
+        outline: 2px solid #b7d4ff;
+        outline-offset: -2px;
+      }
+
+      .bulk-transfer-panel {
+        margin-top: 0.75rem;
+        padding: 0.75rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        background: #fff;
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+      }
+
+      .bulk-transfer-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+      }
+
+      .bulk-transfer-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+      }
+
+      .bulk-transfer-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+      }
+
+      .bulk-transfer-item {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        padding: 0.6rem 0.75rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        background: #f9fafb;
+      }
+
+      .bulk-transfer-item-main {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+      }
+
+      .bulk-transfer-item-input label {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+      }
+
+      .bulk-transfer-error {
+        color: #b42318;
+        font-size: 0.75rem;
+      }
+
+      .bulk-transfer-footer {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      .bulk-transfer-status {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+      }
+
+      .bulk-transfer-report ul {
+        margin: 0.25rem 0 0;
+        padding-left: 1.1rem;
+      }
+
+      .detail-location-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        margin-top: 0.75rem;
+      }
+
+      .detail-location-row {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        padding: 0.6rem 0.75rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        background: #f9fafb;
+      }
+
+      .detail-location-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+      }
+
+      .detail-location-actions input {
+        min-width: 200px;
+      }
+
       @media (min-width: 640px) {
         .stats {
           grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -3086,6 +3752,30 @@ export default function Home() {
         .pill-row.wrap {
           gap: 0.35rem;
         }
+
+        .desktop-only {
+          display: none;
+        }
+
+        .inventory-table {
+          display: none;
+        }
+
+        .inventory-cards {
+          display: flex;
+        }
+
+        .mobile-form-sheet .form-row {
+          flex-direction: column;
+        }
+
+        .mobile-form-sheet .form-row label,
+        .mobile-form-sheet .form-row .inline-input,
+        .mobile-form-sheet .form-row input,
+        .mobile-form-sheet .form-row select,
+        .mobile-form-sheet .form-row textarea {
+          width: 100%;
+        }
       }
 
       @media (max-width: 480px) {
@@ -3103,6 +3793,10 @@ export default function Home() {
           flex-direction: column;
           align-items: flex-start;
           gap: 0.5rem;
+        }
+
+        .bulk-transfer-summary {
+          align-items: flex-start;
         }
       }
     `}</style>

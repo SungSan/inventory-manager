@@ -42,6 +42,20 @@ begin
       null;
     end;
   end if;
+
+  if exists (
+    select 1 from pg_type t
+    join pg_enum e on t.oid = e.enumtypid
+    where t.typname = 'user_role'
+      and e.enumlabel = 'manager'
+  ) is false then
+    begin
+      alter type public.user_role add value 'manager';
+    exception when duplicate_object then
+      -- ignore if added concurrently
+      null;
+    end;
+  end if;
 end $$;
 
 create table if not exists public.users (
@@ -475,8 +489,7 @@ create or replace function public.record_movement(
   location text,
   memo text,
   option text,
-  quantity integer,
-  barcode text default null
+  quantity integer
 ) returns json
 language sql
 security definer
@@ -493,9 +506,79 @@ as $$
     memo,
     option,
     quantity,
-    barcode
+    null
   );
 $$;
+
+grant execute on function public.record_movement(
+  text, text, text, uuid, text, text, text, text, text, integer
+) to authenticated, service_role;
+
+create or replace function public.record_movement(
+  album_version text,
+  artist text,
+  category text,
+  created_by uuid,
+  direction text,
+  idempotency_key text,
+  location text,
+  memo text,
+  option text,
+  quantity integer,
+  barcode text
+) returns json as $$
+#variable_conflict use_variable
+declare
+  v_result json;
+  v_item_id uuid;
+  v_item_count int;
+  v_barcode text := nullif(btrim(barcode), '');
+begin
+  v_result := public.record_movement(
+    album_version,
+    artist,
+    category,
+    created_by,
+    direction,
+    idempotency_key,
+    location,
+    memo,
+    option,
+    quantity
+  );
+
+  if v_barcode is null then
+    return v_result;
+  end if;
+
+  v_item_id := nullif(v_result->>'item_id', '')::uuid;
+  if v_item_id is null then
+    select count(*)
+      into v_item_count
+      from public.items
+     where items.artist = artist
+       and items.category = category
+       and items.album_version = album_version
+       and items.option = option;
+    if v_item_count <> 1 then
+      raise exception 'items match count mismatch: %', v_item_count;
+    end if;
+    select id into v_item_id
+      from public.items
+     where items.artist = artist
+       and items.category = category
+       and items.album_version = album_version
+       and items.option = option
+     limit 1;
+  end if;
+
+  update public.items
+     set barcode = v_barcode
+   where id = v_item_id;
+
+  return v_result;
+end;
+$$ language plpgsql security definer;
 
 grant execute on function public.record_movement(
   text, text, text, uuid, text, text, text, text, text, integer, text
@@ -588,6 +671,73 @@ exception
     raise;
 end;
 $$ language plpgsql security definer;
+
+create or replace function public.record_transfer_bulk(
+  artist text,
+  category text,
+  album_version text,
+  option text,
+  barcode text default null,
+  from_location text,
+  to_location text,
+  quantity integer,
+  memo text,
+  created_by uuid,
+  idempotency_key text
+) returns void as $$
+#variable_conflict use_variable
+declare
+  v_idem text := nullif(btrim(idempotency_key), '');
+  v_barcode text := nullif(btrim(barcode), '');
+begin
+  if v_idem is null then
+    raise exception 'idempotency_key is required';
+  end if;
+
+  if memo is null or btrim(memo) = '' then
+    raise exception 'memo is required';
+  end if;
+
+  perform public.record_movement(
+    album_version,
+    artist,
+    category,
+    created_by,
+    'OUT',
+    v_idem || '-out',
+    from_location,
+    memo,
+    option,
+    quantity
+  );
+
+  perform public.record_movement(
+    album_version,
+    artist,
+    category,
+    created_by,
+    'IN',
+    v_idem || '-in',
+    to_location,
+    memo,
+    option,
+    quantity
+  );
+
+  if v_barcode is not null then
+    update public.items
+       set barcode = v_barcode
+     where items.artist = artist
+       and items.category = category
+       and items.album_version = album_version
+       and items.option = option;
+  end if;
+end;
+$$ language plpgsql security definer;
+
+grant execute on function public.record_transfer_bulk(
+  text, text, text, text, text, text, text, integer, text, uuid, text
+) to authenticated, service_role;
 
 grant execute on function public.record_transfer(
   text, text, text, text, text, text, integer, text, uuid, text, text
