@@ -374,7 +374,6 @@ export default function Home() {
   const [transferPayload, setTransferPayload] = useState<TransferPayload>(EMPTY_TRANSFER);
   const [activeTab, setActiveTab] = useState<'movement' | 'transfer' | 'bulk_transfer'>('movement');
   const [bulkSelectedKeys, setBulkSelectedKeys] = useState<string[]>([]);
-  const [bulkTransferOpen, setBulkTransferOpen] = useState(false);
   const [locationDetailKey, setLocationDetailKey] = useState<string | null>(null);
   const [locationDetailPrefix, setLocationDetailPrefix] = useState<string | null>(null);
   const [locationDetailDrafts, setLocationDetailDrafts] = useState<Record<string, string>>({});
@@ -408,6 +407,7 @@ export default function Home() {
     categories: [],
   });
   const [inventoryPage, setInventoryPage] = useState({ limit: 50, offset: 0, totalRows: 0 });
+  const [allInventoryRows, setAllInventoryRows] = useState<InventoryRow[] | null>(null);
   const [locationPresets, setLocationPresets] = useState<string[]>([]);
   const [registerForm, setRegisterForm] = useState({
     username: '',
@@ -454,6 +454,8 @@ export default function Home() {
   const adminRef = useRef<HTMLDivElement | null>(null);
   const barcodeBufferRef = useRef('');
   const barcodeTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const fullInventoryLoadingRef = useRef(false);
+  const fullInventoryLoadedRef = useRef(false);
   const movementBarcodeSource = useMemo(() => {
     const artistValue = movement.artist.trim();
     const albumValue = movement.album_version.trim();
@@ -748,6 +750,42 @@ export default function Home() {
     setLocationPrefixStatus('로케이션 목록 불러오기 실패');
   }
 
+  function filterInventoryRows(rows: InventoryRow[], filters: typeof stockFilters) {
+    const q = filters.q.trim().toLowerCase();
+    const albumTerm = filters.albumVersion.trim().toLowerCase();
+    const barcodeTerm = filters.barcode.trim().toLowerCase();
+    const locationPrefix = filters.location.trim();
+
+    return rows.filter((row) => {
+      if (filters.artist && row.artist !== filters.artist) return false;
+      if (filters.category && row.category !== filters.category) return false;
+      if (barcodeTerm && String(row.barcode ?? '').toLowerCase() !== barcodeTerm) return false;
+      if (albumTerm && !row.album_version.toLowerCase().includes(albumTerm)) return false;
+      if (locationPrefix && !row.prefixes.some((entry) => entry.prefix === locationPrefix)) return false;
+      if (q) {
+        const locationText = row.locations.map((loc) => loc.location).join(' ');
+        const haystack = [row.artist, row.album_version, row.option, locationText]
+          .join(' ')
+          .toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
+      return true;
+    });
+  }
+
+  function buildPagedInventory(
+    rows: InventoryRow[],
+    filters: typeof stockFilters,
+    limit: number,
+    offset: number
+  ) {
+    const filtered = filterInventoryRows(rows, filters);
+    const totalRows = filtered.length;
+    const clampedOffset = Math.max(0, Math.min(offset, Math.max(0, totalRows - 1)));
+    const paged = filtered.slice(clampedOffset, clampedOffset + limit);
+    return { paged, totalRows, offset: clampedOffset };
+  }
+
   function buildInventoryParams(filters: typeof stockFilters, limit?: number, offset?: number) {
     const params = new URLSearchParams();
     if (filters.artist) params.set('artist', filters.artist);
@@ -797,20 +835,32 @@ export default function Home() {
       if (options?.filters) {
         setStockFilters(options.filters);
       }
-      let payload = await fetchInventoryPage(nextFilters, { limit: nextLimit, offset: nextOffset });
-      let totalRows = payload.page.totalRows ?? payload.rows.length;
-      const clampedOffset = Math.max(0, Math.min(nextOffset, Math.max(0, totalRows - 1)));
-      if (clampedOffset !== nextOffset) {
-        payload = await fetchInventoryPage(nextFilters, { limit: nextLimit, offset: clampedOffset });
+      let rows: InventoryRow[] = [];
+      let totalRows = 0;
+      let offset = nextOffset;
+
+      if (allInventoryRows && allInventoryRows.length > 0) {
+        const paged = buildPagedInventory(allInventoryRows, nextFilters, nextLimit, nextOffset);
+        rows = paged.paged;
+        totalRows = paged.totalRows;
+        offset = paged.offset;
+      } else {
+        let payload = await fetchInventoryPage(nextFilters, { limit: nextLimit, offset: nextOffset });
         totalRows = payload.page.totalRows ?? payload.rows.length;
+        const clampedOffset = Math.max(0, Math.min(nextOffset, Math.max(0, totalRows - 1)));
+        if (clampedOffset !== nextOffset) {
+          payload = await fetchInventoryPage(nextFilters, { limit: nextLimit, offset: clampedOffset });
+          totalRows = payload.page.totalRows ?? payload.rows.length;
+        }
+        offset = payload.page.offset ?? clampedOffset;
+        rows = payload.rows;
       }
-      const offset = payload.page.offset ?? clampedOffset;
       setInventoryPage({
-        limit: payload.page.limit ?? nextLimit,
+        limit: nextLimit,
         offset,
         totalRows,
       });
-      setStock(payload.rows);
+      setStock(rows);
 
       if (options?.fetchMeta !== false) {
         await fetchInventoryMeta(nextFilters, { prefix: options?.prefix ?? nextFilters.location ?? nextFilters.q });
@@ -1816,6 +1866,55 @@ export default function Home() {
   }, [isLoggedIn]);
 
   useEffect(() => {
+    if (!isLoggedIn) return;
+    if (fullInventoryLoadedRef.current || fullInventoryLoadingRef.current) return;
+    const emptyFilters = {
+      q: '',
+      albumVersion: '',
+      barcode: '',
+      artist: '',
+      location: '',
+      category: '',
+    };
+
+    const loadAll = async () => {
+      fullInventoryLoadingRef.current = true;
+      try {
+        const limit = 200;
+        let offset = 0;
+        let total = Number.MAX_SAFE_INTEGER;
+        const rows: InventoryRow[] = [];
+        while (offset < total) {
+          const params = buildInventoryParams(emptyFilters, limit, offset);
+          params.set('view', 'prefix');
+          const res = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
+          if (!res.ok) break;
+          const payload = await res.json().catch(() => null);
+          if (!payload?.ok) break;
+          rows.push(...(payload.rows ?? []));
+          total = payload?.page?.totalRows ?? rows.length;
+          offset += limit;
+          if (!payload.rows || payload.rows.length < limit) break;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        setAllInventoryRows(rows);
+        fullInventoryLoadedRef.current = true;
+      } catch (error) {
+        console.error('full inventory load failed', error);
+      } finally {
+        fullInventoryLoadingRef.current = false;
+      }
+    };
+
+    loadAll();
+  }, [isLoggedIn]);
+
+  useEffect(() => {
+    if (!allInventoryRows || allInventoryRows.length === 0) return;
+    reloadInventory({ suppressErrors: true, fetchMeta: false });
+  }, [allInventoryRows]);
+
+  useEffect(() => {
     if (logoutTimeout.current) {
       clearTimeout(logoutTimeout.current);
       logoutTimeout.current = null;
@@ -1969,12 +2068,6 @@ export default function Home() {
     }
   }, [activePanel]);
 
-  useEffect(() => {
-    if (activeTab !== 'bulk_transfer' && bulkTransferOpen) {
-      setBulkTransferOpen(false);
-    }
-  }, [activeTab, bulkTransferOpen]);
-
   const selectionDisabled = sessionRole === 'operator';
 
   useEffect(() => {
@@ -2017,10 +2110,7 @@ export default function Home() {
         <button
           type="button"
           className={activeTab === 'bulk_transfer' ? 'primary' : 'ghost'}
-          onClick={() => {
-            setActiveTab('bulk_transfer');
-            setBulkTransferOpen(true);
-          }}
+          onClick={() => setActiveTab('bulk_transfer')}
           disabled={!bulkTransferAllowed}
           title={bulkTransferAllowed ? undefined : '일괄 이관 권한 필요'}
         >
@@ -2269,8 +2359,6 @@ export default function Home() {
         </form>
       ) : activeTab === 'bulk_transfer' ? (
         <BulkTransferPanel
-          isOpen={bulkTransferOpen}
-          onClose={() => setBulkTransferOpen(false)}
           selectedItems={bulkSelectedRows}
           availableToLocations={
             sessionRole === 'l_operator' || sessionRole === 'manager'
@@ -2813,10 +2901,7 @@ export default function Home() {
                   type="button"
                   className={activeTab === 'bulk_transfer' ? 'primary' : 'ghost'}
                   disabled={!bulkTransferAllowed}
-                  onClick={() => {
-                    setActiveTab('bulk_transfer');
-                    setBulkTransferOpen(true);
-                  }}
+                  onClick={() => setActiveTab('bulk_transfer')}
                   title={bulkTransferAllowed ? undefined : '일괄 이관 권한 필요'}
                 >
                   일괄 이관 탭으로 이동
@@ -3815,6 +3900,9 @@ export default function Home() {
         display: flex;
         flex-direction: column;
         gap: 0.75rem;
+        max-height: clamp(280px, 55vh, 640px);
+        overflow-y: auto;
+        padding-right: 0.35rem;
       }
 
       .bulk-transfer-item {
@@ -3849,6 +3937,12 @@ export default function Home() {
         gap: 0.5rem;
         flex-wrap: wrap;
         align-items: center;
+        position: sticky;
+        bottom: 0;
+        background: #fff;
+        border-top: 1px solid #e5e7eb;
+        padding: 0.75rem 0.35rem 0.35rem 0;
+        box-shadow: 0 -6px 12px rgba(15, 23, 42, 0.08);
       }
 
       .bulk-transfer-status {
@@ -3857,38 +3951,6 @@ export default function Home() {
         gap: 0.35rem;
       }
 
-      .bulk-transfer-modal {
-        display: flex;
-        flex-direction: column;
-        max-height: min(90vh, 900px);
-      }
-
-      .bulk-transfer-modal-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 1rem;
-        padding-bottom: 0.75rem;
-        border-bottom: 1px solid #e5e7eb;
-      }
-
-      .bulk-transfer-modal-body {
-        flex: 1;
-        overflow-y: auto;
-        padding: 0.75rem 0;
-        display: flex;
-        flex-direction: column;
-        gap: 0.75rem;
-      }
-
-      .bulk-transfer-modal-footer {
-        position: sticky;
-        bottom: 0;
-        background: #fff;
-        border-top: 1px solid #e5e7eb;
-        padding-top: 0.75rem;
-        padding-bottom: 0.25rem;
-      }
 
       .bulk-transfer-report ul {
         margin: 0.25rem 0 0;
