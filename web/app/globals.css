@@ -79,6 +79,7 @@ label span { display: block; font-size: 0.85rem; color: var(--muted); margin-bot
 .stat h3 { margin: 0.15rem 0 0; font-size: 1.5rem; }
 
 .pill { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.35rem 0.6rem; background: #e0f2fe; color: #0f172a; border-radius: 999px; font-weight: 600; font-size: 0.85rem; }
+.pill.active { background: #1d4ed8; color: #fff; }
 .pill-row { display: flex; flex-wrap: wrap; gap: 0.35rem; }
 .pill .chip-close { background: transparent; border: none; padding: 0; margin-left: 0.25rem; cursor: pointer; color: var(--muted); }
 .pill .chip-close:hover { color: var(--text); }

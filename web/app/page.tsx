@@ -11,7 +11,12 @@ type InventoryLocation = {
   editableId?: string | null;
   item_id?: string | null;
   inventory_id?: string | null;
-  location_prefix?: string;
+};
+
+type InventoryPrefixSummary = {
+  prefix: string;
+  total: number;
+  locations: InventoryLocation[];
 };
 
 type InventoryRow = {
@@ -20,9 +25,9 @@ type InventoryRow = {
   category: string;
   album_version: string;
   option: string;
-  location_prefix: string;
   total_quantity: number;
   locations: InventoryLocation[];
+  prefixes: InventoryPrefixSummary[];
   inventory_id?: string | null;
   item_id?: string | null;
   barcode?: string | null;
@@ -54,7 +59,7 @@ type InventoryMeta = {
   categories: string[];
 };
 
-type InventoryEditDraft = InventoryLocation & Omit<InventoryRow, 'locations' | 'total_quantity' | 'key'>;
+type InventoryEditDraft = InventoryLocation & Omit<InventoryRow, 'locations' | 'total_quantity' | 'key' | 'prefixes'>;
 
 type HistoryRow = {
   created_at: string;
@@ -274,7 +279,10 @@ function getLocationPrefix(location?: string | null) {
 }
 
 function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
-  const grouped = new Map<string, InventoryRow>();
+  const grouped = new Map<
+    string,
+    InventoryRow & { prefixMap: Map<string, InventoryPrefixSummary> }
+  >();
 
   rows.forEach((row, idx) => {
     const artist = row.artist ?? '';
@@ -282,7 +290,7 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
     const album_version = row.album_version ?? '';
     const option = row.option ?? '';
     const locationPrefix = getLocationPrefix(row.location);
-    const key = `${artist}|${category}|${album_version}|${option}|${locationPrefix}`;
+    const key = `${artist}|${album_version}|${option}`;
     const qty = Number(row.quantity ?? 0);
 
     if (!grouped.has(key)) {
@@ -292,9 +300,10 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
         category,
         album_version,
         option,
-        location_prefix: locationPrefix,
         total_quantity: 0,
         locations: [],
+        prefixes: [],
+        prefixMap: new Map(),
         inventory_id: row.inventory_id ?? null,
         item_id: row.item_id ?? null,
         barcode: row.barcode ?? null,
@@ -312,21 +321,33 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
     if (!entry.barcode && row.barcode) {
       entry.barcode = row.barcode;
     }
-    entry.locations.push({
+    const locationEntry: InventoryLocation = {
       id: row.inventory_id || `${key}|${row.location}|${idx}`,
       editableId: row.inventory_id ?? null,
       inventory_id: row.inventory_id ?? null,
       item_id: row.item_id ?? null,
       location: row.location,
-      location_prefix: locationPrefix,
       quantity: qty,
-    });
+    };
+    entry.locations.push(locationEntry);
+    if (locationPrefix) {
+      if (!entry.prefixMap.has(locationPrefix)) {
+        entry.prefixMap.set(locationPrefix, { prefix: locationPrefix, total: 0, locations: [] });
+      }
+      const prefixEntry = entry.prefixMap.get(locationPrefix)!;
+      prefixEntry.total += qty;
+      prefixEntry.locations.push(locationEntry);
+    }
   });
 
-  return Array.from(grouped.values()).map((row) => ({
-    ...row,
-    locations: row.locations.sort((a, b) => a.location.localeCompare(b.location)),
-  }));
+  return Array.from(grouped.values()).map((row) => {
+    const { prefixMap, ...rest } = row;
+    return {
+      ...rest,
+      locations: row.locations,
+      prefixes: Array.from(prefixMap.values()).sort((a, b) => a.prefix.localeCompare(b.prefix)),
+    };
+  });
 }
 
 export default function Home() {
@@ -354,6 +375,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<'movement' | 'transfer' | 'bulk_transfer'>('movement');
   const [bulkSelectedKeys, setBulkSelectedKeys] = useState<string[]>([]);
   const [locationDetailKey, setLocationDetailKey] = useState<string | null>(null);
+  const [locationDetailPrefix, setLocationDetailPrefix] = useState<string | null>(null);
   const [locationDetailDrafts, setLocationDetailDrafts] = useState<Record<string, string>>({});
   const [detailNewLocation, setDetailNewLocation] = useState('');
   const [detailNewQuantity, setDetailNewQuantity] = useState(0);
@@ -1300,16 +1322,16 @@ export default function Home() {
 
     if (row.locations[0]) {
       setFocusedStockKey(row.key);
+      const firstLocation = row.locations[0];
       setEditDraft({
-        id: row.locations[0].editableId ?? row.locations[0].id,
+        id: firstLocation.editableId ?? firstLocation.id,
         artist: row.artist,
         category: row.category,
         album_version: row.album_version,
         option: row.option,
-        location_prefix: row.location_prefix,
         barcode: row.barcode ?? '',
-        location: row.locations[0].location,
-        quantity: row.locations[0].quantity,
+        location: firstLocation.location,
+        quantity: firstLocation.quantity,
       });
     }
   }
@@ -1330,8 +1352,9 @@ export default function Home() {
     setBulkSelectedKeys([]);
   }
 
-  function openLocationDetail(row: InventoryRow) {
+  function openLocationDetail(row: InventoryRow, prefix?: string) {
     setLocationDetailKey(row.key);
+    setLocationDetailPrefix(prefix ?? row.prefixes[0]?.prefix ?? null);
     setDetailNewLocation('');
     setDetailNewQuantity(0);
     setDetailStatus('');
@@ -1342,22 +1365,46 @@ export default function Home() {
     return stock.find((row) => row.key === locationDetailKey) ?? null;
   }, [locationDetailKey, stock]);
 
+  const selectedDetailPrefix = useMemo(() => {
+    if (!locationDetailRow) return null;
+    if (locationDetailPrefix) {
+      const exists = locationDetailRow.prefixes.some((entry) => entry.prefix === locationDetailPrefix);
+      if (exists) return locationDetailPrefix;
+    }
+    return locationDetailRow.prefixes[0]?.prefix ?? null;
+  }, [locationDetailPrefix, locationDetailRow]);
+
+  const selectedDetailPrefixTotal = useMemo(() => {
+    if (!locationDetailRow || !selectedDetailPrefix) return 0;
+    return (
+      locationDetailRow.prefixes.find((entry) => entry.prefix === selectedDetailPrefix)?.total ?? 0
+    );
+  }, [locationDetailRow, selectedDetailPrefix]);
+
+  const locationDetailLocations = useMemo(() => {
+    if (!locationDetailRow || !selectedDetailPrefix) return [];
+    const prefixData = locationDetailRow.prefixes.find((entry) => entry.prefix === selectedDetailPrefix);
+    if (!prefixData) return [];
+    return [...prefixData.locations].sort((a, b) => a.location.localeCompare(b.location));
+  }, [locationDetailRow, selectedDetailPrefix]);
+
   useEffect(() => {
     if (!locationDetailRow) {
       setLocationDetailDrafts({});
+      setLocationDetailPrefix(null);
       if (locationDetailKey) {
         setLocationDetailKey(null);
       }
       return;
     }
     const drafts: Record<string, string> = {};
-    locationDetailRow.locations.forEach((loc) => {
+    locationDetailLocations.forEach((loc) => {
       const id = loc.editableId ?? loc.inventory_id ?? loc.id;
       if (!id) return;
       drafts[id] = loc.location;
     });
     setLocationDetailDrafts(drafts);
-  }, [locationDetailRow]);
+  }, [locationDetailLocations, locationDetailRow]);
 
   async function addLocationDetail() {
     if (!locationDetailRow) return;
@@ -1369,6 +1416,10 @@ export default function Home() {
     const quantityValue = Number(detailNewQuantity);
     if (!locationValue) {
       alert('로케이션을 입력하세요.');
+      return;
+    }
+    if (selectedDetailPrefix && getLocationPrefix(locationValue) !== selectedDetailPrefix) {
+      alert(`${selectedDetailPrefix} 프리픽스에 맞는 로케이션을 입력하세요.`);
       return;
     }
     if (!Number.isFinite(quantityValue) || quantityValue <= 0) {
@@ -1535,7 +1586,7 @@ export default function Home() {
   const filteredStock = useMemo(() => {
     const base = showAnomalies ? anomalousStock : baseStock;
     if (!locationPrefixFilter) return base;
-    return base.filter((row) => row.location_prefix === locationPrefixFilter);
+    return base.filter((row) => row.prefixes.some((entry) => entry.prefix === locationPrefixFilter));
   }, [anomalousStock, baseStock, showAnomalies, locationPrefixFilter]);
 
   const bulkSelectedRows = useMemo(() => {
@@ -1735,9 +1786,9 @@ export default function Home() {
   const locationBreakdown = useMemo(() => {
     const aggregate = new Map<string, number>();
     filteredStock.forEach((row) => {
-      const prefix = row.location_prefix || getLocationPrefix(row.locations[0]?.location);
-      if (!prefix) return;
-      aggregate.set(prefix, (aggregate.get(prefix) ?? 0) + Number(row.total_quantity ?? 0));
+      row.prefixes.forEach((entry) => {
+        aggregate.set(entry.prefix, (aggregate.get(entry.prefix) ?? 0) + Number(entry.total ?? 0));
+      });
     });
     return Array.from(aggregate.entries()).sort((a, b) => Number(b[1]) - Number(a[1]));
   }, [filteredStock]);
@@ -1895,7 +1946,6 @@ export default function Home() {
         category: match.category,
         album_version: match.album_version,
         option: match.option,
-        location_prefix: match.location_prefix,
         barcode: match.barcode ?? '',
         location: defaultLocation.location,
         quantity: defaultLocation.quantity,
@@ -1904,6 +1954,18 @@ export default function Home() {
       setEditDraft(null);
     }
   }, [focusedStockKey, stock]);
+
+  useEffect(() => {
+    if (!locationDetailRow) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setLocationDetailKey(null);
+        setLocationDetailPrefix(null);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [locationDetailRow]);
 
   useEffect(() => {
     if (focusedStockKey && !selectedStockKeys.includes(focusedStockKey)) {
@@ -2443,12 +2505,32 @@ export default function Home() {
                   {locationDetailRow.artist} · {locationDetailRow.album_version} · {locationDetailRow.option || '-'}
                 </h3>
                 <div className="muted small-text">
-                  창고: {locationDetailRow.location_prefix} · 합계 {locationDetailRow.total_quantity.toLocaleString()}
+                  선택 프리픽스: {selectedDetailPrefix ?? '-'} · 합계{' '}
+                  {selectedDetailPrefixTotal.toLocaleString()}
                 </div>
               </div>
-              <button className="ghost" onClick={() => setLocationDetailKey(null)}>
+              <button
+                className="ghost"
+                onClick={() => {
+                  setLocationDetailKey(null);
+                  setLocationDetailPrefix(null);
+                }}
+              >
                 닫기
               </button>
+            </div>
+            <div className="pill-row wrap">
+              {locationDetailRow.prefixes.length === 0 && <span className="muted">로케이션 없음</span>}
+              {locationDetailRow.prefixes.map((entry) => (
+                <button
+                  key={`detail-prefix-${entry.prefix}`}
+                  type="button"
+                  className={entry.prefix === selectedDetailPrefix ? 'pill active' : 'pill'}
+                  onClick={() => setLocationDetailPrefix(entry.prefix)}
+                >
+                  {entry.prefix} {entry.total.toLocaleString()}
+                </button>
+              ))}
             </div>
             <div className="form-row">
               <label>
@@ -2456,7 +2538,9 @@ export default function Home() {
                 <input
                   value={detailNewLocation}
                   onChange={(e) => setDetailNewLocation(e.target.value)}
-                  placeholder={`${locationDetailRow.location_prefix}-S-P01-00`}
+                  placeholder={
+                    selectedDetailPrefix ? `${selectedDetailPrefix}-S-P01-00` : '예: DA-S-P01-00'
+                  }
                   disabled={sessionRole === 'viewer'}
                 />
               </label>
@@ -2478,7 +2562,10 @@ export default function Home() {
               </div>
             </div>
             <div className="detail-location-list">
-              {locationDetailRow.locations.map((loc) => {
+              {locationDetailLocations.length === 0 && (
+                <div className="muted">표시할 로케이션이 없습니다.</div>
+              )}
+              {locationDetailLocations.map((loc) => {
                 const locationId = loc.editableId ?? loc.inventory_id ?? loc.id ?? '';
                 const isEditable = Number(loc.quantity ?? 0) === 0 && sessionRole !== 'viewer';
                 return (
@@ -2769,16 +2856,20 @@ export default function Home() {
                       <div>옵션: {row.option || '-'}</div>
                       <div>바코드: {row.barcode || '-'}</div>
                       <div className="inventory-card-locations">
-                        <button
-                          type="button"
-                          className="pill"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openLocationDetail(row);
-                          }}
-                        >
-                          {row.location_prefix}: {row.total_quantity.toLocaleString()}
-                        </button>
+                        {row.prefixes.length === 0 && <span className="muted">없음</span>}
+                        {row.prefixes.map((entry) => (
+                          <button
+                            key={`card-prefix-${row.key}-${entry.prefix}`}
+                            type="button"
+                            className="pill"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openLocationDetail(row, entry.prefix);
+                            }}
+                          >
+                            {entry.prefix} {entry.total.toLocaleString()}
+                          </button>
+                        ))}
                       </div>
                     </div>
                   </button>
@@ -2841,16 +2932,19 @@ export default function Home() {
                           <td title={row.barcode ?? ''}>{row.barcode || '-'}</td>
                           <td>
                             <div className="pill-row wrap">
-                              <button
-                                key={`${row.key}-prefix`}
-                                className="ghost small"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  openLocationDetail(row);
-                                }}
-                              >
-                                {row.location_prefix}
-                              </button>
+                              {row.prefixes.length === 0 && <span className="muted">-</span>}
+                              {row.prefixes.map((entry) => (
+                                <button
+                                  key={`${row.key}-prefix-${entry.prefix}`}
+                                  className="ghost small"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openLocationDetail(row, entry.prefix);
+                                  }}
+                                >
+                                  {entry.prefix} {entry.total.toLocaleString()}
+                                </button>
+                              ))}
                             </div>
                           </td>
                           <td className="align-right">{row.total_quantity.toLocaleString()}</td>
@@ -2879,7 +2973,6 @@ export default function Home() {
                                         category: row.category,
                                         album_version: row.album_version,
                                         option: row.option,
-                                        location_prefix: row.location_prefix,
                                         barcode: row.barcode ?? '',
                                         location: loc.location,
                                         quantity: loc.quantity,

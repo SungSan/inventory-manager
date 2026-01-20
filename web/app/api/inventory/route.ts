@@ -24,7 +24,12 @@ type InventoryLocation = {
   editableId?: string | null;
   item_id?: string | null;
   inventory_id?: string | null;
-  location_prefix?: string;
+};
+
+type InventoryPrefixSummary = {
+  prefix: string;
+  total: number;
+  locations: InventoryLocation[];
 };
 
 type InventoryRow = {
@@ -33,9 +38,9 @@ type InventoryRow = {
   category: string;
   album_version: string;
   option: string;
-  location_prefix: string;
   total_quantity: number;
   locations: InventoryLocation[];
+  prefixes: InventoryPrefixSummary[];
   inventory_id?: string | null;
   item_id?: string | null;
   barcode?: string | null;
@@ -49,7 +54,10 @@ function getLocationPrefix(location?: string | null) {
 }
 
 function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
-  const grouped = new Map<string, InventoryRow>();
+  const grouped = new Map<
+    string,
+    InventoryRow & { prefixMap: Map<string, InventoryPrefixSummary> }
+  >();
 
   rows.forEach((row, idx) => {
     const artist = row.artist ?? '';
@@ -57,7 +65,7 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
     const album_version = row.album_version ?? '';
     const option = row.option ?? '';
     const locationPrefix = getLocationPrefix(row.location);
-    const key = `${artist}|${category}|${album_version}|${option}|${locationPrefix}`;
+    const key = `${artist}|${album_version}|${option}`;
     const qty = Number(row.quantity ?? 0);
 
     if (!grouped.has(key)) {
@@ -67,9 +75,10 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
         category,
         album_version,
         option,
-        location_prefix: locationPrefix,
         total_quantity: 0,
         locations: [],
+        prefixes: [],
+        prefixMap: new Map(),
         inventory_id: row.inventory_id ?? null,
         item_id: row.item_id ?? null,
         barcode: row.barcode ?? null,
@@ -87,21 +96,33 @@ function groupInventoryRows(rows: InventoryApiRow[]): InventoryRow[] {
     if (!entry.barcode && row.barcode) {
       entry.barcode = row.barcode;
     }
-    entry.locations.push({
+    const locationEntry: InventoryLocation = {
       id: row.inventory_id || `${key}|${row.location}|${idx}`,
       editableId: row.inventory_id ?? null,
       inventory_id: row.inventory_id ?? null,
       item_id: row.item_id ?? null,
       location: row.location,
-      location_prefix: locationPrefix,
       quantity: qty,
-    });
+    };
+    entry.locations.push(locationEntry);
+    if (locationPrefix) {
+      if (!entry.prefixMap.has(locationPrefix)) {
+        entry.prefixMap.set(locationPrefix, { prefix: locationPrefix, total: 0, locations: [] });
+      }
+      const prefixEntry = entry.prefixMap.get(locationPrefix)!;
+      prefixEntry.total += qty;
+      prefixEntry.locations.push(locationEntry);
+    }
   });
 
-  return Array.from(grouped.values()).map((row) => ({
-    ...row,
-    locations: row.locations.sort((a, b) => a.location.localeCompare(b.location)),
-  }));
+  return Array.from(grouped.values()).map((row) => {
+    const { prefixMap, ...rest } = row;
+    return {
+      ...rest,
+      locations: row.locations,
+      prefixes: Array.from(prefixMap.values()).sort((a, b) => a.prefix.localeCompare(b.prefix)),
+    };
+  });
 }
 
 async function loadLocationScope(userId: string) {
@@ -268,12 +289,12 @@ export async function GET(req: Request) {
     }
 
     const sourceRows = (data ?? []) as InventoryApiRow[];
-    const filteredRows = locationFilter
-      ? sourceRows.filter((row) => getLocationPrefix(row.location) === locationFilter)
-      : sourceRows;
-    const grouped = groupInventoryRows(filteredRows);
-    const totalRows = grouped.length;
-    const paged = grouped.slice(offset, offset + limit);
+    const grouped = groupInventoryRows(sourceRows);
+    const filteredGrouped = locationFilter
+      ? grouped.filter((row) => row.prefixes.some((entry) => entry.prefix === locationFilter))
+      : grouped;
+    const totalRows = filteredGrouped.length;
+    const paged = filteredGrouped.slice(offset, offset + limit);
 
     return NextResponse.json(
       {
