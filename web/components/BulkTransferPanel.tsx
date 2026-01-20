@@ -49,6 +49,8 @@ type BulkTransferReport = {
 };
 
 type BulkTransferPanelProps = {
+  isOpen: boolean;
+  onClose: () => void;
   selectedItems: InventoryItem[];
   availableToLocations: string[];
   role: Role | null;
@@ -78,6 +80,8 @@ function parseQuantity(value: string | undefined) {
 }
 
 export default function BulkTransferPanel({
+  isOpen,
+  onClose,
   selectedItems,
   availableToLocations,
   role,
@@ -86,6 +90,7 @@ export default function BulkTransferPanel({
   onClearSelection,
   onSelectAll,
 }: BulkTransferPanelProps) {
+  if (!isOpen) return null;
   const [toLocation, setToLocation] = useState('');
   const [memo, setMemo] = useState('');
   const [quantities, setQuantities] = useState<Record<string, string>>({});
@@ -437,140 +442,151 @@ export default function BulkTransferPanel({
   };
 
   return (
-    <div className="bulk-transfer-panel">
-      <div className="bulk-transfer-header">
-        <strong>일괄 이관</strong>
-        <span className="muted small-text">
-          미입력 시 해당 품목의 전체 수량을 이관합니다. 수량은 현재고를 초과할 수 없습니다.
-        </span>
-      </div>
-      <div className="form-row">
-        <label>
-          <span>받는 곳</span>
-          <select
-            value={toLocation}
-            onChange={(e) => setToLocation(e.target.value)}
-            disabled={availableToLocations.length === 0}
-          >
-            <option value="" disabled>
-              {availableToLocations.length > 0 ? '받는 곳 선택' : '로케이션 없음'}
-            </option>
-            {availableToLocations.map((loc) => (
-              <option key={`bulk-inline-${loc}`} value={loc}>
-                {loc}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="compact">
-          <span>선택된 항목</span>
-          <input value={`${selectedItems.length}개`} readOnly />
-        </label>
-      </div>
-      <div className="form-row">
-        <label className="wide">
-          <span>메모 (필수)</span>
-          <input
-            value={memo}
-            onChange={(e) => setMemo(e.target.value)}
-            placeholder="일괄 이관 사유/비고"
-          />
-        </label>
-      </div>
-      <div className="bulk-transfer-actions">
-        <button type="button" className="ghost" onClick={onSelectAll} disabled={!onSelectAll}>
-          전체 선택
-        </button>
-        <button type="button" className="ghost" onClick={onClearSelection}>
-          선택 해제
-        </button>
-        <button type="button" className="ghost" onClick={fillAllQuantities}>
-          전체 수량 자동 입력
-        </button>
-        <button type="button" className="ghost" onClick={resetQuantities}>
-          입력값 초기화
-        </button>
-      </div>
-      <div className="bulk-transfer-list">
-        {selectedItems.length === 0 && (
-          <div className="muted small-text">일괄 이관할 항목을 선택하세요.</div>
-        )}
-        {selectedItems.map((item) => {
-          const locationInfo = getRowLocation(item);
-          const available = locationInfo ? Number(locationInfo.quantity ?? 0) : 0;
-          const error = quantityErrors[item.key];
-          return (
-            <div key={`bulk-item-${item.key}`} className="bulk-transfer-item">
-              <div className="bulk-transfer-item-main">
-                <strong>{item.artist}</strong>
-                <div className="muted small-text">
-                  {item.album_version} / {item.option || '-'}
-                </div>
-                <div className="muted small-text">
-                  위치: {locationInfo?.location.location ?? '복수 로케이션'} · 현재고 {available.toLocaleString()}
-                </div>
-              </div>
-              <div className="bulk-transfer-item-input">
-                <label>
-                  <span>이관 수량</span>
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    value={quantities[item.key] ?? ''}
-                    onChange={(e) =>
-                      setQuantities((prev) => ({ ...prev, [item.key]: e.target.value }))
-                    }
-                    placeholder="미입력=전량"
-                  />
-                </label>
-                {error && <span className="bulk-transfer-error">{error}</span>}
-              </div>
+    <div className="modal-backdrop">
+      <div className="modal-card bulk-transfer-modal" role="dialog" aria-modal="true">
+        <div className="bulk-transfer-modal-header">
+          <div>
+            <strong>일괄 이관</strong>
+            <div className="muted small-text">
+              선택 {selectedItems.length}건 · 미입력 시 해당 품목의 전체 수량을 이관합니다.
             </div>
-          );
-        })}
-      </div>
-      <div className="bulk-transfer-footer">
-        <button
-          type="button"
-          className="primary"
-          disabled={
-            isSubmitting ||
-            !canTransfer ||
-            selectedItems.length === 0 ||
-            !toLocation ||
-            !memo.trim() ||
-            hasQuantityErrors
-          }
-          onClick={submitBulkTransfer}
-        >
-          {isSubmitting ? '처리 중...' : '일괄 이관 실행'}
-        </button>
-        {report?.failureItems?.length ? (
-          <button type="button" className="ghost" disabled={isSubmitting} onClick={retryFailures}>
-            실패 항목 재시도
+          </div>
+          <button type="button" className="ghost" onClick={onClose}>
+            닫기
           </button>
-        ) : null}
-      </div>
-      <div className="bulk-transfer-status muted small-text">
-        {status || '선택 후 일괄 이관을 실행하세요.'}
-        {report && (
-          <div className="bulk-transfer-report">
-            <strong>
-              성공 {report.successCount}건 · 실패 {report.failureCount}건
-            </strong>
-            {report.failures.length > 0 && (
-              <ul>
-                {report.failures.slice(0, 4).map((failure) => (
-                  <li key={failure}>{failure}</li>
+        </div>
+        <div className="bulk-transfer-modal-body">
+          <div className="form-row">
+            <label>
+              <span>받는 곳</span>
+              <select
+                value={toLocation}
+                onChange={(e) => setToLocation(e.target.value)}
+                disabled={availableToLocations.length === 0}
+              >
+                <option value="" disabled>
+                  {availableToLocations.length > 0 ? '받는 곳 선택' : '로케이션 없음'}
+                </option>
+                {availableToLocations.map((loc) => (
+                  <option key={`bulk-inline-${loc}`} value={loc}>
+                    {loc}
+                  </option>
                 ))}
-                {report.failures.length > 4 && (
-                  <li>외 {report.failures.length - 4}건</li>
+              </select>
+            </label>
+            <label className="compact">
+              <span>선택된 항목</span>
+              <input value={`${selectedItems.length}개`} readOnly />
+            </label>
+          </div>
+          <div className="form-row">
+            <label className="wide">
+              <span>메모 (필수)</span>
+              <input
+                value={memo}
+                onChange={(e) => setMemo(e.target.value)}
+                placeholder="일괄 이관 사유/비고"
+              />
+            </label>
+          </div>
+          <div className="bulk-transfer-actions">
+            <button type="button" className="ghost" onClick={onSelectAll} disabled={!onSelectAll}>
+              전체 선택
+            </button>
+            <button type="button" className="ghost" onClick={onClearSelection}>
+              선택 해제
+            </button>
+            <button type="button" className="ghost" onClick={fillAllQuantities}>
+              전체 수량 자동 입력
+            </button>
+            <button type="button" className="ghost" onClick={resetQuantities}>
+              입력값 초기화
+            </button>
+          </div>
+          <div className="bulk-transfer-list">
+            {selectedItems.length === 0 && (
+              <div className="muted small-text">일괄 이관할 항목을 선택하세요.</div>
+            )}
+            {selectedItems.map((item) => {
+              const locationInfo = getRowLocation(item);
+              const available = locationInfo ? Number(locationInfo.quantity ?? 0) : 0;
+              const error = quantityErrors[item.key];
+              return (
+                <div key={`bulk-item-${item.key}`} className="bulk-transfer-item">
+                  <div className="bulk-transfer-item-main">
+                    <strong>{item.artist}</strong>
+                    <div className="muted small-text">
+                      {item.album_version} / {item.option || '-'}
+                    </div>
+                    <div className="muted small-text">
+                      위치: {locationInfo?.location.location ?? '복수 로케이션'} · 현재고 {available.toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="bulk-transfer-item-input">
+                    <label>
+                      <span>이관 수량</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={quantities[item.key] ?? ''}
+                        onChange={(e) =>
+                          setQuantities((prev) => ({ ...prev, [item.key]: e.target.value }))
+                        }
+                        placeholder="미입력=전량"
+                      />
+                    </label>
+                    {error && <span className="bulk-transfer-error">{error}</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="bulk-transfer-modal-footer">
+          <div className="bulk-transfer-footer">
+            <button
+              type="button"
+              className="primary"
+              disabled={
+                isSubmitting ||
+                !canTransfer ||
+                selectedItems.length === 0 ||
+                !toLocation ||
+                !memo.trim() ||
+                hasQuantityErrors
+              }
+              onClick={submitBulkTransfer}
+            >
+              {isSubmitting ? '처리 중...' : '일괄 이관 실행'}
+            </button>
+            {report?.failureItems?.length ? (
+              <button type="button" className="ghost" disabled={isSubmitting} onClick={retryFailures}>
+                실패 항목 재시도
+              </button>
+            ) : null}
+          </div>
+          <div className="bulk-transfer-status muted small-text">
+            {status || '선택 후 일괄 이관을 실행하세요.'}
+            {report && (
+              <div className="bulk-transfer-report">
+                <strong>
+                  성공 {report.successCount}건 · 실패 {report.failureCount}건
+                </strong>
+                {report.failures.length > 0 && (
+                  <ul>
+                    {report.failures.slice(0, 4).map((failure) => (
+                      <li key={failure}>{failure}</li>
+                    ))}
+                    {report.failures.length > 4 && (
+                      <li>외 {report.failures.length - 4}건</li>
+                    )}
+                  </ul>
                 )}
-              </ul>
+              </div>
             )}
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

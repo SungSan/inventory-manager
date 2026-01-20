@@ -374,6 +374,7 @@ export default function Home() {
   const [transferPayload, setTransferPayload] = useState<TransferPayload>(EMPTY_TRANSFER);
   const [activeTab, setActiveTab] = useState<'movement' | 'transfer' | 'bulk_transfer'>('movement');
   const [bulkSelectedKeys, setBulkSelectedKeys] = useState<string[]>([]);
+  const [bulkTransferOpen, setBulkTransferOpen] = useState(false);
   const [locationDetailKey, setLocationDetailKey] = useState<string | null>(null);
   const [locationDetailPrefix, setLocationDetailPrefix] = useState<string | null>(null);
   const [locationDetailDrafts, setLocationDetailDrafts] = useState<Record<string, string>>({});
@@ -729,13 +730,8 @@ export default function Home() {
     setStatus('재고 메타데이터 불러오기 실패');
   }
 
-  async function fetchLocationPrefixes(filters: typeof stockFilters) {
+  async function fetchLocationPrefixes() {
     const params = new URLSearchParams();
-    if (filters.artist) params.set('artist', filters.artist);
-    if (filters.category) params.set('category', filters.category);
-    if (filters.q) params.set('q', filters.q);
-    if (filters.albumVersion) params.set('album_version', filters.albumVersion);
-    if (filters.barcode) params.set('barcode', filters.barcode);
     params.set('meta', 'prefixes');
 
     setLocationPrefixStatus('로케이션 목록 불러오는 중...');
@@ -1813,21 +1809,11 @@ export default function Home() {
 
   useEffect(() => {
     if (!isLoggedIn) return;
-    fetchLocationPrefixes({
-      ...stockFilters,
-      location: '',
-    }).catch(() => {
+    fetchLocationPrefixes().catch(() => {
       setLocationPrefixStatus('로케이션 목록 불러오기 실패');
       setLocationPrefixOptions([]);
     });
-  }, [
-    isLoggedIn,
-    stockFilters.artist,
-    stockFilters.category,
-    stockFilters.q,
-    stockFilters.albumVersion,
-    stockFilters.barcode,
-  ]);
+  }, [isLoggedIn]);
 
   useEffect(() => {
     if (logoutTimeout.current) {
@@ -1983,6 +1969,12 @@ export default function Home() {
     }
   }, [activePanel]);
 
+  useEffect(() => {
+    if (activeTab !== 'bulk_transfer' && bulkTransferOpen) {
+      setBulkTransferOpen(false);
+    }
+  }, [activeTab, bulkTransferOpen]);
+
   const selectionDisabled = sessionRole === 'operator';
 
   useEffect(() => {
@@ -2025,7 +2017,10 @@ export default function Home() {
         <button
           type="button"
           className={activeTab === 'bulk_transfer' ? 'primary' : 'ghost'}
-          onClick={() => setActiveTab('bulk_transfer')}
+          onClick={() => {
+            setActiveTab('bulk_transfer');
+            setBulkTransferOpen(true);
+          }}
           disabled={!bulkTransferAllowed}
           title={bulkTransferAllowed ? undefined : '일괄 이관 권한 필요'}
         >
@@ -2274,6 +2269,8 @@ export default function Home() {
         </form>
       ) : activeTab === 'bulk_transfer' ? (
         <BulkTransferPanel
+          isOpen={bulkTransferOpen}
+          onClose={() => setBulkTransferOpen(false)}
           selectedItems={bulkSelectedRows}
           availableToLocations={
             sessionRole === 'l_operator' || sessionRole === 'manager'
@@ -2816,7 +2813,10 @@ export default function Home() {
                   type="button"
                   className={activeTab === 'bulk_transfer' ? 'primary' : 'ghost'}
                   disabled={!bulkTransferAllowed}
-                  onClick={() => setActiveTab('bulk_transfer')}
+                  onClick={() => {
+                    setActiveTab('bulk_transfer');
+                    setBulkTransferOpen(true);
+                  }}
                   title={bulkTransferAllowed ? undefined : '일괄 이관 권한 필요'}
                 >
                   일괄 이관 탭으로 이동
@@ -3815,9 +3815,6 @@ export default function Home() {
         display: flex;
         flex-direction: column;
         gap: 0.75rem;
-        max-height: clamp(240px, 55vh, 600px);
-        overflow-y: auto;
-        padding-right: 0.35rem;
       }
 
       .bulk-transfer-item {
@@ -3858,6 +3855,39 @@ export default function Home() {
         display: flex;
         flex-direction: column;
         gap: 0.35rem;
+      }
+
+      .bulk-transfer-modal {
+        display: flex;
+        flex-direction: column;
+        max-height: min(90vh, 900px);
+      }
+
+      .bulk-transfer-modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding-bottom: 0.75rem;
+        border-bottom: 1px solid #e5e7eb;
+      }
+
+      .bulk-transfer-modal-body {
+        flex: 1;
+        overflow-y: auto;
+        padding: 0.75rem 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+      }
+
+      .bulk-transfer-modal-footer {
+        position: sticky;
+        bottom: 0;
+        background: #fff;
+        border-top: 1px solid #e5e7eb;
+        padding-top: 0.75rem;
+        padding-bottom: 0.25rem;
       }
 
       .bulk-transfer-report ul {
