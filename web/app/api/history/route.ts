@@ -6,9 +6,19 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../lib/supabase';
 import { withAuth } from '../../../lib/auth';
 
+async function loadLocationScope(userId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('user_location_permissions')
+    .select('primary_location, sub_locations')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data;
+}
+
 export async function GET(req: Request) {
   noStore();
-  return withAuth(['admin', 'operator', 'viewer', 'l_operator'], async () => {
+  return withAuth(['admin', 'operator', 'viewer', 'l_operator', 'manager'], async (session) => {
     const { searchParams } = new URL(req.url);
     const startDate = searchParams.get('startDate');
     const endDate = searchParams.get('endDate');
@@ -33,6 +43,17 @@ export async function GET(req: Request) {
       )
       .order('created_at', { ascending: false })
       .range(offset, offset + pageSize - 1);
+
+    if (session.role === 'manager') {
+      const scope = await loadLocationScope(session.userId ?? '');
+      const primary = scope?.primary_location ? [scope.primary_location] : [];
+      const subs = Array.isArray(scope?.sub_locations) ? scope?.sub_locations : [];
+      const allowedLocations = Array.from(new Set([...primary, ...subs].map((v) => String(v || '').trim()).filter(Boolean)));
+      if (allowedLocations.length === 0) {
+        return NextResponse.json({ ok: true, rows: [], page: { page, pageSize, totalRows: 0 } });
+      }
+      query = query.in('location', allowedLocations);
+    }
 
     if (startDate) {
       query = query.gte('created_at', toKstStart(startDate));

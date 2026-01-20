@@ -32,7 +32,7 @@ async function loadItemBarcode(params: {
 }
 
 export async function POST(req: Request) {
-  return withAuth(['admin', 'operator', 'l_operator'], async (session) => {
+  return withAuth(['admin', 'operator', 'l_operator', 'manager'], async (session) => {
     let body: any;
     try {
       body = await req.json();
@@ -71,6 +71,13 @@ export async function POST(req: Request) {
       );
     }
 
+    if (!normalizedMemo) {
+      return NextResponse.json(
+        { ok: false, error: 'memo is required for transfer', step: 'validation' },
+        { status: 400 }
+      );
+    }
+
     if (!Number.isFinite(normalizedQuantity) || normalizedQuantity <= 0) {
       return NextResponse.json(
         { ok: false, error: 'quantity must be a positive number', step: 'validation' },
@@ -93,7 +100,7 @@ export async function POST(req: Request) {
       );
     }
 
-    if (session.role === 'l_operator') {
+    if (session.role === 'l_operator' || session.role === 'manager') {
       const scope = await loadLocationScope(createdBy);
       if (!scope?.primary_location) {
         return NextResponse.json(
