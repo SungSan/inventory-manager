@@ -230,6 +230,60 @@ export async function GET(req: Request) {
       );
     }
 
+    if (meta === 'prefix_stats') {
+      let metaQuery = supabaseAdmin
+        .from('inventory_view')
+        .select('location,quantity');
+
+      if (artist) metaQuery = metaQuery.eq('artist', artist);
+      if (allowedLocations) {
+        metaQuery = metaQuery.in('location', allowedLocations);
+      }
+      if (category) metaQuery = metaQuery.eq('category', category);
+      if (barcode) metaQuery = metaQuery.eq('barcode', barcode);
+      if (albumVersion) {
+        const term = `%${albumVersion}%`;
+        metaQuery = metaQuery.ilike('album_version', term);
+      }
+      if (q) {
+        const term = `%${q}%`;
+        metaQuery = metaQuery.or(
+          ['artist', 'album_version', 'option', 'location']
+            .map((col) => `${col}.ilike.${term}`)
+            .join(',')
+        );
+      }
+
+      const { data, error } = await metaQuery;
+      if (error) {
+        return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+      }
+
+      const aggregate = new Map<string, number>();
+      (data ?? []).forEach((row) => {
+        const prefix = getLocationPrefix((row as { location?: string | null }).location);
+        if (!prefix) return;
+        const qty = Number((row as { quantity?: number | null }).quantity ?? 0);
+        aggregate.set(prefix, (aggregate.get(prefix) ?? 0) + qty);
+      });
+
+      const prefixStats = Array.from(aggregate.entries())
+        .map(([prefix, total_quantity]) => ({ prefix, total_quantity }))
+        .sort((a, b) => a.prefix.localeCompare(b.prefix));
+
+      return NextResponse.json(
+        {
+          ok: true,
+          prefix_stats: prefixStats,
+        },
+        {
+          headers: {
+            'Cache-Control': 'no-store',
+          },
+        }
+      );
+    }
+
     let query = supabaseAdmin
       .from('inventory_view')
       .select(

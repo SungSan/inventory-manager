@@ -396,6 +396,8 @@ export default function Home() {
   const [locationInput, setLocationInput] = useState('');
   const [locationPrefixOptions, setLocationPrefixOptions] = useState<string[]>([]);
   const [locationPrefixStatus, setLocationPrefixStatus] = useState('');
+  const [locationPrefixStats, setLocationPrefixStats] = useState<{ prefix: string; total_quantity: number }[]>([]);
+  const [locationPrefixStatsStatus, setLocationPrefixStatsStatus] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [albumVersionTerm, setAlbumVersionTerm] = useState('');
   const [barcodeTerm, setBarcodeTerm] = useState('');
@@ -407,7 +409,6 @@ export default function Home() {
     categories: [],
   });
   const [inventoryPage, setInventoryPage] = useState({ limit: 50, offset: 0, totalRows: 0 });
-  const [allInventoryRows, setAllInventoryRows] = useState<InventoryRow[] | null>(null);
   const [locationPresets, setLocationPresets] = useState<string[]>([]);
   const [registerForm, setRegisterForm] = useState({
     username: '',
@@ -454,8 +455,6 @@ export default function Home() {
   const adminRef = useRef<HTMLDivElement | null>(null);
   const barcodeBufferRef = useRef('');
   const barcodeTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const fullInventoryLoadingRef = useRef(false);
-  const fullInventoryLoadedRef = useRef(false);
   const movementBarcodeSource = useMemo(() => {
     const artistValue = movement.artist.trim();
     const albumValue = movement.album_version.trim();
@@ -750,40 +749,27 @@ export default function Home() {
     setLocationPrefixStatus('로케이션 목록 불러오기 실패');
   }
 
-  function filterInventoryRows(rows: InventoryRow[], filters: typeof stockFilters) {
-    const q = filters.q.trim().toLowerCase();
-    const albumTerm = filters.albumVersion.trim().toLowerCase();
-    const barcodeTerm = filters.barcode.trim().toLowerCase();
-    const locationPrefix = filters.location.trim();
+  async function fetchLocationPrefixStats(filters: typeof stockFilters) {
+    const params = new URLSearchParams();
+    if (filters.artist) params.set('artist', filters.artist);
+    if (filters.category) params.set('category', filters.category);
+    if (filters.q) params.set('q', filters.q);
+    if (filters.albumVersion) params.set('album_version', filters.albumVersion);
+    if (filters.barcode) params.set('barcode', filters.barcode);
+    params.set('meta', 'prefix_stats');
 
-    return rows.filter((row) => {
-      if (filters.artist && row.artist !== filters.artist) return false;
-      if (filters.category && row.category !== filters.category) return false;
-      if (barcodeTerm && String(row.barcode ?? '').toLowerCase() !== barcodeTerm) return false;
-      if (albumTerm && !row.album_version.toLowerCase().includes(albumTerm)) return false;
-      if (locationPrefix && !row.prefixes.some((entry) => entry.prefix === locationPrefix)) return false;
-      if (q) {
-        const locationText = row.locations.map((loc) => loc.location).join(' ');
-        const haystack = [row.artist, row.album_version, row.option, locationText]
-          .join(' ')
-          .toLowerCase();
-        if (!haystack.includes(q)) return false;
+    setLocationPrefixStatsStatus('로케이션 분포 불러오는 중...');
+    const res = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
+    if (res.ok) {
+      const payload = await res.json().catch(() => null);
+      if (payload?.ok) {
+        setLocationPrefixStats(Array.isArray(payload.prefix_stats) ? payload.prefix_stats : []);
+        setLocationPrefixStatsStatus('');
+        return;
       }
-      return true;
-    });
-  }
-
-  function buildPagedInventory(
-    rows: InventoryRow[],
-    filters: typeof stockFilters,
-    limit: number,
-    offset: number
-  ) {
-    const filtered = filterInventoryRows(rows, filters);
-    const totalRows = filtered.length;
-    const clampedOffset = Math.max(0, Math.min(offset, Math.max(0, totalRows - 1)));
-    const paged = filtered.slice(clampedOffset, clampedOffset + limit);
-    return { paged, totalRows, offset: clampedOffset };
+    }
+    setLocationPrefixStats([]);
+    setLocationPrefixStatsStatus('로케이션 분포 불러오기 실패');
   }
 
   function buildInventoryParams(filters: typeof stockFilters, limit?: number, offset?: number) {
@@ -839,22 +825,15 @@ export default function Home() {
       let totalRows = 0;
       let offset = nextOffset;
 
-      if (allInventoryRows && allInventoryRows.length > 0) {
-        const paged = buildPagedInventory(allInventoryRows, nextFilters, nextLimit, nextOffset);
-        rows = paged.paged;
-        totalRows = paged.totalRows;
-        offset = paged.offset;
-      } else {
-        let payload = await fetchInventoryPage(nextFilters, { limit: nextLimit, offset: nextOffset });
+      let payload = await fetchInventoryPage(nextFilters, { limit: nextLimit, offset: nextOffset });
+      totalRows = payload.page.totalRows ?? payload.rows.length;
+      const clampedOffset = Math.max(0, Math.min(nextOffset, Math.max(0, totalRows - 1)));
+      if (clampedOffset !== nextOffset) {
+        payload = await fetchInventoryPage(nextFilters, { limit: nextLimit, offset: clampedOffset });
         totalRows = payload.page.totalRows ?? payload.rows.length;
-        const clampedOffset = Math.max(0, Math.min(nextOffset, Math.max(0, totalRows - 1)));
-        if (clampedOffset !== nextOffset) {
-          payload = await fetchInventoryPage(nextFilters, { limit: nextLimit, offset: clampedOffset });
-          totalRows = payload.page.totalRows ?? payload.rows.length;
-        }
-        offset = payload.page.offset ?? clampedOffset;
-        rows = payload.rows;
       }
+      offset = payload.page.offset ?? clampedOffset;
+      rows = payload.rows;
       setInventoryPage({
         limit: nextLimit,
         offset,
@@ -863,7 +842,10 @@ export default function Home() {
       setStock(rows);
 
       if (options?.fetchMeta !== false) {
-        await fetchInventoryMeta(nextFilters, { prefix: options?.prefix ?? nextFilters.location ?? nextFilters.q });
+        await Promise.all([
+          fetchInventoryMeta(nextFilters, { prefix: options?.prefix ?? nextFilters.location ?? nextFilters.q }),
+          fetchLocationPrefixStats(nextFilters),
+        ]);
       }
       return;
     } catch (error) {
@@ -1830,14 +1812,11 @@ export default function Home() {
   const totalQuantity = inventoryMeta.summary.totalQuantity;
   const distinctItems = inventoryMeta.summary.uniqueItems;
   const locationBreakdown = useMemo(() => {
-    const aggregate = new Map<string, number>();
-    filteredStock.forEach((row) => {
-      row.prefixes.forEach((entry) => {
-        aggregate.set(entry.prefix, (aggregate.get(entry.prefix) ?? 0) + Number(entry.total ?? 0));
-      });
-    });
-    return Array.from(aggregate.entries()).sort((a, b) => Number(b[1]) - Number(a[1]));
-  }, [filteredStock]);
+    return [...locationPrefixStats]
+      .filter((entry) => entry.prefix)
+      .sort((a, b) => Number(b.total_quantity) - Number(a.total_quantity))
+      .map((entry) => [entry.prefix, Number(entry.total_quantity ?? 0)] as [string, number]);
+  }, [locationPrefixStats]);
   const totalPages = Math.max(1, Math.ceil((inventoryPage.totalRows || 0) / inventoryPage.limit));
   const currentPage = Math.min(totalPages, Math.floor(inventoryPage.offset / inventoryPage.limit) + 1);
   const canPrevPage = inventoryPage.offset > 0;
@@ -1864,55 +1843,6 @@ export default function Home() {
       setLocationPrefixOptions([]);
     });
   }, [isLoggedIn]);
-
-  useEffect(() => {
-    if (!isLoggedIn) return;
-    if (fullInventoryLoadedRef.current || fullInventoryLoadingRef.current) return;
-    const emptyFilters = {
-      q: '',
-      albumVersion: '',
-      barcode: '',
-      artist: '',
-      location: '',
-      category: '',
-    };
-
-    const loadAll = async () => {
-      fullInventoryLoadingRef.current = true;
-      try {
-        const limit = 200;
-        let offset = 0;
-        let total = Number.MAX_SAFE_INTEGER;
-        const rows: InventoryRow[] = [];
-        while (offset < total) {
-          const params = buildInventoryParams(emptyFilters, limit, offset);
-          params.set('view', 'prefix');
-          const res = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
-          if (!res.ok) break;
-          const payload = await res.json().catch(() => null);
-          if (!payload?.ok) break;
-          rows.push(...(payload.rows ?? []));
-          total = payload?.page?.totalRows ?? rows.length;
-          offset += limit;
-          if (!payload.rows || payload.rows.length < limit) break;
-          await new Promise((resolve) => setTimeout(resolve, 0));
-        }
-        setAllInventoryRows(rows);
-        fullInventoryLoadedRef.current = true;
-      } catch (error) {
-        console.error('full inventory load failed', error);
-      } finally {
-        fullInventoryLoadingRef.current = false;
-      }
-    };
-
-    loadAll();
-  }, [isLoggedIn]);
-
-  useEffect(() => {
-    if (!allInventoryRows || allInventoryRows.length === 0) return;
-    reloadInventory({ suppressErrors: true, fetchMeta: false });
-  }, [allInventoryRows]);
 
   useEffect(() => {
     if (logoutTimeout.current) {
@@ -2360,11 +2290,7 @@ export default function Home() {
       ) : activeTab === 'bulk_transfer' ? (
         <BulkTransferPanel
           selectedItems={bulkSelectedRows}
-          availableToLocations={
-            sessionRole === 'l_operator' || sessionRole === 'manager'
-              ? sessionScope?.sub_locations ?? []
-              : locationOptions
-          }
+          availablePrefixes={locationPrefixOptions}
           role={sessionRole}
           sessionScope={sessionScope}
           onDone={async () => {
@@ -2887,7 +2813,11 @@ export default function Home() {
                 <div className="stat">
                   <p className="eyebrow">로케이션 분포</p>
                   <div className="pill-row wrap">
-                    {locationBreakdown.length === 0 && <span className="muted">로케이션 정보가 없습니다.</span>}
+                    {locationBreakdown.length === 0 && (
+                      <span className="muted">
+                        {locationPrefixStatsStatus || '로케이션 정보가 없습니다.'}
+                      </span>
+                    )}
                     {locationBreakdown.map(([loc, qty]) => (
                       <Pill key={loc}>
                         {loc}: {qty.toLocaleString()}
