@@ -139,10 +139,16 @@ export async function POST(req: Request) {
     }
     const scope = session.role === 'l_operator' || session.role === 'manager' ? await loadLocationScope(createdBy) : null;
     if (session.role === 'l_operator' || session.role === 'manager') {
-      if (!scope?.primary_location) {
+      const primaryLocation = String(scope?.primary_location ?? '').trim();
+      const subLocations = Array.isArray(scope?.sub_locations)
+        ? scope?.sub_locations.map((value) => String(value ?? '').trim()).filter(Boolean)
+        : [];
+      const allowedLocations = Array.from(new Set([primaryLocation, ...subLocations].filter(Boolean)));
+
+      if (allowedLocations.length === 0) {
         return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
       }
-      if (effectiveLocation !== scope.primary_location) {
+      if (!allowedLocations.includes(effectiveLocation)) {
         return NextResponse.json({ ok: false, error: 'location not allowed', step: 'location_scope' }, { status: 403 });
       }
     }
