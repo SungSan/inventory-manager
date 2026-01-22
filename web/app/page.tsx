@@ -741,7 +741,7 @@ export default function Home() {
       const payload = await res.json().catch(() => null);
       if (payload?.ok) {
         const prefixes: string[] = Array.isArray(payload.prefixes)
-          ? payload.prefixes.filter((prefix): prefix is string => typeof prefix === 'string')
+          ? payload.prefixes.filter((prefix: unknown): prefix is string => typeof prefix === 'string')
           : [];
         const normalized = Array.from(
           new Set(
