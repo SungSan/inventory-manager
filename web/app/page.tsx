@@ -742,7 +742,11 @@ export default function Home() {
       if (payload?.ok) {
         const prefixes = Array.isArray(payload.prefixes) ? payload.prefixes : [];
         const normalized = Array.from(
-          new Set(prefixes.map((prefix) => String(prefix ?? '').trim().toUpperCase()).filter(Boolean))
+          new Set(
+            prefixes
+              .map((prefix: string) => String(prefix ?? '').trim().toUpperCase())
+              .filter(Boolean)
+          )
         ).sort();
         setLocationPrefixOptions(normalized);
         setLocationPrefixStatus('');
