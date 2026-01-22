@@ -158,21 +158,21 @@ async function recordMovement(params: {
   return { ok: true, movementId: movement?.id };
 }
 
-async function hasBarcodeConflict(barcode: string, artist: string, category: string, albumVersion: string) {
+async function findBarcodeConflict(barcode: string, artist: string, category: string, albumVersion: string) {
   const { data, error } = await supabaseAdmin
     .from('items')
     .select('artist, category, album_version')
     .eq('barcode', barcode);
   if (error) {
     console.error('[transfer] barcode lookup failed', { error: error.message });
-    return false;
+    return null;
   }
-  return (data ?? []).some(
+  return (data ?? []).find(
     (row) =>
       row.artist !== artist ||
       row.category !== category ||
       row.album_version !== albumVersion
-  );
+  ) ?? null;
 }
 
 export async function POST(req: Request) {
@@ -267,14 +267,24 @@ export async function POST(req: Request) {
       }
     }
 
-    if (
-      normalizedBarcode &&
-      (await hasBarcodeConflict(normalizedBarcode, trimmedArtist, normalizedCategory, trimmedAlbum))
-    ) {
-      return NextResponse.json(
-        { ok: false, error: 'barcode already used by another item', step: 'barcode_scope' },
-        { status: 409 }
+    if (normalizedBarcode) {
+      const conflict = await findBarcodeConflict(
+        normalizedBarcode,
+        trimmedArtist,
+        normalizedCategory,
+        trimmedAlbum
       );
+      if (conflict) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: '같은 바코드가 다른 아티스트/카테고리/앨범버전에 이미 등록되어 저장할 수 없습니다.',
+            conflict,
+            step: 'barcode_scope',
+          },
+          { status: 409 }
+        );
+      }
     }
 
     if (normalizedBarcode && session.role !== 'admin') {

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../../lib/supabase';
 import { withAuth } from '../../../../lib/auth';
 
-async function hasBarcodeConflict(
+async function findBarcodeConflict(
   barcode: string,
   artist: string,
   category: string,
@@ -14,14 +14,14 @@ async function hasBarcodeConflict(
     .eq('barcode', barcode);
   if (error) {
     console.error('[inventory] barcode lookup failed', { error: error.message });
-    return false;
+    return null;
   }
-  return (data ?? []).some(
+  return (data ?? []).find(
     (row) =>
       row.artist !== artist ||
       row.category !== category ||
       row.album_version !== albumVersion
-  );
+  ) ?? null;
 }
 
 async function getInventoryRow(id: string) {
@@ -63,14 +63,23 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ error: 'artist and album_version are required' }, { status: 400 });
     }
 
-    if (
-      trimmedBarcode &&
-      (await hasBarcodeConflict(trimmedBarcode, nextItem.artist, nextItem.category, nextItem.album_version))
-    ) {
-      return NextResponse.json(
-        { error: 'barcode already used by another item', step: 'barcode_scope' },
-        { status: 409 }
+    if (trimmedBarcode) {
+      const conflict = await findBarcodeConflict(
+        trimmedBarcode,
+        nextItem.artist,
+        nextItem.category,
+        nextItem.album_version
       );
+      if (conflict) {
+        return NextResponse.json(
+          {
+            error: '같은 바코드가 다른 아티스트/카테고리/앨범버전에 이미 등록되어 저장할 수 없습니다.',
+            conflict,
+            step: 'barcode_scope',
+          },
+          { status: 409 }
+        );
+      }
     }
 
     if (session.role !== 'admin' && baseItem.barcode && trimmedBarcode !== undefined && trimmedBarcode !== baseItem.barcode) {

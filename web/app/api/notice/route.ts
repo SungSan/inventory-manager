@@ -26,8 +26,8 @@ type PurposePayload = {
 
 async function loadAdminUserId(): Promise<string | null> {
   const { data, error } = await supabaseAdmin
-    .from('users')
-    .select('id, created_at')
+    .from('user_profiles')
+    .select('user_id, created_at')
     .eq('role', 'admin')
     .eq('approved', true)
     .order('created_at', { ascending: true })
@@ -39,7 +39,7 @@ async function loadAdminUserId(): Promise<string | null> {
     return null;
   }
 
-  return data?.id ?? null;
+  return data?.user_id ?? null;
 }
 
 function parsePurpose(raw?: string | null): PurposePayload {
@@ -61,9 +61,9 @@ async function loadLatestNotice(): Promise<NoticePayload> {
   if (!adminId) return EMPTY_NOTICE;
 
   const { data, error } = await supabaseAdmin
-    .from('users')
+    .from('user_profiles')
     .select('purpose')
-    .eq('id', adminId)
+    .eq('user_id', adminId)
     .maybeSingle();
 
   if (error) {
@@ -120,9 +120,9 @@ export async function POST(req: Request) {
     }
 
     const { data: profile, error: profileError } = await supabaseAdmin
-      .from('users')
+      .from('user_profiles')
       .select('purpose')
-      .eq('id', adminId)
+      .eq('user_id', adminId)
       .maybeSingle();
 
     if (profileError) {
@@ -136,9 +136,9 @@ export async function POST(req: Request) {
     };
 
     const { error } = await supabaseAdmin
-      .from('users')
+      .from('user_profiles')
       .update({ purpose: JSON.stringify(merged) })
-      .eq('id', adminId);
+      .eq('user_id', adminId);
 
     if (error) {
       console.error('[notice] save failed', { error: error.message, detail });
