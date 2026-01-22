@@ -31,6 +31,23 @@ async function loadItemBarcode(params: {
   return data?.barcode ?? null;
 }
 
+async function hasBarcodeConflict(barcode: string, artist: string, category: string, albumVersion: string) {
+  const { data, error } = await supabaseAdmin
+    .from('items')
+    .select('artist, category, album_version')
+    .eq('barcode', barcode);
+  if (error) {
+    console.error('[transfer] barcode lookup failed', { error: error.message });
+    return false;
+  }
+  return (data ?? []).some(
+    (row) =>
+      row.artist !== artist ||
+      row.category !== category ||
+      row.album_version !== albumVersion
+  );
+}
+
 export async function POST(req: Request) {
   return withAuth(['admin', 'operator', 'l_operator', 'manager'], async (session) => {
     let body: any;
@@ -121,6 +138,16 @@ export async function POST(req: Request) {
           { status: 403 }
         );
       }
+    }
+
+    if (
+      normalizedBarcode &&
+      (await hasBarcodeConflict(normalizedBarcode, trimmedArtist, normalizedCategory, trimmedAlbum))
+    ) {
+      return NextResponse.json(
+        { ok: false, error: 'barcode already used by another item', step: 'barcode_scope' },
+        { status: 409 }
+      );
     }
 
     if (normalizedBarcode && session.role !== 'admin') {

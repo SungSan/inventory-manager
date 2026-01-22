@@ -18,13 +18,52 @@ const EMPTY_NOTICE: NoticePayload = {
   updatedAt: '',
 };
 
-const NOTICE_STORAGE_KEY = '__notice__';
+type PurposePayload = {
+  system_notice?: NoticePayload;
+  legacy_purpose?: string;
+  [key: string]: unknown;
+};
+
+async function loadAdminUserId(): Promise<string | null> {
+  const { data, error } = await supabaseAdmin
+    .from('users')
+    .select('id, created_at')
+    .eq('role', 'admin')
+    .eq('approved', true)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[notice] admin lookup failed', { error: error.message });
+    return null;
+  }
+
+  return data?.id ?? null;
+}
+
+function parsePurpose(raw?: string | null): PurposePayload {
+  const value = String(raw ?? '').trim();
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as PurposePayload;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed;
+    }
+    return { legacy_purpose: value };
+  } catch (error) {
+    return { legacy_purpose: value };
+  }
+}
 
 async function loadLatestNotice(): Promise<NoticePayload> {
+  const adminId = await loadAdminUserId();
+  if (!adminId) return EMPTY_NOTICE;
+
   const { data, error } = await supabaseAdmin
-    .from('locations')
-    .select('description')
-    .eq('name', NOTICE_STORAGE_KEY)
+    .from('user_profiles')
+    .select('purpose')
+    .eq('user_id', adminId)
     .maybeSingle();
 
   if (error) {
@@ -32,21 +71,15 @@ async function loadLatestNotice(): Promise<NoticePayload> {
     return EMPTY_NOTICE;
   }
 
-  const raw = data?.description ?? '';
-  if (!raw) return EMPTY_NOTICE;
-  try {
-    const detail = JSON.parse(raw) as Partial<NoticePayload>;
-    return {
-      enabled: Boolean(detail.enabled),
-      title: String(detail.title ?? ''),
-      body: String(detail.body ?? ''),
-      version: String(detail.version ?? ''),
-      updatedAt: String(detail.updatedAt ?? ''),
-    };
-  } catch (parseError) {
-    console.error('[notice] parse failed', { error: parseError });
-    return EMPTY_NOTICE;
-  }
+  const parsed = parsePurpose(data?.purpose);
+  const detail = parsed.system_notice ?? EMPTY_NOTICE;
+  return {
+    enabled: Boolean(detail.enabled),
+    title: String(detail.title ?? ''),
+    body: String(detail.body ?? ''),
+    version: String(detail.version ?? ''),
+    updatedAt: String(detail.updatedAt ?? ''),
+  };
 }
 
 export async function GET() {
@@ -80,9 +113,32 @@ export async function POST(req: Request) {
       updatedAt,
     };
 
+    const adminId = await loadAdminUserId();
+    if (!adminId) {
+      console.error('[notice] admin not found');
+      return NextResponse.json({ ok: false, error: 'admin not found' }, { status: 500 });
+    }
+
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from('user_profiles')
+      .select('purpose')
+      .eq('user_id', adminId)
+      .maybeSingle();
+
+    if (profileError) {
+      console.error('[notice] profile load failed', { error: profileError.message });
+      return NextResponse.json({ ok: false, error: profileError.message }, { status: 500 });
+    }
+
+    const merged: PurposePayload = {
+      ...parsePurpose(profile?.purpose),
+      system_notice: detail,
+    };
+
     const { error } = await supabaseAdmin
-      .from('locations')
-      .upsert({ name: NOTICE_STORAGE_KEY, description: JSON.stringify(detail) });
+      .from('user_profiles')
+      .update({ purpose: JSON.stringify(merged) })
+      .eq('user_id', adminId);
 
     if (error) {
       console.error('[notice] save failed', { error: error.message, detail });

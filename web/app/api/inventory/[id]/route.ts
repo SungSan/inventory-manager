@@ -2,6 +2,28 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../../lib/supabase';
 import { withAuth } from '../../../../lib/auth';
 
+async function hasBarcodeConflict(
+  barcode: string,
+  artist: string,
+  category: string,
+  albumVersion: string
+) {
+  const { data, error } = await supabaseAdmin
+    .from('items')
+    .select('artist, category, album_version')
+    .eq('barcode', barcode);
+  if (error) {
+    console.error('[inventory] barcode lookup failed', { error: error.message });
+    return false;
+  }
+  return (data ?? []).some(
+    (row) =>
+      row.artist !== artist ||
+      row.category !== category ||
+      row.album_version !== albumVersion
+  );
+}
+
 async function getInventoryRow(id: string) {
   const { data, error } = await supabaseAdmin
     .from('inventory')
@@ -29,6 +51,16 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         { status: 400 }
       );
     }
+    if (
+      trimmedBarcode &&
+      (await hasBarcodeConflict(trimmedBarcode, baseItem.artist, baseItem.category, baseItem.album_version))
+    ) {
+      return NextResponse.json(
+        { error: 'barcode already used by another item', step: 'barcode_scope' },
+        { status: 409 }
+      );
+    }
+
     if (session.role !== 'admin' && baseItem.barcode && trimmedBarcode !== undefined && trimmedBarcode !== baseItem.barcode) {
       return NextResponse.json(
         { error: 'barcode update not allowed', step: 'barcode_scope' },
