@@ -59,6 +59,14 @@ type InventoryMeta = {
   categories: string[];
 };
 
+type Notice = {
+  enabled: boolean;
+  title: string;
+  body: string;
+  version: string;
+  updatedAt: string;
+};
+
 type InventoryEditDraft = InventoryLocation & Omit<InventoryRow, 'locations' | 'total_quantity' | 'key' | 'prefixes'>;
 
 type HistoryRow = {
@@ -123,6 +131,7 @@ type Role = 'admin' | 'operator' | 'viewer' | 'l_operator' | 'manager';
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes of inactivity triggers logout
 const CORPORATE_DOMAIN = 'sound-wave.co.kr';
+const NOTICE_DISMISS_KEY = 'noticeDismissedVersion';
 
 const EMPTY_MOVEMENT: MovementPayload = {
   artist: '',
@@ -436,6 +445,7 @@ export default function Home() {
   const [locationScopeAvailable, setLocationScopeAvailable] = useState(true);
   const [registerStatus, setRegisterStatus] = useState('');
   const [adminStatus, setAdminStatus] = useState('');
+  const [adminTab, setAdminTab] = useState<'overview' | 'notice'>('overview');
   const [sessionRole, setSessionRole] = useState<Role | null>(null);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
@@ -448,6 +458,17 @@ export default function Home() {
   const [importStatus, setImportStatus] = useState('');
   const [newLocation, setNewLocation] = useState('');
   const [inventoryActionStatus, setInventoryActionStatus] = useState('');
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [noticeDraft, setNoticeDraft] = useState<Notice>({
+    enabled: false,
+    title: '',
+    body: '',
+    version: '',
+    updatedAt: '',
+  });
+  const [noticeStatus, setNoticeStatus] = useState('');
+  const [noticeModalOpen, setNoticeModalOpen] = useState(false);
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
   const logoutTimeout = useRef<NodeJS.Timeout | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const stockRef = useRef<HTMLDivElement | null>(null);
@@ -680,6 +701,9 @@ export default function Home() {
     setAccountManagerOpen(false);
     setAccounts([]);
     setAccountsStatus('');
+    setNotice(null);
+    setNoticeModalOpen(false);
+    setNoticeDismissed(false);
     if (logoutTimeout.current) {
       clearTimeout(logoutTimeout.current);
       logoutTimeout.current = null;
@@ -703,6 +727,60 @@ export default function Home() {
   async function handleAutoLogout() {
     await logout('expired');
     alert('30분 이상 사용 기록이 없어 자동 로그아웃되었습니다. 다시 로그인하세요.');
+  }
+
+  async function fetchNotice(showPopup: boolean) {
+    const res = await fetch('/api/notice', { cache: 'no-store' });
+    if (!res.ok) {
+      console.error('[notice] fetch failed', { status: res.status });
+      return;
+    }
+    const payload = (await res.json()) as Notice;
+    setNotice(payload);
+    setNoticeDraft(payload);
+    if (!showPopup) return;
+    if (!payload.enabled || !payload.body.trim()) return;
+    if (typeof window === 'undefined') return;
+    const dismissedVersion = window.localStorage.getItem(NOTICE_DISMISS_KEY) ?? '';
+    if (dismissedVersion !== payload.version) {
+      setNoticeModalOpen(true);
+    }
+  }
+
+  async function saveNotice() {
+    if (sessionRole !== 'admin') {
+      setNoticeStatus('관리자만 수정할 수 있습니다.');
+      return;
+    }
+    setNoticeStatus('공지 저장 중...');
+    const res = await fetch('/api/notice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enabled: noticeDraft.enabled,
+        title: noticeDraft.title,
+        body: noticeDraft.body,
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      setNoticeStatus(`저장 실패: ${text || res.status}`);
+      return;
+    }
+
+    const payload = (await res.json()) as Notice;
+    setNotice(payload);
+    setNoticeDraft(payload);
+    setNoticeStatus('저장 완료');
+  }
+
+  function closeNoticeModal() {
+    if (noticeDismissed && notice?.version && typeof window !== 'undefined') {
+      window.localStorage.setItem(NOTICE_DISMISS_KEY, notice.version);
+    }
+    setNoticeModalOpen(false);
+    setNoticeDismissed(false);
   }
 
   async function fetchInventoryMeta(filters: typeof stockFilters, options?: { prefix?: string }) {
@@ -1858,6 +1936,13 @@ export default function Home() {
   }, [isLoggedIn]);
 
   useEffect(() => {
+    if (!isLoggedIn) return;
+    fetchNotice(true).catch((error) => {
+      console.error('[notice] fetch failed', { error });
+    });
+  }, [isLoggedIn]);
+
+  useEffect(() => {
     if (logoutTimeout.current) {
       clearTimeout(logoutTimeout.current);
       logoutTimeout.current = null;
@@ -2648,57 +2733,116 @@ export default function Home() {
             </div>
           }
         >
-          <div className="guide-grid">
+          <div className="tab-row">
+            <button
+              type="button"
+              className={adminTab === 'overview' ? 'tab active' : 'tab'}
+              onClick={() => setAdminTab('overview')}
+            >
+              운영 요약
+            </button>
+            <button
+              type="button"
+              className={adminTab === 'notice' ? 'tab active' : 'tab'}
+              onClick={() => {
+                setAdminTab('notice');
+                fetchNotice(false).catch((error) => console.error('[notice] fetch failed', { error }));
+              }}
+            >
+              공지사항
+            </button>
+          </div>
+          {adminTab === 'notice' ? (
             <div className="guide-card">
-              <p className="mini-label">관리자 안내</p>
-              <ol className="muted">
-                <li>관리자 계정으로 로그인 후 세션을 확인하세요.</li>
-                <li>입/출고 기록 후 재고와 이력 화면에서 결과를 검증하세요.</li>
-              </ol>
-            </div>
-            <div className="guide-card">
-              <p className="mini-label">로케이션 사전 설정</p>
-              <p className="muted">관리자가 정한 창고/선반 목록을 입력하면 입/출고 입력창에서 바로 선택 가능합니다.</p>
+              <p className="mini-label">공지사항 관리</p>
               <div className="form-grid two">
-                <label>
-                  <span>로케이션 이름</span>
+                <label className="compact">
+                  <span>활성화</span>
                   <input
-                    value={newLocation}
-                    onChange={(e) => setNewLocation(e.target.value)}
-                    placeholder="예: B-1 선반"
+                    type="checkbox"
+                    checked={noticeDraft.enabled}
+                    onChange={(e) => setNoticeDraft((prev) => ({ ...prev, enabled: e.target.checked }))}
                   />
                 </label>
-                <div className="actions-row">
-                  <button onClick={addLocationPreset}>추가/업서트</button>
-                  <span className="muted">{adminStatus || 'admin만 수정 가능'}</span>
+                <div className="muted small-text">
+                  마지막 업데이트: {noticeDraft.updatedAt || '-'}
                 </div>
               </div>
-              <div className="pill-row scrollable">
-                {locationPresets.length === 0 && <span className="muted">등록된 로케이션이 없습니다.</span>}
-                {locationPresets.map((loc) => (
-                  <span key={loc} className="pill">
-                    {loc}
-                    <button className="chip-close" onClick={() => removeLocationPreset(loc)} aria-label={`${loc} 삭제`}>
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            </div>
-            <div className="guide-card">
-              <p className="mini-label">재고/이력 업로드 (JSON 또는 엑셀)</p>
-              <p className="muted">엑셀 첫 번째 시트는 재고(artist, category, album_version, option, location, quantity), 두 번째 시트는 이력(direction, quantity, memo, timestamp) 형식으로 채워 업로드하세요.</p>
-              <ul className="muted">
-                <li>시트1 재고: artist, category(album/md), album_version, option, location, quantity/current_stock</li>
-                <li>시트2 이력(선택): artist, category, album_version, option, location, direction(IN/OUT/ADJUST), quantity, memo, timestamp</li>
-              </ul>
-              <input type="file" accept=".json,.xlsx,.xls" ref={fileInputRef} />
+              <label>
+                <span>제목</span>
+                <input
+                  value={noticeDraft.title}
+                  onChange={(e) => setNoticeDraft((prev) => ({ ...prev, title: e.target.value }))}
+                  placeholder="공지 제목"
+                />
+              </label>
+              <label>
+                <span>본문</span>
+                <textarea
+                  rows={6}
+                  value={noticeDraft.body}
+                  onChange={(e) => setNoticeDraft((prev) => ({ ...prev, body: e.target.value }))}
+                  placeholder="로그인 시 노출할 공지 내용을 입력하세요."
+                />
+              </label>
               <div className="actions-row">
-                <button onClick={uploadInventoryFromFile}>업로드</button>
-                <span className="muted">{importStatus || 'JSON/엑셀 파일 선택 후 실행'}</span>
+                <button type="button" onClick={saveNotice}>공지 저장</button>
+                <span className="muted">{noticeStatus || '저장 시 버전이 자동 변경됩니다.'}</span>
               </div>
             </div>
-          </div>
+          ) : (
+            <div className="guide-grid">
+              <div className="guide-card">
+                <p className="mini-label">관리자 안내</p>
+                <ol className="muted">
+                  <li>관리자 계정으로 로그인 후 세션을 확인하세요.</li>
+                  <li>입/출고 기록 후 재고와 이력 화면에서 결과를 검증하세요.</li>
+                </ol>
+              </div>
+              <div className="guide-card">
+                <p className="mini-label">로케이션 사전 설정</p>
+                <p className="muted">관리자가 정한 창고/선반 목록을 입력하면 입/출고 입력창에서 바로 선택 가능합니다.</p>
+                <div className="form-grid two">
+                  <label>
+                    <span>로케이션 이름</span>
+                    <input
+                      value={newLocation}
+                      onChange={(e) => setNewLocation(e.target.value)}
+                      placeholder="예: B-1 선반"
+                    />
+                  </label>
+                  <div className="actions-row">
+                    <button onClick={addLocationPreset}>추가/업서트</button>
+                    <span className="muted">{adminStatus || 'admin만 수정 가능'}</span>
+                  </div>
+                </div>
+                <div className="pill-row scrollable">
+                  {locationPresets.length === 0 && <span className="muted">등록된 로케이션이 없습니다.</span>}
+                  {locationPresets.map((loc) => (
+                    <span key={loc} className="pill">
+                      {loc}
+                      <button className="chip-close" onClick={() => removeLocationPreset(loc)} aria-label={`${loc} 삭제`}>
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="guide-card">
+                <p className="mini-label">재고/이력 업로드 (JSON 또는 엑셀)</p>
+                <p className="muted">엑셀 첫 번째 시트는 재고(artist, category, album_version, option, location, quantity), 두 번째 시트는 이력(direction, quantity, memo, timestamp) 형식으로 채워 업로드하세요.</p>
+                <ul className="muted">
+                  <li>시트1 재고: artist, category(album/md), album_version, option, location, quantity/current_stock</li>
+                  <li>시트2 이력(선택): artist, category, album_version, option, location, direction(IN/OUT/ADJUST), quantity, memo, timestamp</li>
+                </ul>
+                <input type="file" accept=".json,.xlsx,.xls" ref={fileInputRef} />
+                <div className="actions-row">
+                  <button onClick={uploadInventoryFromFile}>업로드</button>
+                  <span className="muted">{importStatus || 'JSON/엑셀 파일 선택 후 실행'}</span>
+                </div>
+              </div>
+            </div>
+          )}
         </Section>
         </div>
       )}
@@ -3523,6 +3667,35 @@ export default function Home() {
         </div>
       )}
     </main>
+    {noticeModalOpen && notice && (
+      <div className="modal-backdrop" role="dialog" aria-modal="true">
+        <div className="modal-card">
+          <div className="section-heading">
+            <div>
+              <h2>공지사항</h2>
+              {notice.title && <p className="muted">{notice.title}</p>}
+            </div>
+            <button type="button" className="ghost" onClick={() => setNoticeModalOpen(false)}>
+              닫기
+            </button>
+          </div>
+          <div style={{ maxHeight: '70vh', overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+            {notice.body}
+          </div>
+          <div className="actions-row" style={{ marginTop: '1rem' }}>
+            <label className="compact">
+              <input
+                type="checkbox"
+                checked={noticeDismissed}
+                onChange={(e) => setNoticeDismissed(e.target.checked)}
+              />
+              <span>다시는 보지 않기</span>
+            </label>
+            <button type="button" onClick={closeNoticeModal}>확인</button>
+          </div>
+        </div>
+      </div>
+    )}
     <style jsx global>{`
       .inventory-filters {
         display: grid;
