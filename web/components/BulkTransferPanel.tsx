@@ -90,6 +90,13 @@ function parseQuantity(value: string | undefined) {
   return { kind: 'value' as const, value: parsed };
 }
 
+function normalizePrefixInput(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const [prefix] = trimmed.split('-');
+  return (prefix || trimmed).trim().toUpperCase();
+}
+
 function formatItemLabel(item: InventoryItem) {
   return `${item.artist} / ${item.album_version} / ${item.option || '-'}`;
 }
@@ -601,7 +608,7 @@ export default function BulkTransferPanel({
           <input
             list="bulk-from-prefix-options"
             value={fromPrefix}
-            onChange={(e) => setFromPrefix(e.target.value)}
+            onChange={(e) => setFromPrefix(normalizePrefixInput(e.target.value))}
             placeholder="예: DA"
           />
           <datalist id="bulk-from-prefix-options">
@@ -615,7 +622,7 @@ export default function BulkTransferPanel({
           <input
             list="bulk-to-prefix-options"
             value={toPrefix}
-            onChange={(e) => setToPrefix(e.target.value)}
+            onChange={(e) => setToPrefix(normalizePrefixInput(e.target.value))}
             placeholder="예: K1A"
           />
           <datalist id="bulk-to-prefix-options">

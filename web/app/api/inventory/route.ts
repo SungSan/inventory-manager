@@ -212,7 +212,9 @@ export async function GET(req: Request) {
       const prefixes = Array.from(
         new Set(
           (data ?? [])
-            .map((row) => getLocationPrefix((row as { location?: string | null }).location))
+            .map((row) =>
+              getLocationPrefix((row as { location?: string | null }).location).trim().toUpperCase()
+            )
             .filter(Boolean)
         )
       ).sort();
@@ -261,7 +263,9 @@ export async function GET(req: Request) {
 
       const aggregate = new Map<string, number>();
       (data ?? []).forEach((row) => {
-        const prefix = getLocationPrefix((row as { location?: string | null }).location);
+        const prefix = getLocationPrefix((row as { location?: string | null }).location)
+          .trim()
+          .toUpperCase();
         if (!prefix) return;
         const qty = Number((row as { quantity?: number | null }).quantity ?? 0);
         aggregate.set(prefix, (aggregate.get(prefix) ?? 0) + qty);

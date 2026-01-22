@@ -740,7 +740,11 @@ export default function Home() {
     if (res.ok) {
       const payload = await res.json().catch(() => null);
       if (payload?.ok) {
-        setLocationPrefixOptions(Array.isArray(payload.prefixes) ? payload.prefixes : []);
+        const prefixes = Array.isArray(payload.prefixes) ? payload.prefixes : [];
+        const normalized = Array.from(
+          new Set(prefixes.map((prefix) => String(prefix ?? '').trim().toUpperCase()).filter(Boolean))
+        ).sort();
+        setLocationPrefixOptions(normalized);
         setLocationPrefixStatus('');
         return;
       }
@@ -1614,7 +1618,10 @@ export default function Home() {
   const filteredStock = useMemo(() => {
     const base = showAnomalies ? anomalousStock : baseStock;
     if (!locationPrefixFilter) return base;
-    return base.filter((row) => row.prefixes.some((entry) => entry.prefix === locationPrefixFilter));
+    const normalizedFilter = locationPrefixFilter.trim().toUpperCase();
+    return base.filter((row) =>
+      row.prefixes.some((entry) => entry.prefix.trim().toUpperCase() === normalizedFilter)
+    );
   }, [anomalousStock, baseStock, showAnomalies, locationPrefixFilter]);
 
   const bulkSelectedRows = useMemo(() => {
@@ -1629,9 +1636,10 @@ export default function Home() {
   );
 
   const locationPrefixMatches = useMemo(() => {
-    const term = locationInput.trim().toLowerCase();
-    if (!term) return locationPrefixOptions;
-    return locationPrefixOptions.filter((loc) => loc.toLowerCase().includes(term));
+    const term = locationInput.trim().toUpperCase();
+    const normalized = locationPrefixOptions.map((loc) => String(loc ?? '').trim().toUpperCase());
+    if (!term) return normalized.slice(0, 50);
+    return normalized.filter((loc) => loc.includes(term)).slice(0, 50);
   }, [locationInput, locationPrefixOptions]);
 
   const artistOptions = useMemo(
@@ -1829,7 +1837,7 @@ export default function Home() {
 
   useEffect(() => {
     const handler = setTimeout(() => {
-      const nextLocation = locationInput.trim();
+      const nextLocation = locationInput.trim().toUpperCase();
       if (nextLocation === stockFilters.location) return;
       applyInventoryFilters({ ...stockFilters, location: nextLocation });
     }, 220);
