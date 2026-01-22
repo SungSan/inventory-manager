@@ -139,6 +139,7 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const artist = searchParams.get('artist') || undefined;
   const location = searchParams.get('location') || undefined;
+  const locationPrefixRaw = searchParams.get('locationPrefix') || undefined;
   const category = searchParams.get('category') || undefined;
   const albumVersion = searchParams.get('album_version') || undefined;
   const q = searchParams.get('q') || undefined;
@@ -155,6 +156,7 @@ export async function GET(req: Request) {
     let enforcedLocation = locationFilter;
     let allowedLocations: string[] | null = null;
     const isPrefixView = view === 'prefix';
+    const locationPrefix = locationPrefixRaw ? locationPrefixRaw.trim().toUpperCase() : undefined;
 
     if (session.role === 'manager') {
       const scope = await loadLocationScope(session.userId ?? '');
@@ -171,6 +173,15 @@ export async function GET(req: Request) {
         enforcedLocation &&
         !allowedLocations.includes(enforcedLocation) &&
         !(isPrefixView && allowedLocations.some((loc) => getLocationPrefix(loc) === enforcedLocation))
+      ) {
+        return NextResponse.json(
+          { ok: true, rows: [], page: { limit, offset, totalRows: 0 } },
+          { headers: { 'Cache-Control': 'no-store' } }
+        );
+      }
+      if (
+        locationPrefix &&
+        !allowedLocations.some((loc) => getLocationPrefix(loc).trim().toUpperCase() === locationPrefix)
       ) {
         return NextResponse.json(
           { ok: true, rows: [], page: { limit, offset, totalRows: 0 } },
@@ -319,6 +330,10 @@ export async function GET(req: Request) {
           .map((col) => `${col}.ilike.${term}`)
           .join(',')
       );
+    }
+    if (locationPrefix) {
+      const escapedPrefix = locationPrefix.replace(/%/g, '\\%').replace(/_/g, '\\_');
+      query = query.or(`location.eq.${escapedPrefix},location.ilike.${escapedPrefix}-%`);
     }
 
     if (!isPrefixView) {

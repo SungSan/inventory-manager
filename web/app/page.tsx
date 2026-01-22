@@ -787,6 +787,7 @@ export default function Home() {
     if (filters.q) params.set('q', filters.q);
     if (filters.albumVersion) params.set('album_version', filters.albumVersion);
     if (filters.barcode) params.set('barcode', filters.barcode);
+    if (filters.location) params.set('locationPrefix', filters.location.trim().toUpperCase());
     if (typeof limit === 'number') params.set('limit', String(limit));
     if (typeof offset === 'number') params.set('offset', String(Math.max(0, offset)));
     return params;
