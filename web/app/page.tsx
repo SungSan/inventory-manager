@@ -740,14 +740,14 @@ export default function Home() {
     if (res.ok) {
       const payload = await res.json().catch(() => null);
       if (payload?.ok) {
-        const prefixes = Array.isArray(payload.prefixes) ? payload.prefixes : [];
+        const prefixes: string[] = Array.isArray(payload.prefixes)
+          ? payload.prefixes.filter((prefix): prefix is string => typeof prefix === 'string')
+          : [];
         const normalized = Array.from(
           new Set(
-            prefixes
-              .map((prefix: string) => String(prefix ?? '').trim().toUpperCase())
-              .filter(Boolean)
+            prefixes.map((prefix) => String(prefix ?? '').trim().toUpperCase()).filter(Boolean)
           )
-        ).sort();
+        ).sort() as string[];
         setLocationPrefixOptions(normalized);
         setLocationPrefixStatus('');
         return;
