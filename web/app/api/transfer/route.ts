@@ -31,6 +31,133 @@ async function loadItemBarcode(params: {
   return data?.barcode ?? null;
 }
 
+async function resolveItemId(params: {
+  artist: string;
+  category: string;
+  album_version: string;
+  option: string;
+  barcode?: string | null;
+}) {
+  const { data, error } = await supabaseAdmin
+    .from('items')
+    .upsert(
+      {
+        artist: params.artist,
+        category: params.category,
+        album_version: params.album_version,
+        option: params.option ?? '',
+        barcode: params.barcode ?? null,
+      },
+      { onConflict: 'artist,category,album_version,option' }
+    )
+    .select('id')
+    .single();
+  if (error || !data) {
+    console.error('[transfer] item resolve failed', { error: error?.message });
+    return null;
+  }
+  return data.id as string;
+}
+
+async function loadInventoryQuantity(itemId: string, location: string) {
+  const { data, error } = await supabaseAdmin
+    .from('inventory')
+    .select('quantity')
+    .eq('item_id', itemId)
+    .eq('location', location)
+    .maybeSingle();
+  if (error) {
+    console.error('[transfer] inventory read failed', { error: error.message });
+    return null;
+  }
+  if (!data) {
+    const { error: insertError } = await supabaseAdmin
+      .from('inventory')
+      .insert({ item_id: itemId, location, quantity: 0 });
+    if (insertError) {
+      console.error('[transfer] inventory create failed', { error: insertError.message });
+      return null;
+    }
+    return 0;
+  }
+  return Number(data.quantity ?? 0);
+}
+
+async function hasIdempotentMovement(key: string) {
+  const { data, error } = await supabaseAdmin
+    .from('movements')
+    .select('id')
+    .eq('idempotency_key', key)
+    .maybeSingle();
+  if (error) {
+    console.error('[transfer] idempotency lookup failed', { error: error.message });
+    return false;
+  }
+  return Boolean(data?.id);
+}
+
+async function recordMovement(params: {
+  itemId: string;
+  location: string;
+  direction: 'IN' | 'OUT';
+  quantity: number;
+  memo: string;
+  createdBy: string;
+  idempotencyKey: string;
+  fromLocation: string;
+  toLocation: string;
+}) {
+  if (await hasIdempotentMovement(params.idempotencyKey)) {
+    return { ok: true, idempotent: true };
+  }
+
+  const existingQty = await loadInventoryQuantity(params.itemId, params.location);
+  if (existingQty === null) {
+    return { ok: false, error: 'inventory lookup failed' };
+  }
+
+  const nextQty = params.direction === 'IN'
+    ? existingQty + params.quantity
+    : existingQty - params.quantity;
+
+  const { error: invError } = await supabaseAdmin
+    .from('inventory')
+    .update({ quantity: nextQty, updated_at: new Date().toISOString() })
+    .eq('item_id', params.itemId)
+    .eq('location', params.location);
+
+  if (invError) {
+    console.error('[transfer] inventory update failed', { error: invError.message });
+    return { ok: false, error: invError.message };
+  }
+
+  const { data: movement, error: moveError } = await supabaseAdmin
+    .from('movements')
+    .insert({
+      item_id: params.itemId,
+      location: params.location,
+      direction: params.direction,
+      quantity: params.quantity,
+      memo: params.memo || null,
+      created_by: params.createdBy,
+      idempotency_key: params.idempotencyKey,
+      opening: existingQty,
+      closing: nextQty,
+      from_location: params.fromLocation,
+      to_location: params.toLocation,
+      created_at: new Date().toISOString(),
+    })
+    .select('id')
+    .single();
+
+  if (moveError) {
+    console.error('[transfer] movement insert failed', { error: moveError.message });
+    return { ok: false, error: moveError.message };
+  }
+
+  return { ok: true, movementId: movement?.id };
+}
+
 async function hasBarcodeConflict(barcode: string, artist: string, category: string, albumVersion: string) {
   const { data, error } = await supabaseAdmin
     .from('items')
@@ -165,93 +292,71 @@ export async function POST(req: Request) {
       }
     }
 
-    const baseIdempotency = String(idempotencyKey ?? '').trim() || `transfer-${randomUUID()}`;
-    const outPayload: Record<string, any> = {
-      album_version: trimmedAlbum,
-      artist: trimmedArtist,
-      category: normalizedCategory,
-      created_by: createdBy,
-      direction: 'OUT',
-      idempotency_key: `${baseIdempotency}-out`,
-      location: from_location,
-      memo: normalizedMemo,
-      option: normalizedOption || '',
-      quantity: normalizedQuantity,
-    };
-
-    const inPayload: Record<string, any> = {
-      album_version: trimmedAlbum,
-      artist: trimmedArtist,
-      category: normalizedCategory,
-      created_by: createdBy,
-      direction: 'IN',
-      idempotency_key: `${baseIdempotency}-in`,
-      location: to_location,
-      memo: normalizedMemo,
-      option: normalizedOption || '',
-      quantity: normalizedQuantity,
-    };
-
-    if (normalizedBarcode) {
-      outPayload.barcode = normalizedBarcode;
-      inPayload.barcode = normalizedBarcode;
-    }
-
     try {
-      const { data: outData, error: outError } = await supabaseAdmin.rpc('record_movement', outPayload);
-      if (outError) {
-        console.error('transfer record_movement OUT failed', {
-          message: outError.message,
-          details: (outError as any)?.details,
-          hint: (outError as any)?.hint,
-          code: (outError as any)?.code,
-          payload: outPayload,
-        });
+      const itemId = await resolveItemId({
+        artist: trimmedArtist,
+        category: normalizedCategory,
+        album_version: trimmedAlbum,
+        option: normalizedOption,
+        barcode: normalizedBarcode || null,
+      });
+      if (!itemId) {
         return NextResponse.json(
-          {
-            ok: false,
-            step: 'record_movement_out',
-            error: outError.message,
-            details: (outError as any)?.details ?? null,
-            hint: (outError as any)?.hint ?? null,
-            code: (outError as any)?.code ?? null,
-          },
+          { ok: false, step: 'resolve_item', error: 'item resolve failed' },
           { status: 500 }
         );
       }
 
-      const { data: inData, error: inError } = await supabaseAdmin.rpc('record_movement', inPayload);
-      if (inError) {
-        console.error('transfer record_movement IN failed', {
-          message: inError.message,
-          details: (inError as any)?.details,
-          hint: (inError as any)?.hint,
-          code: (inError as any)?.code ?? null,
-          payload: inPayload,
-        });
+      if (normalizedBarcode) {
+        const { error: barcodeError } = await supabaseAdmin
+          .from('items')
+          .update({ barcode: normalizedBarcode })
+          .eq('id', itemId);
+        if (barcodeError) {
+          console.error('transfer barcode update failed', { error: barcodeError.message, itemId });
+        }
+      }
+
+      const baseIdempotency = String(idempotencyKey ?? '').trim() || `transfer-${randomUUID()}`;
+      const outResult = await recordMovement({
+        itemId,
+        location: from_location,
+        direction: 'OUT',
+        quantity: normalizedQuantity,
+        memo: normalizedMemo,
+        createdBy,
+        idempotencyKey: `${baseIdempotency}-out`,
+        fromLocation: from_location,
+        toLocation: to_location,
+      });
+      if (!outResult.ok) {
         return NextResponse.json(
-          {
-            ok: false,
-            step: 'record_movement_in',
-            error: inError.message,
-            details: (inError as any)?.details ?? null,
-            hint: (inError as any)?.hint ?? null,
-            code: (inError as any)?.code ?? null,
-          },
+          { ok: false, step: 'record_out', error: outResult.error ?? 'transfer failed' },
           { status: 500 }
         );
       }
 
-      if (!outData || !inData) {
+      const inResult = await recordMovement({
+        itemId,
+        location: to_location,
+        direction: 'IN',
+        quantity: normalizedQuantity,
+        memo: normalizedMemo,
+        createdBy,
+        idempotencyKey: `${baseIdempotency}-in`,
+        fromLocation: from_location,
+        toLocation: to_location,
+      });
+      if (!inResult.ok) {
         return NextResponse.json(
-          { ok: false, step: 'record_movement', error: 'empty response from rpc' },
+          { ok: false, step: 'record_in', error: inResult.error ?? 'transfer failed' },
           { status: 500 }
         );
       }
 
-      return NextResponse.json({ ok: true, result: { out: outData, in: inData } });
+      return NextResponse.json({ ok: true, result: { out: outResult, in: inResult } });
     } catch (error: any) {
-      console.error('transfer unexpected error', { error, outPayload, inPayload });
+      console.error('transfer unexpected error', { error, from_location, to_location });
       return NextResponse.json(
         { ok: false, step: 'exception', error: error?.message || 'transfer failed' },
         { status: 500 }

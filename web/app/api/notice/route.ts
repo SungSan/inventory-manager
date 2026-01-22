@@ -61,9 +61,9 @@ async function loadLatestNotice(): Promise<NoticePayload> {
   if (!adminId) return EMPTY_NOTICE;
 
   const { data, error } = await supabaseAdmin
-    .from('user_profiles')
+    .from('users')
     .select('purpose')
-    .eq('user_id', adminId)
+    .eq('id', adminId)
     .maybeSingle();
 
   if (error) {
@@ -120,9 +120,9 @@ export async function POST(req: Request) {
     }
 
     const { data: profile, error: profileError } = await supabaseAdmin
-      .from('user_profiles')
+      .from('users')
       .select('purpose')
-      .eq('user_id', adminId)
+      .eq('id', adminId)
       .maybeSingle();
 
     if (profileError) {
@@ -136,9 +136,9 @@ export async function POST(req: Request) {
     };
 
     const { error } = await supabaseAdmin
-      .from('user_profiles')
+      .from('users')
       .update({ purpose: JSON.stringify(merged) })
-      .eq('user_id', adminId);
+      .eq('id', adminId);
 
     if (error) {
       console.error('[notice] save failed', { error: error.message, detail });

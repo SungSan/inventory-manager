@@ -51,9 +51,21 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         { status: 400 }
       );
     }
+    const nextItem = {
+      artist: (artist ?? baseItem.artist ?? '').trim(),
+      category: (category ?? baseItem.category ?? 'album').trim(),
+      album_version: (album_version ?? baseItem.album_version ?? '').trim(),
+      option: (option ?? baseItem.option ?? '').trim(),
+      barcode: trimmedBarcode === '' ? null : trimmedBarcode ?? baseItem.barcode ?? null,
+    };
+
+    if (!nextItem.artist || !nextItem.album_version) {
+      return NextResponse.json({ error: 'artist and album_version are required' }, { status: 400 });
+    }
+
     if (
       trimmedBarcode &&
-      (await hasBarcodeConflict(trimmedBarcode, baseItem.artist, baseItem.category, baseItem.album_version))
+      (await hasBarcodeConflict(trimmedBarcode, nextItem.artist, nextItem.category, nextItem.album_version))
     ) {
       return NextResponse.json(
         { error: 'barcode already used by another item', step: 'barcode_scope' },
@@ -66,17 +78,6 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         { error: 'barcode update not allowed', step: 'barcode_scope' },
         { status: 403 }
       );
-    }
-    const nextItem = {
-      artist: (artist ?? baseItem.artist ?? '').trim(),
-      category: (category ?? baseItem.category ?? 'album').trim(),
-      album_version: (album_version ?? baseItem.album_version ?? '').trim(),
-      option: (option ?? baseItem.option ?? '').trim(),
-      barcode: trimmedBarcode === '' ? null : trimmedBarcode ?? baseItem.barcode ?? null,
-    };
-
-    if (!nextItem.artist || !nextItem.album_version) {
-      return NextResponse.json({ error: 'artist and album_version are required' }, { status: 400 });
     }
 
     const { data: itemData, error: itemError } = await supabaseAdmin
