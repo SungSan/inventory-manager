@@ -18,32 +18,35 @@ const EMPTY_NOTICE: NoticePayload = {
   updatedAt: '',
 };
 
+const NOTICE_STORAGE_KEY = '__notice__';
+
 async function loadLatestNotice(): Promise<NoticePayload> {
   const { data, error } = await supabaseAdmin
-    .from('admin_logs')
-    .select('detail, created_at')
-    .eq('action', 'notice')
-    .order('created_at', { ascending: false })
-    .limit(1);
+    .from('locations')
+    .select('description')
+    .eq('name', NOTICE_STORAGE_KEY)
+    .maybeSingle();
 
   if (error) {
     console.error('[notice] load failed', { error: error.message });
     return EMPTY_NOTICE;
   }
 
-  const row = data?.[0];
-  if (!row?.detail) {
+  const raw = data?.description ?? '';
+  if (!raw) return EMPTY_NOTICE;
+  try {
+    const detail = JSON.parse(raw) as Partial<NoticePayload>;
+    return {
+      enabled: Boolean(detail.enabled),
+      title: String(detail.title ?? ''),
+      body: String(detail.body ?? ''),
+      version: String(detail.version ?? ''),
+      updatedAt: String(detail.updatedAt ?? ''),
+    };
+  } catch (parseError) {
+    console.error('[notice] parse failed', { error: parseError });
     return EMPTY_NOTICE;
   }
-
-  const detail = row.detail as Partial<NoticePayload>;
-  return {
-    enabled: Boolean(detail.enabled),
-    title: String(detail.title ?? ''),
-    body: String(detail.body ?? ''),
-    version: String(detail.version ?? ''),
-    updatedAt: String(detail.updatedAt ?? row.created_at ?? ''),
-  };
 }
 
 export async function GET() {
@@ -54,7 +57,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  return withAuth(['admin'], async (session) => {
+  return withAuth(['admin'], async () => {
     let body: any;
     try {
       body = await req.json();
@@ -77,15 +80,12 @@ export async function POST(req: Request) {
       updatedAt,
     };
 
-    const { error } = await supabaseAdmin.from('admin_logs').insert({
-      actor_id: session.userId ?? null,
-      actor_email: session.email ?? null,
-      action: 'notice',
-      detail,
-    });
+    const { error } = await supabaseAdmin
+      .from('locations')
+      .upsert({ name: NOTICE_STORAGE_KEY, description: JSON.stringify(detail) });
 
     if (error) {
-      console.error('[notice] save failed', { error: error.message });
+      console.error('[notice] save failed', { error: error.message, detail });
       return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     }
 
