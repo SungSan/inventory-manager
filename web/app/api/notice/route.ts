@@ -30,8 +30,8 @@ async function loadAdminUserId(): Promise<string | null> {
     .select('user_id, requested_at, created_at')
     .eq('role', 'admin')
     .eq('approved', true)
-    .order('requested_at', { ascending: true, nullsFirst: true })
-    .order('created_at', { ascending: true, nullsFirst: true })
+    .order('requested_at', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: true })
     .limit(1)
     .maybeSingle();
 
@@ -136,9 +136,9 @@ export async function POST(req: Request) {
       system_notice: detail,
     };
 
-    const { error } = await supabaseAdmin
+    const { error, count } = await supabaseAdmin
       .from('user_profiles')
-      .update({ purpose: JSON.stringify(merged) })
+      .update({ purpose: JSON.stringify(merged) }, { count: 'exact' })
       .eq('user_id', adminId);
 
     if (error) {
@@ -146,6 +146,28 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json(detail);
+    if ((count ?? 0) !== 1) {
+      console.error('[notice] save affected unexpected rows', { count });
+      return NextResponse.json({ ok: false, error: 'notice save failed' }, { status: 500 });
+    }
+
+    const { data: updated, error: readError } = await supabaseAdmin
+      .from('user_profiles')
+      .select('purpose')
+      .eq('user_id', adminId)
+      .maybeSingle();
+    if (readError) {
+      console.error('[notice] save verification failed', { error: readError.message });
+      return NextResponse.json({ ok: false, error: readError.message }, { status: 500 });
+    }
+    const verified = parsePurpose(updated?.purpose).system_notice ?? detail;
+    return NextResponse.json({
+      ...detail,
+      enabled: Boolean(verified.enabled),
+      title: String(verified.title ?? ''),
+      body: String(verified.body ?? ''),
+      version: String(verified.version ?? detail.version),
+      updatedAt: String(verified.updatedAt ?? detail.updatedAt),
+    });
   });
 }
