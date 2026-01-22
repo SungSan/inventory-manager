@@ -50,13 +50,18 @@ async function loadItemBarcode(params: {
   return data?.barcode ?? null;
 }
 
+function normalizeOption(value: unknown) {
+  const normalized = String(value ?? '').trim();
+  return normalized === '-' ? '' : normalized;
+}
+
 async function resolveItemId(params: {
   artist: string;
   category: string;
   album_version: string;
   option: string;
-  barcode?: string | null;
 }) {
+  const normalizedOption = normalizeOption(params.option);
   const { data, error } = await supabaseAdmin
     .from('items')
     .upsert(
@@ -64,15 +69,23 @@ async function resolveItemId(params: {
         artist: params.artist,
         category: params.category,
         album_version: params.album_version,
-        option: params.option ?? '',
-        barcode: params.barcode ?? null,
+        option: normalizedOption,
       },
       { onConflict: 'artist,category,album_version,option' }
     )
     .select('id')
     .single();
   if (error || !data) {
-    console.error('[movements] item resolve failed', { error: error?.message });
+    console.error('[movements] item resolve failed', {
+      error: error?.message,
+      input: {
+        artist: params.artist,
+        category: params.category,
+        album_version: params.album_version,
+        option: normalizedOption,
+      },
+      query: 'items upsert on artist,category,album_version,option',
+    });
     return null;
   }
   return data.id as string;
@@ -224,7 +237,7 @@ export async function POST(req: Request) {
     const normalizedMemo = String(memo ?? '').trim();
     const normalizedDirection = String(direction ?? '').toUpperCase();
     const normalizedCategory = String(category ?? '').trim();
-    const normalizedOption = String(option ?? '').trim();
+    const normalizedOption = normalizeOption(option);
     const normalizedBarcode = String(barcode ?? '').trim();
     const rawLocation = String(location ?? '').trim();
     const effectiveLocation = rawLocation || normalizedOption;
@@ -337,7 +350,6 @@ export async function POST(req: Request) {
         category: normalizedCategory,
         album_version: trimmedAlbum,
         option: normalizedOption,
-        barcode: normalizedBarcode || null,
       });
       if (!itemId) {
         return NextResponse.json(

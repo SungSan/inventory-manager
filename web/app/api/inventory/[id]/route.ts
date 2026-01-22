@@ -24,6 +24,11 @@ async function findBarcodeConflict(
   ) ?? null;
 }
 
+function normalizeOption(value: unknown) {
+  const normalized = String(value ?? '').trim();
+  return normalized === '-' ? '' : normalized;
+}
+
 async function getInventoryRow(id: string) {
   const { data, error } = await supabaseAdmin
     .from('inventory')
@@ -55,7 +60,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       artist: (artist ?? baseItem.artist ?? '').trim(),
       category: (category ?? baseItem.category ?? 'album').trim(),
       album_version: (album_version ?? baseItem.album_version ?? '').trim(),
-      option: (option ?? baseItem.option ?? '').trim(),
+      option: normalizeOption(option ?? baseItem.option ?? ''),
       barcode: trimmedBarcode === '' ? null : trimmedBarcode ?? baseItem.barcode ?? null,
     };
 

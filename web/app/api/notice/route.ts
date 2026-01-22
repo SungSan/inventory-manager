@@ -27,10 +27,11 @@ type PurposePayload = {
 async function loadAdminUserId(): Promise<string | null> {
   const { data, error } = await supabaseAdmin
     .from('user_profiles')
-    .select('user_id, created_at')
+    .select('user_id, requested_at, created_at')
     .eq('role', 'admin')
     .eq('approved', true)
-    .order('created_at', { ascending: true })
+    .order('requested_at', { ascending: true, nullsFirst: true })
+    .order('created_at', { ascending: true, nullsFirst: true })
     .limit(1)
     .maybeSingle();
 
