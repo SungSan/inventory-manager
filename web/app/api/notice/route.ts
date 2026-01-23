@@ -24,23 +24,22 @@ type PurposePayload = {
   [key: string]: unknown;
 };
 
-async function loadAdminUserId(): Promise<string | null> {
+const SYSTEM_NOTICE_EMAIL = 'tksdlvkxl@gmail.com';
+
+async function getSystemAdminUserId(): Promise<string | null> {
   const { data, error } = await supabaseAdmin
-    .from('user_profiles')
-    .select('user_id, requested_at, created_at')
-    .eq('role', 'admin')
-    .eq('approved', true)
-    .order('requested_at', { ascending: true, nullsFirst: false })
-    .order('created_at', { ascending: true })
-    .limit(1)
+    .schema('auth')
+    .from('users')
+    .select('id')
+    .eq('email', SYSTEM_NOTICE_EMAIL)
     .maybeSingle();
 
   if (error) {
-    console.error('[notice] admin lookup failed', { error: error.message });
+    console.error('[notice] admin lookup failed', { error: error.message, email: SYSTEM_NOTICE_EMAIL });
     return null;
   }
 
-  return data?.user_id ?? null;
+  return data?.id ?? null;
 }
 
 function parsePurpose(raw?: string | null): PurposePayload {
@@ -58,7 +57,7 @@ function parsePurpose(raw?: string | null): PurposePayload {
 }
 
 async function loadLatestNotice(): Promise<NoticePayload> {
-  const adminId = await loadAdminUserId();
+  const adminId = await getSystemAdminUserId();
   if (!adminId) return EMPTY_NOTICE;
 
   const { data, error } = await supabaseAdmin
@@ -114,7 +113,7 @@ export async function POST(req: Request) {
       updatedAt,
     };
 
-    const adminId = await loadAdminUserId();
+    const adminId = await getSystemAdminUserId();
     if (!adminId) {
       console.error('[notice] admin not found');
       return NextResponse.json({ ok: false, error: 'admin not found' }, { status: 500 });
