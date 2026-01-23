@@ -59,7 +59,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       if (conflict) {
         return NextResponse.json(
           {
-            error: '같은 바코드가 다른 아티스트/카테고리/앨범버전에 이미 등록되어 저장할 수 없습니다.',
+            error: '동일 바코드는 다른 아티스트/카테고리/앨범에서는 사용할 수 없습니다.',
             conflict,
             step: 'update_items_barcode',
           },
@@ -84,7 +84,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (itemError) {
       const message =
         itemError.code === '23505'
-          ? '바코드가 다른 상품(아티스트/앨범)에서 사용 중입니다.'
+          ? '동일 바코드는 다른 아티스트/카테고리/앨범에서는 사용할 수 없습니다.'
           : itemError.message;
       console.error('inventory item update error', { step: 'update_items', error: itemError.message });
       return NextResponse.json(

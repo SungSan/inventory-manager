@@ -27,6 +27,8 @@ export async function findBarcodeConflict(params: FindBarcodeConflictParams): Pr
     query = query.neq('id', itemId);
   }
 
+  query = query.or(`artist.neq.${artist},category.neq.${category},album_version.neq.${albumVersion}`);
+
   const { data, error } = await query;
   if (error) {
     console.error('[barcode] lookup failed', { error: error.message, barcode });

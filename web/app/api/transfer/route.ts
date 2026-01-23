@@ -306,7 +306,7 @@ export async function POST(req: Request) {
           return NextResponse.json(
             {
               ok: false,
-              error: '같은 바코드가 다른 아티스트/카테고리/앨범버전에 이미 등록되어 저장할 수 없습니다.',
+              error: '동일 바코드는 다른 아티스트/카테고리/앨범에서는 사용할 수 없습니다.',
               conflict,
               step: 'update_items_barcode',
             },
@@ -320,7 +320,7 @@ export async function POST(req: Request) {
         if (barcodeError) {
           const message =
             barcodeError.code === '23505'
-              ? '바코드가 다른 상품(아티스트/앨범)에서 사용 중입니다.'
+              ? '동일 바코드는 다른 아티스트/카테고리/앨범에서는 사용할 수 없습니다.'
               : barcodeError.message;
           console.error('transfer barcode update failed', { error: barcodeError.message, itemId });
           return NextResponse.json(
