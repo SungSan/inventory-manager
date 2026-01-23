@@ -24,22 +24,40 @@ type PurposePayload = {
   [key: string]: unknown;
 };
 
-const SYSTEM_NOTICE_EMAIL = 'tksdlvkxl@gmail.com';
+const SYSTEM_ADMIN_USERNAME = process.env.SYSTEM_ADMIN_USERNAME || 'tksdlvkxl';
+const SYSTEM_ADMIN_USER_ID = process.env.SYSTEM_ADMIN_USER_ID || '';
 
 async function getSystemAdminUserId(): Promise<string | null> {
-  const { data, error } = await supabaseAdmin
-    .schema('auth')
-    .from('users')
-    .select('id')
-    .eq('email', SYSTEM_NOTICE_EMAIL)
+  if (SYSTEM_ADMIN_USER_ID) {
+    return SYSTEM_ADMIN_USER_ID;
+  }
+
+  const { data, error, count } = await supabaseAdmin
+    .from('user_profiles')
+    .select('user_id', { count: 'exact' })
+    .eq('role', 'admin')
+    .eq('approved', true)
+    .eq('username', SYSTEM_ADMIN_USERNAME)
     .maybeSingle();
 
   if (error) {
-    console.error('[notice] admin lookup failed', { error: error.message, email: SYSTEM_NOTICE_EMAIL });
+    console.error('[notice] admin lookup failed', {
+      error: error.message,
+      filters: { role: 'admin', approved: true, username: SYSTEM_ADMIN_USERNAME },
+      count,
+    });
     return null;
   }
 
-  return data?.id ?? null;
+  if (!data?.user_id) {
+    console.error('[notice] admin not found', {
+      filters: { role: 'admin', approved: true, username: SYSTEM_ADMIN_USERNAME },
+      count,
+    });
+    return null;
+  }
+
+  return data.user_id ?? null;
 }
 
 function parsePurpose(raw?: string | null): PurposePayload {
