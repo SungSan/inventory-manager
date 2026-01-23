@@ -335,7 +335,15 @@ export async function POST(req: Request) {
           .update({ barcode: normalizedBarcode })
           .eq('id', itemId);
         if (barcodeError) {
+          const message =
+            barcodeError.code === '23505'
+              ? '바코드가 다른 상품(아티스트/앨범)에서 사용 중입니다.'
+              : barcodeError.message;
           console.error('transfer barcode update failed', { error: barcodeError.message, itemId });
+          return NextResponse.json(
+            { ok: false, step: 'update_items_barcode', error: message },
+            { status: barcodeError.code === '23505' ? 409 : 500 }
+          );
         }
       }
 

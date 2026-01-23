@@ -101,8 +101,15 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       .single();
 
     if (itemError) {
+      const message =
+        itemError.code === '23505'
+          ? '바코드가 다른 상품(아티스트/앨범)에서 사용 중입니다.'
+          : itemError.message;
       console.error('inventory item update error', { step: 'update_items', error: itemError.message });
-      return NextResponse.json({ error: itemError.message, step: 'update_items' }, { status: 400 });
+      return NextResponse.json(
+        { error: message, step: 'update_items_barcode' },
+        { status: itemError.code === '23505' ? 409 : 400 }
+      );
     }
 
     const targetQuantity = quantity === undefined || quantity === null ? current.quantity : Number(quantity);
