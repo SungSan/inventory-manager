@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import { withAuth } from '../../../lib/auth';
 import { supabaseAdmin } from '../../../lib/supabase';
+import { findBarcodeConflict } from '../../../lib/barcode';
 
 async function loadLocationScope(userId: string) {
   const { data, error } = await supabaseAdmin
@@ -171,23 +172,6 @@ async function recordMovement(params: {
   return { ok: true, movementId: movement?.id };
 }
 
-async function findBarcodeConflict(barcode: string, artist: string, category: string, albumVersion: string) {
-  const { data, error } = await supabaseAdmin
-    .from('items')
-    .select('artist, category, album_version')
-    .eq('barcode', barcode);
-  if (error) {
-    console.error('[transfer] barcode lookup failed', { error: error.message });
-    return null;
-  }
-  return (data ?? []).find(
-    (row) =>
-      row.artist !== artist ||
-      row.category !== category ||
-      row.album_version !== albumVersion
-  ) ?? null;
-}
-
 export async function POST(req: Request) {
   return withAuth(['admin', 'operator', 'l_operator', 'manager'], async (session) => {
     let body: any;
@@ -280,26 +264,6 @@ export async function POST(req: Request) {
       }
     }
 
-    if (normalizedBarcode) {
-      const conflict = await findBarcodeConflict(
-        normalizedBarcode,
-        trimmedArtist,
-        normalizedCategory,
-        trimmedAlbum
-      );
-      if (conflict) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error: '같은 바코드가 다른 아티스트/카테고리/앨범버전에 이미 등록되어 저장할 수 없습니다.',
-            conflict,
-            step: 'barcode_scope',
-          },
-          { status: 409 }
-        );
-      }
-    }
-
     if (normalizedBarcode && session.role !== 'admin') {
       const existingBarcode = await loadItemBarcode({
         artist: trimmedArtist,
@@ -330,6 +294,25 @@ export async function POST(req: Request) {
       }
 
       if (normalizedBarcode) {
+        const conflict = await findBarcodeConflict({
+          client: supabaseAdmin,
+          barcode: normalizedBarcode,
+          itemId,
+          artist: trimmedArtist,
+          category: normalizedCategory,
+          albumVersion: trimmedAlbum,
+        });
+        if (conflict) {
+          return NextResponse.json(
+            {
+              ok: false,
+              error: '같은 바코드가 다른 아티스트/카테고리/앨범버전에 이미 등록되어 저장할 수 없습니다.',
+              conflict,
+              step: 'update_items_barcode',
+            },
+            { status: 409 }
+          );
+        }
         const { error: barcodeError } = await supabaseAdmin
           .from('items')
           .update({ barcode: normalizedBarcode })

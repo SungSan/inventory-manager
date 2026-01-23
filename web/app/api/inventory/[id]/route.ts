@@ -1,28 +1,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../../lib/supabase';
 import { withAuth } from '../../../../lib/auth';
-
-async function findBarcodeConflict(
-  barcode: string,
-  artist: string,
-  category: string,
-  albumVersion: string
-) {
-  const { data, error } = await supabaseAdmin
-    .from('items')
-    .select('artist, category, album_version')
-    .eq('barcode', barcode);
-  if (error) {
-    console.error('[inventory] barcode lookup failed', { error: error.message });
-    return null;
-  }
-  return (data ?? []).find(
-    (row) =>
-      row.artist !== artist ||
-      row.category !== category ||
-      row.album_version !== albumVersion
-  ) ?? null;
-}
+import { findBarcodeConflict } from '../../../../lib/barcode';
 
 function normalizeOption(value: unknown) {
   const normalized = String(value ?? '').trim();
@@ -32,7 +11,7 @@ function normalizeOption(value: unknown) {
 async function getInventoryRow(id: string) {
   const { data, error } = await supabaseAdmin
     .from('inventory')
-    .select('id, quantity, location, items:items(artist, category, album_version, option, barcode)')
+    .select('id, quantity, location, items:items(id, artist, category, album_version, option, barcode)')
     .eq('id', id)
     .single();
 
@@ -69,18 +48,20 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     }
 
     if (trimmedBarcode) {
-      const conflict = await findBarcodeConflict(
-        trimmedBarcode,
-        nextItem.artist,
-        nextItem.category,
-        nextItem.album_version
-      );
+      const conflict = await findBarcodeConflict({
+        client: supabaseAdmin,
+        barcode: trimmedBarcode,
+        itemId: baseItem.id,
+        artist: nextItem.artist,
+        category: nextItem.category,
+        albumVersion: nextItem.album_version,
+      });
       if (conflict) {
         return NextResponse.json(
           {
             error: '같은 바코드가 다른 아티스트/카테고리/앨범버전에 이미 등록되어 저장할 수 없습니다.',
             conflict,
-            step: 'barcode_scope',
+            step: 'update_items_barcode',
           },
           { status: 409 }
         );
