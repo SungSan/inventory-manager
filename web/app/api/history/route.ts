@@ -20,8 +20,11 @@ export async function GET(req: Request) {
   noStore();
   return withAuth(['admin', 'operator', 'viewer', 'l_operator', 'manager'], async (session) => {
     const { searchParams } = new URL(req.url);
+    const mode = searchParams.get('mode');
     const startDate = searchParams.get('startDate');
     const endDate = searchParams.get('endDate');
+    const createdBy = searchParams.get('createdBy');
+    const createdByName = searchParams.get('createdByName');
     const pageParam = Number(searchParams.get('page'));
     const pageSizeParam = Number(searchParams.get('pageSize'));
     const pageSize = Number.isFinite(pageSizeParam) && pageSizeParam > 0 ? Math.min(pageSizeParam, 200) : 200;
@@ -34,6 +37,60 @@ export async function GET(req: Request) {
       base.setDate(base.getDate() + 1);
       return base.toISOString();
     };
+
+    if (mode === 'assignees') {
+      let assigneeQuery = supabaseAdmin
+        .from('movements_view')
+        .select('created_by, created_by_name')
+        .order('created_by', { ascending: true });
+
+      if (session.role === 'manager') {
+        const scope = await loadLocationScope(session.userId ?? '');
+        const primary = scope?.primary_location ? [scope.primary_location] : [];
+        const subs = Array.isArray(scope?.sub_locations) ? scope?.sub_locations : [];
+        const allowedLocations = Array.from(new Set([...primary, ...subs].map((v) => String(v || '').trim()).filter(Boolean)));
+        if (allowedLocations.length === 0) {
+          return NextResponse.json({ ok: true, assignees: [] });
+        }
+        assigneeQuery = assigneeQuery.in('location', allowedLocations);
+      }
+
+      if (startDate) {
+        assigneeQuery = assigneeQuery.gte('created_at', toKstStart(startDate));
+      }
+
+      if (endDate) {
+        assigneeQuery = assigneeQuery.lt('created_at', toKstEndExclusive(endDate));
+      }
+
+      const limitParam = Number(searchParams.get('limit'));
+      const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 5000) : 5000;
+      assigneeQuery = assigneeQuery.range(0, limit - 1);
+
+      const { data, error } = await assigneeQuery;
+      if (error) {
+        console.error('history assignees fetch error:', error);
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+      const unique = new Map<string, { created_by: string; created_by_name: string; count: number }>();
+      (data || []).forEach((row: any) => {
+        const key = row.created_by || 'unknown';
+        const existing = unique.get(key);
+        if (existing) {
+          existing.count += 1;
+          if (!existing.created_by_name && row.created_by_name) {
+            existing.created_by_name = row.created_by_name;
+          }
+        } else {
+          unique.set(key, {
+            created_by: row.created_by,
+            created_by_name: row.created_by_name ?? '',
+            count: 1,
+          });
+        }
+      });
+      return NextResponse.json({ ok: true, assignees: Array.from(unique.values()) });
+    }
 
     let query = supabaseAdmin
       .from('movements_view')
@@ -61,6 +118,14 @@ export async function GET(req: Request) {
 
     if (endDate) {
       query = query.lt('created_at', toKstEndExclusive(endDate));
+    }
+
+    if (createdBy) {
+      query = query.eq('created_by', createdBy);
+    }
+
+    if (createdByName) {
+      query = query.ilike('created_by_name', `%${createdByName}%`);
     }
 
     const { data, error, count } = await query;

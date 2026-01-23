@@ -84,6 +84,12 @@ type HistoryRow = {
   memo?: string;
 };
 
+type HistoryAssignee = {
+  created_by: string;
+  created_by_name: string;
+  count: number;
+};
+
 type AccountRow = {
   id: string;
   username: string;
@@ -435,9 +441,12 @@ export default function Home() {
     direction: '',
     category: '',
     from: defaultHistoryFrom,
-    to: defaultHistoryTo
+    to: defaultHistoryTo,
+    createdBy: ''
   });
   const [historyPage, setHistoryPage] = useState<HistoryPage>({ page: 1, pageSize: 50, totalRows: 0 });
+  const [historyAssignees, setHistoryAssignees] = useState<HistoryAssignee[]>([]);
+  const [historyAssigneeStatus, setHistoryAssigneeStatus] = useState('');
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [accountsStatus, setAccountsStatus] = useState('');
@@ -989,6 +998,7 @@ export default function Home() {
     const params = new URLSearchParams();
     if (historyFilters.from) params.set('startDate', historyFilters.from);
     if (historyFilters.to) params.set('endDate', historyFilters.to);
+    if (historyFilters.createdBy) params.set('createdBy', historyFilters.createdBy);
     const nextPage = options?.page ?? historyPage.page;
     const nextPageSize = options?.pageSize ?? historyPage.pageSize;
     params.set('page', String(Math.max(1, nextPage)));
@@ -1020,6 +1030,37 @@ export default function Home() {
       const message = payload?.error || payload?.message || '입출고 이력 불러오기 실패';
       setStatus(message);
       alert(message);
+    }
+  }
+
+  async function loadHistoryAssignees() {
+    const params = new URLSearchParams();
+    params.set('mode', 'assignees');
+    if (historyFilters.from) params.set('startDate', historyFilters.from);
+    if (historyFilters.to) params.set('endDate', historyFilters.to);
+    params.set('limit', '5000');
+    setHistoryAssigneeStatus('담당자 목록 불러오는 중...');
+    try {
+      const res = await fetch(`/api/history?${params.toString()}`, { cache: 'no-store' });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        console.error('history assignees fetch failed', { status: res.status, payload });
+        setHistoryAssigneeStatus('담당자 목록 불러오기 실패');
+        return;
+      }
+      const payload = await res.json();
+      const assignees = Array.isArray(payload?.assignees) ? payload.assignees : [];
+      setHistoryAssignees(
+        assignees.map((row: any) => ({
+          created_by: row.created_by,
+          created_by_name: row.created_by_name ?? '',
+          count: Number(row.count ?? 0),
+        }))
+      );
+      setHistoryAssigneeStatus('');
+    } catch (error) {
+      console.error('history assignees fetch failed', { error });
+      setHistoryAssigneeStatus('담당자 목록 불러오기 실패');
     }
   }
 
@@ -1740,12 +1781,41 @@ export default function Home() {
     [history]
   );
 
+  const historyAssigneeOptions = useMemo(() => {
+    if (historyAssignees.length > 0) {
+      return [...historyAssignees].sort((a, b) =>
+        (a.created_by_name || a.created_by).localeCompare(b.created_by_name || b.created_by)
+      );
+    }
+    const fallback = new Map<string, HistoryAssignee>();
+    history.forEach((row) => {
+      const key = row.created_by || 'unknown';
+      const existing = fallback.get(key);
+      if (existing) {
+        existing.count += 1;
+        if (!existing.created_by_name && row.created_by_name) {
+          existing.created_by_name = row.created_by_name;
+        }
+      } else {
+        fallback.set(key, {
+          created_by: row.created_by,
+          created_by_name: row.created_by_name ?? '',
+          count: 1,
+        });
+      }
+    });
+    return Array.from(fallback.values()).sort((a, b) =>
+      (a.created_by_name || a.created_by).localeCompare(b.created_by_name || b.created_by)
+    );
+  }, [history, historyAssignees]);
+
   const filteredHistory = useMemo(() => {
     const fromDateMs = historyFilters.from ? parseKstDate(historyFilters.from) : null;
     const toDateMs = historyFilters.to ? parseKstDate(historyFilters.to) + 24 * 60 * 60 * 1000 : null;
     return history.filter((row) => {
       const matchesDirection = !historyFilters.direction || row.direction === historyFilters.direction;
       const matchesCategory = !historyFilters.category || row.category === historyFilters.category;
+      const matchesAssignee = !historyFilters.createdBy || row.created_by === historyFilters.createdBy;
       const matchesSearch = [
         row.artist,
         row.album_version,
@@ -1762,7 +1832,7 @@ export default function Home() {
       const createdKstMs = Date.parse(row.created_at) + 9 * 60 * 60 * 1000;
       const matchesFrom = !fromDateMs || createdKstMs >= fromDateMs;
       const matchesTo = !toDateMs || createdKstMs < toDateMs;
-      return matchesDirection && matchesCategory && matchesSearch && matchesFrom && matchesTo;
+      return matchesDirection && matchesCategory && matchesAssignee && matchesSearch && matchesFrom && matchesTo;
     });
   }, [history, historyFilters]);
 
@@ -1835,6 +1905,7 @@ export default function Home() {
       const params = new URLSearchParams();
       if (historyFilters.from) params.set('startDate', historyFilters.from);
       if (historyFilters.to) params.set('endDate', historyFilters.to);
+      if (historyFilters.createdBy) params.set('createdBy', historyFilters.createdBy);
       params.set('page', String(page));
       params.set('pageSize', String(pageSize));
       const res = await fetch(`/api/history?${params.toString()}`, { cache: 'no-store' });
@@ -1882,7 +1953,8 @@ export default function Home() {
     const filtered = allRows.filter((row) => {
       const matchesDirection = !historyFilters.direction || row.direction === historyFilters.direction;
       const matchesCategory = !historyFilters.category || row.category === historyFilters.category;
-      return matchesDirection && matchesCategory && matchesSearch(row);
+      const matchesAssignee = !historyFilters.createdBy || row.created_by === historyFilters.createdBy;
+      return matchesDirection && matchesCategory && matchesAssignee && matchesSearch(row);
     });
     const rows = filtered.map((h) => ({
       created_at_kst: formatDate(h.created_at),
@@ -2035,6 +2107,7 @@ export default function Home() {
   useEffect(() => {
     if (activePanel === 'history') {
       reloadHistory();
+      loadHistoryAssignees();
     }
   }, [activePanel]);
 
@@ -2042,8 +2115,16 @@ export default function Home() {
     setHistoryPage((prev) => ({ ...prev, page: 1 }));
     if (activePanel === 'history') {
       reloadHistory({ page: 1 });
+      loadHistoryAssignees();
     }
   }, [historyFilters.from, historyFilters.to]);
+
+  useEffect(() => {
+    setHistoryPage((prev) => ({ ...prev, page: 1 }));
+    if (activePanel === 'history') {
+      reloadHistory({ page: 1 });
+    }
+  }, [historyFilters.createdBy]);
 
   useEffect(() => {
     if (!focusedStockKey) {
@@ -3326,6 +3407,19 @@ export default function Home() {
               {historyCategoryOptions.map((cat) => (
                 <option key={cat} value={cat}>
                   {cat}
+                </option>
+              ))}
+            </select>
+            <select
+              className="compact"
+              value={historyFilters.createdBy}
+              onChange={(e) => setHistoryFilters({ ...historyFilters, createdBy: e.target.value })}
+              title={historyAssigneeStatus || '담당자 선택'}
+            >
+              <option value="">전체 담당</option>
+              {historyAssigneeOptions.map((assignee) => (
+                <option key={assignee.created_by} value={assignee.created_by}>
+                  {(assignee.created_by_name || assignee.created_by) + ` (${assignee.count})`}
                 </option>
               ))}
             </select>
