@@ -743,6 +743,198 @@ grant execute on function public.record_transfer(
   text, text, text, text, text, text, integer, text, uuid, text, text
 ) to authenticated, service_role;
 
+create or replace function public.find_barcode_conflict(
+  p_barcode text,
+  p_current_item_id uuid,
+  p_artist text,
+  p_category text,
+  p_album_version text
+) returns table(
+  id uuid,
+  artist text,
+  category text,
+  album_version text
+) as $$
+  select i.id, i.artist, i.category, i.album_version
+    from public.items as i
+   where i.barcode = nullif(btrim(p_barcode), '')
+     and (p_current_item_id is null or i.id <> p_current_item_id)
+     and not (
+       btrim(i.artist) = btrim(p_artist)
+       and btrim(i.category) = btrim(p_category)
+       and btrim(i.album_version) = btrim(p_album_version)
+     )
+   limit 1;
+$$ language sql stable;
+
+grant execute on function public.find_barcode_conflict(text, uuid, text, text, text) to authenticated, service_role;
+
+create or replace function public.inventory_location_rename(
+  p_item_id uuid,
+  p_from_location text,
+  p_to_location text,
+  p_merge boolean default false
+) returns json as $$
+#variable_conflict use_variable
+declare
+  v_from text := nullif(btrim(p_from_location), '');
+  v_to text := nullif(btrim(p_to_location), '');
+  v_source_id uuid;
+  v_source_qty int := 0;
+  v_target_id uuid;
+  v_target_qty int := 0;
+begin
+  if v_from is null or v_to is null then
+    raise exception 'location is required';
+  end if;
+
+  select id, quantity
+    into v_source_id, v_source_qty
+    from public.inventory
+   where item_id = p_item_id
+     and location = v_from
+   for update;
+  if v_source_id is null then
+    raise exception 'source location not found';
+  end if;
+
+  select id, quantity
+    into v_target_id, v_target_qty
+    from public.inventory
+   where item_id = p_item_id
+     and location = v_to
+   for update;
+
+  if v_target_id is not null then
+    if not p_merge then
+      return json_build_object('ok', false, 'merge_required', true, 'target_location', v_to);
+    end if;
+
+    update public.inventory
+       set quantity = v_target_qty + v_source_qty,
+           updated_at = now()
+     where id = v_target_id;
+
+    delete from public.inventory where id = v_source_id;
+
+    return json_build_object(
+      'ok', true,
+      'merged', true,
+      'target_id', v_target_id,
+      'merged_quantity', v_target_qty + v_source_qty
+    );
+  end if;
+
+  update public.inventory
+     set location = v_to,
+         updated_at = now()
+   where id = v_source_id;
+
+  return json_build_object(
+    'ok', true,
+    'merged', false,
+    'target_id', v_source_id
+  );
+end;
+$$ language plpgsql security definer;
+
+grant execute on function public.inventory_location_rename(uuid, text, text, boolean) to authenticated, service_role;
+
+create or replace function public.inventory_location_adjust(
+  p_item_id uuid,
+  p_location text,
+  p_quantity integer,
+  p_created_by uuid default null,
+  p_memo text default 'location_edit:adjust'
+) returns json as $$
+#variable_conflict use_variable
+declare
+  v_location text := nullif(btrim(p_location), '');
+  v_inventory_id uuid;
+  v_existing int := 0;
+begin
+  if v_location is null then
+    raise exception 'location is required';
+  end if;
+
+  select id, quantity
+    into v_inventory_id, v_existing
+    from public.inventory
+   where item_id = p_item_id
+     and location = v_location
+   for update;
+
+  if v_inventory_id is null then
+    raise exception 'inventory not found';
+  end if;
+
+  update public.inventory
+     set quantity = p_quantity,
+         updated_at = now()
+   where id = v_inventory_id;
+
+  insert into public.movements(
+    item_id, location, direction, quantity, memo, created_by, opening, closing, created_at
+  ) values (
+    p_item_id, v_location, 'ADJUST', p_quantity, p_memo, p_created_by, v_existing, p_quantity, now()
+  );
+
+  return json_build_object(
+    'ok', true,
+    'inventory_id', v_inventory_id,
+    'opening', v_existing,
+    'closing', p_quantity
+  );
+end;
+$$ language plpgsql security definer;
+
+grant execute on function public.inventory_location_adjust(uuid, text, integer, uuid, text) to authenticated, service_role;
+
+create or replace function public.inventory_location_delete(
+  p_item_id uuid,
+  p_location text,
+  p_created_by uuid default null,
+  p_memo text default 'location_edit:delete'
+) returns json as $$
+#variable_conflict use_variable
+declare
+  v_location text := nullif(btrim(p_location), '');
+  v_inventory_id uuid;
+  v_existing int := 0;
+begin
+  if v_location is null then
+    raise exception 'location is required';
+  end if;
+
+  select id, quantity
+    into v_inventory_id, v_existing
+    from public.inventory
+   where item_id = p_item_id
+     and location = v_location
+   for update;
+
+  if v_inventory_id is null then
+    raise exception 'inventory not found';
+  end if;
+
+  if v_existing <> 0 then
+    return json_build_object('ok', false, 'blocked', true, 'quantity', v_existing);
+  end if;
+
+  delete from public.inventory where id = v_inventory_id;
+
+  insert into public.movements(
+    item_id, location, direction, quantity, memo, created_by, opening, closing, created_at
+  ) values (
+    p_item_id, v_location, 'ADJUST', 0, p_memo, p_created_by, v_existing, 0, now()
+  );
+
+  return json_build_object('ok', true);
+end;
+$$ language plpgsql security definer;
+
+grant execute on function public.inventory_location_delete(uuid, text, uuid, text) to authenticated, service_role;
+
 -- diagnostics helper to confirm connected database and counts
 create or replace function public.diag_db_snapshot()
 returns json as $$
