@@ -114,7 +114,7 @@ type MovementPayload = {
   option: string;
   location: string;
   quantity: number;
-  direction: 'IN' | 'OUT';
+  direction: 'IN' | 'OUT' | 'ADJUST';
   memo: string;
   barcode?: string;
   item_id?: string | null;
