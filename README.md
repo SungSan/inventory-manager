@@ -28,12 +28,14 @@ Next.js(App Router) + Supabase 기반의 웹 재고관리 시스템입니다. ID
 ## 환경 변수
 `web/.env.example`을 복사해 값을 채웁니다.
 
-- `SUPABASE_URL`: Supabase 프로젝트 URL
+- `SUPABASE_URL`: Supabase 프로젝트 URL(서버 전용)
 - `SUPABASE_SERVICE_ROLE_KEY`: Service Role 키(서버 전용)
-- `SUPABASE_ANON_KEY`: anon/public 키
+- `SUPABASE_ANON_KEY`: anon/public 키(서버 전용)
+- `NEXT_PUBLIC_SUPABASE_URL`: 브라우저에서 쓰는 Supabase URL
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`: 브라우저에서 쓰는 anon/public 키
 - `SESSION_PASSWORD`: 32자 이상의 임의 문자열(세션 암호화)
 - `SESSION_COOKIE_NAME`: 세션 쿠키 이름(기본값 `inventory_session`)
-- `SITE_URL`: 서비스 도메인(예: `http://localhost:3000` 또는 Vercel URL)
+- `NEXT_PUBLIC_SITE_URL`: 서비스 도메인(예: `http://localhost:3000` 또는 Vercel URL)
 
 ## 로컬 실행
 ```bash
@@ -47,7 +49,7 @@ npm run dev
 ## Vercel 배포
 1. Vercel에서 새 프로젝트를 만들고 **Project Root**를 `web/`으로 지정합니다.
 2. Build Command: `npm run build`, Output Directory: `.next`
-3. 환경 변수에 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `SESSION_PASSWORD`, `SESSION_COOKIE_NAME`, `SITE_URL`을 입력합니다.
+3. 환경 변수에 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SESSION_PASSWORD`, `SESSION_COOKIE_NAME`, `NEXT_PUBLIC_SITE_URL`을 입력합니다.
 4. 배포 후 관리자 계정으로 로그인하여 입/출고 등록 → 재고/이력/CSV 다운로드를 확인합니다.
 
 ## 동작 및 관리자 가이드

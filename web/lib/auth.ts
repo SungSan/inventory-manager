@@ -21,6 +21,69 @@ const supabaseAuth = createClient(supabaseAuthUrl, supabaseAuthKey, {
   global: { headers: { 'x-application-name': 'inventory-web-auth' } },
 });
 
+type UserProfileSyncInput = {
+  userId: string;
+  username: string;
+  role: Role;
+  approved: boolean;
+  full_name: string;
+  department: string;
+  contact: string;
+  purpose: string;
+};
+
+async function syncUserProfile(payload: UserProfileSyncInput) {
+  const { data: existing, error: existingError } = await supabaseAdmin
+    .from('user_profiles')
+    .select('user_id')
+    .eq('user_id', payload.userId)
+    .maybeSingle();
+
+  if (existingError) {
+    throw new Error(existingError.message);
+  }
+
+  if (!existing) {
+    const insertPayload = {
+      user_id: payload.userId,
+      username: payload.username,
+      role: payload.role,
+      approved: payload.approved,
+      full_name: payload.full_name,
+      department: payload.department,
+      contact: payload.contact,
+      purpose: payload.purpose,
+      requested_at: new Date().toISOString(),
+      approved_at: payload.approved ? new Date().toISOString() : null,
+      approved_by: null,
+    };
+    const { error: insertError } = await supabaseAdmin.from('user_profiles').insert(insertPayload);
+    if (insertError) {
+      throw new Error(insertError.message);
+    }
+    return;
+  }
+
+  const updatePayload = {
+    username: payload.username,
+    role: payload.role,
+    approved: payload.approved,
+    full_name: payload.full_name,
+    department: payload.department,
+    contact: payload.contact,
+    requested_at: new Date().toISOString(),
+    approved_at: payload.approved ? new Date().toISOString() : null,
+    approved_by: null,
+  };
+  const { error: updateError } = await supabaseAdmin
+    .from('user_profiles')
+    .update(updatePayload)
+    .eq('user_id', payload.userId);
+  if (updateError) {
+    throw new Error(updateError.message);
+  }
+}
+
 export function normalizeUsername(raw: string) {
   const username = raw.trim();
   if (!username || /\s/.test(username)) {
@@ -118,12 +181,18 @@ export async function loginWithUsername(rawUsername: string, password: string) {
     department: (authUser.user_metadata as any)?.department ?? '',
     contact: (authUser.user_metadata as any)?.contact ?? '',
     purpose: (authUser.user_metadata as any)?.purpose ?? '',
-    requested_at: new Date().toISOString(),
-    approved_at: ensuredUser?.approved ? new Date().toISOString() : null,
-    approved_by: null,
   };
 
-  await supabaseAdmin.from('user_profiles').upsert(profilePayload);
+  await syncUserProfile({
+    userId: authUser.id,
+    username: profilePayload.username,
+    role: profilePayload.role,
+    approved: profilePayload.approved,
+    full_name: profilePayload.full_name,
+    department: profilePayload.department,
+    contact: profilePayload.contact,
+    purpose: profilePayload.purpose,
+  });
 
   const bypassApproval = authUser.email?.toLowerCase() === SPECIAL_EMAIL || special;
   const approvedFlag = bypassApproval ? true : ensuredUser?.approved ?? false;
@@ -219,12 +288,18 @@ export async function loginWithAccessToken(
     department: (authUser.user.user_metadata as any)?.department ?? '',
     contact: (authUser.user.user_metadata as any)?.contact ?? '',
     purpose: (authUser.user.user_metadata as any)?.purpose ?? '',
-    requested_at: new Date().toISOString(),
-    approved_at: ensuredUser?.approved ? new Date().toISOString() : null,
-    approved_by: null,
   };
 
-  await supabaseAdmin.from('user_profiles').upsert(profilePayload);
+  await syncUserProfile({
+    userId: authUser.user.id,
+    username: profilePayload.username,
+    role: profilePayload.role,
+    approved: profilePayload.approved,
+    full_name: profilePayload.full_name,
+    department: profilePayload.department,
+    contact: profilePayload.contact,
+    purpose: profilePayload.purpose,
+  });
 
   const bypassApproval = authUser.user.email?.toLowerCase() === SPECIAL_EMAIL || special;
   const approvedFlag = bypassApproval ? true : ensuredUser?.approved ?? false;

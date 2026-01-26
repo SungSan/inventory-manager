@@ -1,11 +1,17 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../../lib/supabase';
 import { withAuth } from '../../../../lib/auth';
+import { findBarcodeConflict } from '../../../../lib/barcode';
+
+function normalizeOption(value: unknown) {
+  const normalized = String(value ?? '').trim();
+  return normalized === '-' ? '' : normalized;
+}
 
 async function getInventoryRow(id: string) {
   const { data, error } = await supabaseAdmin
     .from('inventory')
-    .select('id, quantity, location, items:items(artist, category, album_version, option, barcode)')
+    .select('id, quantity, location, items:items(id, artist, category, album_version, option, barcode)')
     .eq('id', id)
     .single();
 
@@ -29,22 +35,44 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         { status: 400 }
       );
     }
-    if (session.role !== 'admin' && baseItem.barcode && trimmedBarcode !== undefined && trimmedBarcode !== baseItem.barcode) {
-      return NextResponse.json(
-        { error: 'barcode update not allowed', step: 'barcode_scope' },
-        { status: 403 }
-      );
-    }
     const nextItem = {
       artist: (artist ?? baseItem.artist ?? '').trim(),
       category: (category ?? baseItem.category ?? 'album').trim(),
       album_version: (album_version ?? baseItem.album_version ?? '').trim(),
-      option: (option ?? baseItem.option ?? '').trim(),
+      option: normalizeOption(option ?? baseItem.option ?? ''),
       barcode: trimmedBarcode === '' ? null : trimmedBarcode ?? baseItem.barcode ?? null,
     };
 
     if (!nextItem.artist || !nextItem.album_version) {
       return NextResponse.json({ error: 'artist and album_version are required' }, { status: 400 });
+    }
+
+    if (trimmedBarcode) {
+      const conflict = await findBarcodeConflict({
+        client: supabaseAdmin,
+        barcode: trimmedBarcode,
+        itemId: baseItem.id,
+        artist: nextItem.artist,
+        category: nextItem.category,
+        albumVersion: nextItem.album_version,
+      });
+      if (conflict) {
+        return NextResponse.json(
+          {
+            error: '동일 바코드는 다른 아티스트/카테고리/앨범에서는 사용할 수 없습니다.',
+            conflict,
+            step: 'update_items_barcode',
+          },
+          { status: 409 }
+        );
+      }
+    }
+
+    if (session.role !== 'admin' && baseItem.barcode && trimmedBarcode !== undefined && trimmedBarcode !== baseItem.barcode) {
+      return NextResponse.json(
+        { error: 'barcode update not allowed', step: 'barcode_scope' },
+        { status: 403 }
+      );
     }
 
     const { data: itemData, error: itemError } = await supabaseAdmin
@@ -54,8 +82,15 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       .single();
 
     if (itemError) {
+      const message =
+        itemError.code === '23505'
+          ? '동일 바코드는 다른 아티스트/카테고리/앨범에서는 사용할 수 없습니다.'
+          : itemError.message;
       console.error('inventory item update error', { step: 'update_items', error: itemError.message });
-      return NextResponse.json({ error: itemError.message, step: 'update_items' }, { status: 400 });
+      return NextResponse.json(
+        { error: message, step: 'update_items_barcode' },
+        { status: itemError.code === '23505' ? 409 : 400 }
+      );
     }
 
     const targetQuantity = quantity === undefined || quantity === null ? current.quantity : Number(quantity);

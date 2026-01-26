@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import { withAuth } from '../../../lib/auth';
 import { supabaseAdmin } from '../../../lib/supabase';
+import { findBarcodeConflict } from '../../../lib/barcode';
 
 const supabaseUrl = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
 const supabaseProjectRef = (() => {
@@ -50,8 +51,147 @@ async function loadItemBarcode(params: {
   return data?.barcode ?? null;
 }
 
+function normalizeOption(value: unknown) {
+  const normalized = String(value ?? '').trim();
+  return normalized === '-' ? '' : normalized;
+}
+
+async function resolveItemId(params: {
+  artist: string;
+  category: string;
+  album_version: string;
+  option: string;
+}) {
+  const normalizedOption = normalizeOption(params.option);
+  const { data, error } = await supabaseAdmin
+    .from('items')
+    .upsert(
+      {
+        artist: params.artist,
+        category: params.category,
+        album_version: params.album_version,
+        option: normalizedOption,
+      },
+      { onConflict: 'artist,category,album_version,option' }
+    )
+    .select('id')
+    .single();
+  if (error || !data) {
+    console.error('[movements] item resolve failed', {
+      error: error?.message,
+      input: {
+        artist: params.artist,
+        category: params.category,
+        album_version: params.album_version,
+        option: normalizedOption,
+      },
+      query: 'items upsert on artist,category,album_version,option',
+    });
+    return null;
+  }
+  return data.id as string;
+}
+
+async function loadInventoryQuantity(itemId: string, location: string) {
+  const { data, error } = await supabaseAdmin
+    .from('inventory')
+    .select('quantity')
+    .eq('item_id', itemId)
+    .eq('location', location)
+    .maybeSingle();
+  if (error) {
+    console.error('[movements] inventory read failed', { error: error.message });
+    return null;
+  }
+  if (!data) {
+    const { error: insertError } = await supabaseAdmin
+      .from('inventory')
+      .insert({ item_id: itemId, location, quantity: 0 });
+    if (insertError) {
+      console.error('[movements] inventory create failed', { error: insertError.message });
+      return null;
+    }
+    return 0;
+  }
+  return Number(data.quantity ?? 0);
+}
+
+async function hasIdempotentMovement(key: string) {
+  const { data, error } = await supabaseAdmin
+    .from('movements')
+    .select('id')
+    .eq('idempotency_key', key)
+    .maybeSingle();
+  if (error) {
+    console.error('[movements] idempotency lookup failed', { error: error.message });
+    return false;
+  }
+  return Boolean(data?.id);
+}
+
+async function recordMovement(params: {
+  itemId: string;
+  location: string;
+  direction: 'IN' | 'OUT' | 'ADJUST';
+  quantity: number;
+  memo: string;
+  createdBy: string;
+  idempotencyKey: string;
+}) {
+  if (await hasIdempotentMovement(params.idempotencyKey)) {
+    return { ok: true, idempotent: true };
+  }
+
+  const existingQty = await loadInventoryQuantity(params.itemId, params.location);
+  if (existingQty === null) {
+    return { ok: false, error: 'inventory lookup failed' };
+  }
+
+  const nextQty =
+    params.direction === 'IN'
+      ? existingQty + params.quantity
+      : params.direction === 'OUT'
+      ? existingQty - params.quantity
+      : params.quantity;
+
+  const { error: invError } = await supabaseAdmin
+    .from('inventory')
+    .update({ quantity: nextQty, updated_at: new Date().toISOString() })
+    .eq('item_id', params.itemId)
+    .eq('location', params.location);
+
+  if (invError) {
+    console.error('[movements] inventory update failed', { error: invError.message });
+    return { ok: false, error: invError.message };
+  }
+
+  const { data: movement, error: moveError } = await supabaseAdmin
+    .from('movements')
+    .insert({
+      item_id: params.itemId,
+      location: params.location,
+      direction: params.direction,
+      quantity: params.quantity,
+      memo: params.memo || null,
+      created_by: params.createdBy,
+      idempotency_key: params.idempotencyKey,
+      opening: existingQty,
+      closing: nextQty,
+      created_at: new Date().toISOString(),
+    })
+    .select('id')
+    .single();
+
+  if (moveError) {
+    console.error('[movements] movement insert failed', { error: moveError.message });
+    return { ok: false, error: moveError.message };
+  }
+
+  return { ok: true, movementId: movement?.id, opening: existingQty, closing: nextQty };
+}
+
 export async function POST(req: Request) {
-  return withAuth(['admin', 'operator', 'l_operator'], async (session) => {
+  return withAuth(['admin', 'operator', 'l_operator', 'manager'], async (session) => {
     logSupabaseRef();
     let body: any;
     try {
@@ -81,7 +221,7 @@ export async function POST(req: Request) {
     const normalizedMemo = String(memo ?? '').trim();
     const normalizedDirection = String(direction ?? '').toUpperCase();
     const normalizedCategory = String(category ?? '').trim();
-    const normalizedOption = String(option ?? '').trim();
+    const normalizedOption = normalizeOption(option);
     const normalizedBarcode = String(barcode ?? '').trim();
     const rawLocation = String(location ?? '').trim();
     const effectiveLocation = rawLocation || normalizedOption;
@@ -137,12 +277,18 @@ export async function POST(req: Request) {
         { status: 401 }
       );
     }
-    const scope = session.role === 'l_operator' ? await loadLocationScope(createdBy) : null;
-    if (session.role === 'l_operator') {
-      if (!scope?.primary_location) {
+    const scope = session.role === 'l_operator' || session.role === 'manager' ? await loadLocationScope(createdBy) : null;
+    if (session.role === 'l_operator' || session.role === 'manager') {
+      const primaryLocation = String(scope?.primary_location ?? '').trim();
+      const subLocations = Array.isArray(scope?.sub_locations)
+        ? scope?.sub_locations.map((value) => String(value ?? '').trim()).filter(Boolean)
+        : [];
+      const allowedLocations = Array.from(new Set([primaryLocation, ...subLocations].filter(Boolean)));
+
+      if (allowedLocations.length === 0) {
         return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
       }
-      if (effectiveLocation !== scope.primary_location) {
+      if (!allowedLocations.includes(effectiveLocation)) {
         return NextResponse.json({ ok: false, error: 'location not allowed', step: 'location_scope' }, { status: 403 });
       }
     }
@@ -162,59 +308,77 @@ export async function POST(req: Request) {
       }
     }
 
-    const payload: Record<string, any> = {
-      album_version: trimmedAlbum,
-      artist: trimmedArtist,
-      category: normalizedCategory,
-      created_by: createdBy,
-      direction: normalizedDirection,
-      idempotency_key: idempotency,
-      memo: normalizedMemo,
-      option: normalizedOption || '',
-      quantity: normalizedQuantity,
-    };
-
-    if (normalizedBarcode) {
-      payload.barcode = normalizedBarcode;
-    }
-
-    payload.location = effectiveLocation;
-
     try {
-      const { data, error } = await supabaseAdmin.rpc('record_movement', payload);
-      if (error) {
-        console.error(`record_movement rpc failed:`, {
-          message: error.message,
-          details: (error as any)?.details,
-          hint: (error as any)?.hint,
-          code: (error as any)?.code,
-          payload
+      const itemId = await resolveItemId({
+        artist: trimmedArtist,
+        category: normalizedCategory,
+        album_version: trimmedAlbum,
+        option: normalizedOption,
+      });
+      if (!itemId) {
+        return NextResponse.json(
+          { ok: false, error: 'item resolve failed', step: 'resolve_item' },
+          { status: 500 }
+        );
+      }
+
+      const result = await recordMovement({
+        itemId,
+        location: effectiveLocation,
+        direction: normalizedDirection as 'IN' | 'OUT' | 'ADJUST',
+        quantity: normalizedQuantity,
+        memo: normalizedMemo,
+        createdBy,
+        idempotencyKey: idempotency,
+      });
+
+      if (!result.ok) {
+        return NextResponse.json(
+          { ok: false, error: result.error ?? 'movement failed', step: 'movement_write' },
+          { status: 500 }
+        );
+      }
+
+      let barcodeUpdateError: string | null = null;
+      if (normalizedBarcode) {
+        const conflict = await findBarcodeConflict({
+          client: supabaseAdmin,
+          barcode: normalizedBarcode,
+          itemId,
+          artist: trimmedArtist,
+          category: normalizedCategory,
+          albumVersion: trimmedAlbum,
         });
-        return NextResponse.json(
-          {
-            ok: false,
-            step: `record_movement_rpc`,
-            error: error.message,
-            details: (error as any)?.details ?? null,
-            hint: (error as any)?.hint ?? null,
-            code: (error as any)?.code ?? null
-          },
-          { status: 500 }
-        );
+        if (conflict) {
+          return NextResponse.json(
+            {
+              ok: false,
+              error: '동일 바코드는 다른 아티스트/카테고리/앨범에서는 사용할 수 없습니다.',
+              conflict,
+              step: 'update_items_barcode',
+            },
+            { status: 409 }
+          );
+        }
+        const { error: barcodeError } = await supabaseAdmin
+          .from('items')
+          .update({ barcode: normalizedBarcode })
+          .eq('id', itemId);
+        if (barcodeError) {
+          const message =
+            barcodeError.code === '23505'
+              ? '동일 바코드는 다른 아티스트/카테고리/앨범에서는 사용할 수 없습니다.'
+              : barcodeError.message;
+          console.error('barcode update failed', { barcodeError, itemId });
+          return NextResponse.json(
+            { ok: false, error: message, step: 'update_items_barcode' },
+            { status: barcodeError.code === '23505' ? 409 : 500 }
+          );
+        }
       }
-
-      if (!data) {
-        console.error({ step: `record_movement_rpc`, error: 'empty response', payload });
-        return NextResponse.json(
-          { ok: false, step: `record_movement_rpc`, error: 'empty response from rpc' },
-          { status: 500 }
-        );
-      }
-
-      const result = data as any;
-      return NextResponse.json({ ok: true, result });
+      return NextResponse.json({ ok: true, result, barcodeUpdateError });
     } catch (error: any) {
-      console.error({ step: 'record_movement_unexpected', payload, error });
+      console.error({ step: 'movement_unexpected', payload: { artist: trimmedArtist, location: effectiveLocation }, error });
       const message = error?.message || '입출고 처리 중 오류가 발생했습니다.';
       return NextResponse.json({ ok: false, error: message, step: 'exception' }, { status: 500 });
     }

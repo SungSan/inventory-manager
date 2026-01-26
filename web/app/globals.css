@@ -79,6 +79,7 @@ label span { display: block; font-size: 0.85rem; color: var(--muted); margin-bot
 .stat h3 { margin: 0.15rem 0 0; font-size: 1.5rem; }
 
 .pill { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.35rem 0.6rem; background: #e0f2fe; color: #0f172a; border-radius: 999px; font-weight: 600; font-size: 0.85rem; }
+.pill.active { background: #1d4ed8; color: #fff; }
 .pill-row { display: flex; flex-wrap: wrap; gap: 0.35rem; }
 .pill .chip-close { background: transparent; border: none; padding: 0; margin-left: 0.25rem; cursor: pointer; color: var(--muted); }
 .pill .chip-close:hover { color: var(--text); }
@@ -131,4 +132,29 @@ label span { display: block; font-size: 0.85rem; color: var(--muted); margin-bot
   .section-heading { flex-direction: column; align-items: flex-start; }
   .page-header { flex-direction: column; }
   .status-panel { width: 100%; }
+}
+
+.bulk-transfer-panel { display: flex; flex-direction: column; gap: 0.85rem; }
+.bulk-transfer-header { display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
+.bulk-transfer-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.bulk-transfer-list { max-height: 360px; overflow-y: auto; border: 1px solid var(--border); border-radius: 12px; padding: 0.75rem; background: #f9fafb; display: flex; flex-direction: column; gap: 0.75rem; }
+.bulk-transfer-item { border: 1px solid var(--border); border-radius: 12px; padding: 0.75rem; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(260px, 2fr); gap: 0.75rem; background: #fff; }
+.bulk-transfer-item-main { display: flex; flex-direction: column; gap: 0.25rem; }
+.bulk-transfer-item-input { display: flex; flex-direction: column; gap: 0.5rem; }
+.bulk-transfer-error { color: #b91c1c; font-size: 0.85rem; }
+.bulk-transfer-alert { border: 1px solid #fecdd3; background: #fff1f2; color: #9f1239; border-radius: 12px; padding: 0.75rem; font-size: 0.9rem; }
+.bulk-transfer-footer { position: sticky; bottom: 0; background: #fff; padding: 0.75rem 0 0.5rem; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+.bulk-transfer-status { flex: 1 1 240px; }
+.bulk-transfer-report ul { margin: 0.4rem 0 0; padding-left: 1.1rem; }
+
+.bulk-location-details { border: 1px dashed var(--border); border-radius: 10px; padding: 0.5rem; background: #f8fafc; }
+.bulk-location-details summary { cursor: pointer; font-weight: 600; }
+.bulk-location-list { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.6rem; }
+.bulk-location-row { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(160px, 1fr); gap: 0.75rem; align-items: center; }
+.bulk-location-check { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.bulk-location-qty { display: flex; flex-direction: column; gap: 0.2rem; }
+
+@media (max-width: 900px) {
+  .bulk-transfer-item { grid-template-columns: 1fr; }
+  .bulk-location-row { grid-template-columns: 1fr; }
 }
