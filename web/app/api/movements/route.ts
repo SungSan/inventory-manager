@@ -242,8 +242,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
 
-    if (!Number.isFinite(normalizedQuantity) || normalizedQuantity <= 0) {
-      const error = 'quantity must be a positive number';
+    if (
+      !Number.isFinite(normalizedQuantity) ||
+      (normalizedDirection === 'ADJUST' ? normalizedQuantity < 0 : normalizedQuantity <= 0)
+    ) {
+      const error =
+        normalizedDirection === 'ADJUST'
+          ? 'quantity must be a non-negative number'
+          : 'quantity must be a positive number';
       console.error({ step: 'validation', error, payload: { quantity } });
       return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
@@ -255,8 +261,8 @@ export async function POST(req: Request) {
       );
     }
 
-    if (!['IN', 'OUT'].includes(normalizedDirection)) {
-      const error = 'direction must be IN or OUT';
+    if (!['IN', 'OUT', 'ADJUST'].includes(normalizedDirection)) {
+      const error = 'direction must be IN, OUT, or ADJUST';
       console.error({ step: 'validation', error, payload: { direction } });
       return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }

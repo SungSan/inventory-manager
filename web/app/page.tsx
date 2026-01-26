@@ -1102,13 +1102,20 @@ export default function Home() {
     const categoryValue = movement.category;
     const barcodeValue = movement.barcode?.trim() || '';
 
-    if (!artistValue || !albumVersion || !locationValue || !quantityValue) {
+    if (!artistValue || !albumVersion || !locationValue) {
       alert('아티스트, 앨범/버전, 로케이션 정보를 모두 입력해야 합니다.');
       return;
     }
 
-    if (!Number.isFinite(quantityValue) || quantityValue <= 0) {
-      alert('수량은 1 이상의 양수만 입력 가능합니다.');
+    if (
+      !Number.isFinite(quantityValue) ||
+      (direction === 'ADJUST' ? quantityValue < 0 : quantityValue <= 0)
+    ) {
+      alert(
+        direction === 'ADJUST'
+          ? '조정 수량은 0 이상의 숫자만 입력 가능합니다.'
+          : '수량은 1 이상의 양수만 입력 가능합니다.'
+      );
       return;
     }
 
