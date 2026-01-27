@@ -1680,7 +1680,7 @@ export default function Home() {
     await refresh();
   }
 
-  async function adjustLocationDetail(itemId: string, location: string, quantity: number) {
+  async function setLocationQuantity(itemId: string, location: string, quantity: number) {
     if (!canManageLocations) {
       alert('수정 권한이 없습니다.');
       return;
@@ -1690,10 +1690,10 @@ export default function Home() {
       return;
     }
     setDetailStatus('수량 수정 중...');
-    const res = await fetch('/api/inventory/location/adjust', {
+    const res = await fetch('/api/inventory/location/set_quantity', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item_id: itemId, location, quantity }),
+      body: JSON.stringify({ item_id: itemId, location, new_quantity: quantity }),
     });
     const payload = await res.json().catch(() => null);
     if (!res.ok || payload?.ok !== true) {
@@ -2867,7 +2867,7 @@ export default function Home() {
                         className="ghost"
                         disabled={!canEdit}
                         onClick={() =>
-                          adjustLocationDetail(
+                          setLocationQuantity(
                             itemId,
                             loc.location,
                             locationDetailQuantityDrafts[locationId] ?? Number(loc.quantity ?? 0)
