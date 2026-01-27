@@ -3,9 +3,10 @@ import { withAuth } from '../../../../../lib/auth';
 import { supabaseAdmin } from '../../../../../lib/supabase';
 
 type AdjustPayload = {
-  item_id?: string;
+  itemId?: string;
   location?: string;
-  quantity?: number;
+  newQuantity?: number;
+  memo?: string;
 };
 
 export async function POST(req: Request) {
@@ -18,20 +19,21 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: 'invalid json body' }, { status: 400 });
     }
 
-    const itemId = String(body.item_id ?? '').trim();
+    const itemId = String(body.itemId ?? '').trim();
     const location = String(body.location ?? '').trim();
-    const quantity = Number(body.quantity);
+    const newQuantity = Number(body.newQuantity);
+    const memo = String(body.memo ?? 'location_edit:adjust_set').trim() || 'location_edit:adjust_set';
 
-    if (!itemId || !location || !Number.isFinite(quantity)) {
+    if (!itemId || !location || !Number.isFinite(newQuantity)) {
       return NextResponse.json({ ok: false, error: 'missing or invalid fields' }, { status: 400 });
     }
 
-    const { data, error } = await supabaseAdmin.rpc('inventory_location_adjust', {
+    const { data, error } = await supabaseAdmin.rpc('inventory_location_adjust_set', {
       p_created_by: session.userId ?? null,
       p_item_id: itemId,
       p_location: location,
-      p_memo: 'location_edit:adjust',
-      p_quantity: quantity,
+      p_memo: memo,
+      p_new_quantity: newQuantity,
     });
 
     if (error) {

@@ -121,14 +121,12 @@ create table if not exists public.items (
 create unique index if not exists items_unique on public.items(artist, category, album_version, option);
 alter table public.items drop constraint if exists items_barcode_key;
 drop index if exists public.items_barcode_ux;
-create unique index if not exists items_barcode_group_ux
-  on public.items (
-    lower(trim(barcode)),
-    lower(trim(artist)),
-    lower(trim(category)),
-    lower(trim(album_version))
-  )
-  where barcode is not null and trim(barcode) <> '';
+drop index if exists public.items_barcode_key;
+drop index if exists public.items_barcode_group_ux;
+drop index if exists public.items_barcode_group_unique;
+create unique index if not exists items_barcode_group_unique
+  on public.items (barcode, artist, category, album_version)
+  where barcode is not null and btrim(barcode) <> '';
 
 create table if not exists public.inventory (
   id uuid primary key default gen_random_uuid(),
@@ -143,7 +141,7 @@ create table if not exists public.movements (
   id uuid primary key default gen_random_uuid(),
   item_id uuid not null references public.items(id) on delete cascade,
   location text not null,
-  direction text not null check (direction in ('IN','OUT','ADJUST','TRANSFER')),
+  direction text not null check (direction in ('IN','OUT','ADJUST','TRANSFER','RENAME')),
   from_location text,
   to_location text,
   transfer_group_id uuid,
@@ -766,24 +764,26 @@ create or replace function public.find_barcode_conflict(
 ) as $$
   select i.id, i.artist, i.category, i.album_version
     from public.items as i
-   where lower(trim(i.barcode)) = lower(nullif(btrim(p_barcode), ''))
+   where btrim(i.barcode) = nullif(btrim(p_barcode), '')
      and (p_current_item_id is null or i.id <> p_current_item_id)
      and not (
-       lower(btrim(i.artist)) = lower(btrim(p_artist))
-       and lower(btrim(i.category)) = lower(btrim(p_category))
-       and lower(btrim(i.album_version)) = lower(btrim(p_album_version))
+       btrim(i.artist) = btrim(p_artist)
+       and btrim(i.category) = btrim(p_category)
+       and btrim(i.album_version) = btrim(p_album_version)
      )
    limit 1;
 $$ language sql stable;
 
 grant execute on function public.find_barcode_conflict(text, uuid, text, text, text) to authenticated, service_role;
 
-drop function if exists public.inventory_location_rename(uuid, text, text, boolean);
+drop function if exists public.inventory_location_rename(text, uuid, boolean, text);
 create or replace function public.inventory_location_rename(
   p_from_location text,
   p_item_id uuid,
-  p_merge_p boolean,
-  p_to_location text
+  p_to_location text,
+  p_merge boolean,
+  p_created_by uuid default null,
+  p_memo text default 'location_edit:rename'
 ) returns json as $$
 #variable_conflict use_variable
 declare
@@ -793,6 +793,7 @@ declare
   v_source_qty int := 0;
   v_target_id uuid;
   v_target_qty int := 0;
+  v_final_qty int := 0;
 begin
   if v_from is null or v_to is null then
     raise exception 'location is required';
@@ -816,7 +817,7 @@ begin
    for update;
 
   if v_target_id is not null then
-    if not p_merge_p then
+    if not p_merge then
       return json_build_object('ok', false, 'merge_required', true, 'target_location', v_to);
     end if;
 
@@ -827,11 +828,19 @@ begin
 
     delete from public.inventory where id = v_source_id;
 
+    v_final_qty := v_target_qty + v_source_qty;
+
+    insert into public.movements(
+      item_id, location, direction, quantity, memo, created_by, opening, closing, from_location, to_location, created_at
+    ) values (
+      p_item_id, v_to, 'RENAME', v_source_qty, p_memo, p_created_by, v_source_qty, v_final_qty, v_from, v_to, now()
+    );
+
     return json_build_object(
       'ok', true,
       'merged', true,
       'target_id', v_target_id,
-      'merged_quantity', v_target_qty + v_source_qty
+      'merged_quantity', v_final_qty
     );
   end if;
 
@@ -839,6 +848,12 @@ begin
      set location = v_to,
          updated_at = now()
    where id = v_source_id;
+
+  insert into public.movements(
+    item_id, location, direction, quantity, memo, created_by, opening, closing, from_location, to_location, created_at
+  ) values (
+    p_item_id, v_to, 'RENAME', v_source_qty, p_memo, p_created_by, v_source_qty, v_source_qty, v_from, v_to, now()
+  );
 
   return json_build_object(
     'ok', true,
@@ -848,21 +863,22 @@ begin
 end;
 $$ language plpgsql security definer;
 
-grant execute on function public.inventory_location_rename(text, uuid, boolean, text) to authenticated, service_role;
+grant execute on function public.inventory_location_rename(text, uuid, text, boolean, uuid, text) to authenticated, service_role;
 
-drop function if exists public.inventory_location_adjust(uuid, text, integer, uuid, text);
-create or replace function public.inventory_location_adjust(
+drop function if exists public.inventory_location_adjust_set(uuid, uuid, text, text, integer);
+create or replace function public.inventory_location_adjust_set(
   p_created_by uuid,
   p_item_id uuid,
   p_location text,
   p_memo text,
-  p_quantity integer
+  p_new_quantity integer
 ) returns json as $$
 #variable_conflict use_variable
 declare
   v_location text := nullif(btrim(p_location), '');
   v_inventory_id uuid;
   v_existing int := 0;
+  v_delta int := 0;
 begin
   if v_location is null then
     raise exception 'location is required';
@@ -879,27 +895,30 @@ begin
     raise exception 'inventory not found';
   end if;
 
+  v_delta := p_new_quantity - v_existing;
+
   update public.inventory
-     set quantity = p_quantity,
+     set quantity = p_new_quantity,
          updated_at = now()
    where id = v_inventory_id;
 
   insert into public.movements(
     item_id, location, direction, quantity, memo, created_by, opening, closing, created_at
   ) values (
-    p_item_id, v_location, 'ADJUST', p_quantity, p_memo, p_created_by, v_existing, p_quantity, now()
+    p_item_id, v_location, 'ADJUST', v_delta, p_memo, p_created_by, v_existing, p_new_quantity, now()
   );
 
   return json_build_object(
     'ok', true,
     'inventory_id', v_inventory_id,
     'opening', v_existing,
-    'closing', p_quantity
+    'closing', p_new_quantity,
+    'delta', v_delta
   );
 end;
 $$ language plpgsql security definer;
 
-grant execute on function public.inventory_location_adjust(uuid, uuid, text, text, integer) to authenticated, service_role;
+grant execute on function public.inventory_location_adjust_set(uuid, uuid, text, text, integer) to authenticated, service_role;
 
 create or replace function public.inventory_location_delete(
   p_item_id uuid,

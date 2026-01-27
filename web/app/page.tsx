@@ -1646,10 +1646,11 @@ export default function Home() {
     }
     setDetailStatus('로케이션 변경 중...');
     const basePayload = {
-      item_id: itemId,
-      from_location: fromLocation,
-      to_location: trimmed,
+      itemId,
+      fromLocation,
+      toLocation: trimmed,
       merge: false,
+      memo: 'location_edit:rename',
     };
     let res = await fetch('/api/inventory/location/rename', {
       method: 'POST',
@@ -1693,7 +1694,12 @@ export default function Home() {
     const res = await fetch('/api/inventory/location/set_quantity', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item_id: itemId, location, new_quantity: quantity }),
+      body: JSON.stringify({
+        itemId,
+        location,
+        newQuantity: quantity,
+        memo: 'location_edit:adjust_set',
+      }),
     });
     const payload = await res.json().catch(() => null);
     if (!res.ok || payload?.ok !== true) {
@@ -2860,7 +2866,7 @@ export default function Home() {
                             [locationId]: Number(e.target.value),
                           }))
                         }
-                        placeholder="수량 수정"
+                        placeholder="수량 설정(SET)"
                       />
                       <button
                         type="button"
@@ -2874,7 +2880,7 @@ export default function Home() {
                           )
                         }
                       >
-                        수량 수정
+                        수량 설정
                       </button>
                       <button
                         type="button"
