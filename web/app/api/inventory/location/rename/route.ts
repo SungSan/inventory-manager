@@ -7,11 +7,10 @@ type RenamePayload = {
   fromLocation?: string;
   toLocation?: string;
   merge?: boolean;
-  memo?: string;
 };
 
 export async function POST(req: Request) {
-  return withAuth(['admin', 'operator'], async (session) => {
+  return withAuth(['admin', 'operator'], async (_session) => {
     let body: RenamePayload;
     try {
       body = (await req.json()) as RenamePayload;
@@ -24,8 +23,6 @@ export async function POST(req: Request) {
     const fromLocation = String(body.fromLocation ?? '').trim();
     const toLocation = String(body.toLocation ?? '').trim();
     const merge = Boolean(body.merge);
-    const memo = String(body.memo ?? 'location_edit:rename').trim() || 'location_edit:rename';
-
     if (!itemId || !fromLocation || !toLocation) {
       return NextResponse.json({ ok: false, error: 'missing fields' }, { status: 400 });
     }
@@ -33,10 +30,8 @@ export async function POST(req: Request) {
     const { data, error } = await supabaseAdmin.rpc('inventory_location_rename', {
       p_from_location: fromLocation,
       p_item_id: itemId,
-      p_to_location: toLocation,
       p_merge: merge,
-      p_created_by: session.userId ?? null,
-      p_memo: memo,
+      p_to_location: toLocation,
     });
 
     if (error) {

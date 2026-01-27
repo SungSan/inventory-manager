@@ -124,6 +124,7 @@ drop index if exists public.items_barcode_ux;
 drop index if exists public.items_barcode_key;
 drop index if exists public.items_barcode_group_ux;
 drop index if exists public.items_barcode_group_unique;
+drop index if exists public.items_barcode_scoped_unique;
 create unique index if not exists items_barcode_group_unique
   on public.items (barcode, artist, category, album_version)
   where barcode is not null and btrim(barcode) <> '';
@@ -777,13 +778,12 @@ $$ language sql stable;
 grant execute on function public.find_barcode_conflict(text, uuid, text, text, text) to authenticated, service_role;
 
 drop function if exists public.inventory_location_rename(text, uuid, boolean, text);
+drop function if exists public.inventory_location_rename(text, uuid, text, boolean, uuid, text);
 create or replace function public.inventory_location_rename(
   p_from_location text,
   p_item_id uuid,
-  p_to_location text,
   p_merge boolean,
-  p_created_by uuid default null,
-  p_memo text default 'location_edit:rename'
+  p_to_location text
 ) returns json as $$
 #variable_conflict use_variable
 declare
@@ -831,9 +831,9 @@ begin
     v_final_qty := v_target_qty + v_source_qty;
 
     insert into public.movements(
-      item_id, location, direction, quantity, memo, created_by, opening, closing, from_location, to_location, created_at
+      item_id, location, direction, quantity, memo, opening, closing, from_location, to_location, created_at
     ) values (
-      p_item_id, v_to, 'RENAME', v_source_qty, p_memo, p_created_by, v_source_qty, v_final_qty, v_from, v_to, now()
+      p_item_id, v_to, 'RENAME', v_source_qty, 'location_edit:rename', v_source_qty, v_final_qty, v_from, v_to, now()
     );
 
     return json_build_object(
@@ -850,9 +850,9 @@ begin
    where id = v_source_id;
 
   insert into public.movements(
-    item_id, location, direction, quantity, memo, created_by, opening, closing, from_location, to_location, created_at
+    item_id, location, direction, quantity, memo, opening, closing, from_location, to_location, created_at
   ) values (
-    p_item_id, v_to, 'RENAME', v_source_qty, p_memo, p_created_by, v_source_qty, v_source_qty, v_from, v_to, now()
+    p_item_id, v_to, 'RENAME', v_source_qty, 'location_edit:rename', v_source_qty, v_source_qty, v_from, v_to, now()
   );
 
   return json_build_object(
@@ -863,7 +863,7 @@ begin
 end;
 $$ language plpgsql security definer;
 
-grant execute on function public.inventory_location_rename(text, uuid, text, boolean, uuid, text) to authenticated, service_role;
+grant execute on function public.inventory_location_rename(text, uuid, boolean, text) to authenticated, service_role;
 
 drop function if exists public.inventory_location_adjust_set(uuid, uuid, text, text, integer);
 create or replace function public.inventory_location_adjust_set(
