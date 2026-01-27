@@ -4278,6 +4278,9 @@ export default function Home() {
         flex-direction: column;
         gap: 0.75rem;
         margin-top: 0.75rem;
+        max-height: 55vh;
+        overflow-y: auto;
+        padding-right: 0.25rem;
       }
 
       .detail-location-row {
