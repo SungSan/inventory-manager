@@ -27,11 +27,11 @@ export async function POST(req: Request) {
     }
 
     const { data, error } = await supabaseAdmin.rpc('inventory_location_adjust', {
+      p_created_by: session.userId ?? null,
       p_item_id: itemId,
       p_location: location,
-      p_quantity: quantity,
-      p_created_by: session.userId ?? null,
       p_memo: 'location_edit:adjust',
+      p_quantity: quantity,
     });
 
     if (error) {

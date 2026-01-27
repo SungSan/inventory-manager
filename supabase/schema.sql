@@ -119,7 +119,16 @@ create table if not exists public.items (
   barcode text
 );
 create unique index if not exists items_unique on public.items(artist, category, album_version, option);
-create unique index if not exists items_barcode_ux on public.items(barcode) where barcode is not null;
+alter table public.items drop constraint if exists items_barcode_key;
+drop index if exists public.items_barcode_ux;
+create unique index if not exists items_barcode_group_ux
+  on public.items (
+    lower(trim(barcode)),
+    lower(trim(artist)),
+    lower(trim(category)),
+    lower(trim(album_version))
+  )
+  where barcode is not null and trim(barcode) <> '';
 
 create table if not exists public.inventory (
   id uuid primary key default gen_random_uuid(),
@@ -757,23 +766,24 @@ create or replace function public.find_barcode_conflict(
 ) as $$
   select i.id, i.artist, i.category, i.album_version
     from public.items as i
-   where i.barcode = nullif(btrim(p_barcode), '')
+   where lower(trim(i.barcode)) = lower(nullif(btrim(p_barcode), ''))
      and (p_current_item_id is null or i.id <> p_current_item_id)
      and not (
-       btrim(i.artist) = btrim(p_artist)
-       and btrim(i.category) = btrim(p_category)
-       and btrim(i.album_version) = btrim(p_album_version)
+       lower(btrim(i.artist)) = lower(btrim(p_artist))
+       and lower(btrim(i.category)) = lower(btrim(p_category))
+       and lower(btrim(i.album_version)) = lower(btrim(p_album_version))
      )
    limit 1;
 $$ language sql stable;
 
 grant execute on function public.find_barcode_conflict(text, uuid, text, text, text) to authenticated, service_role;
 
+drop function if exists public.inventory_location_rename(uuid, text, text, boolean);
 create or replace function public.inventory_location_rename(
-  p_item_id uuid,
   p_from_location text,
-  p_to_location text,
-  p_merge boolean default false
+  p_item_id uuid,
+  p_merge_p boolean,
+  p_to_location text
 ) returns json as $$
 #variable_conflict use_variable
 declare
@@ -806,7 +816,7 @@ begin
    for update;
 
   if v_target_id is not null then
-    if not p_merge then
+    if not p_merge_p then
       return json_build_object('ok', false, 'merge_required', true, 'target_location', v_to);
     end if;
 
@@ -838,14 +848,15 @@ begin
 end;
 $$ language plpgsql security definer;
 
-grant execute on function public.inventory_location_rename(uuid, text, text, boolean) to authenticated, service_role;
+grant execute on function public.inventory_location_rename(text, uuid, boolean, text) to authenticated, service_role;
 
+drop function if exists public.inventory_location_adjust(uuid, text, integer, uuid, text);
 create or replace function public.inventory_location_adjust(
+  p_created_by uuid,
   p_item_id uuid,
   p_location text,
-  p_quantity integer,
-  p_created_by uuid default null,
-  p_memo text default 'location_edit:adjust'
+  p_memo text,
+  p_quantity integer
 ) returns json as $$
 #variable_conflict use_variable
 declare
@@ -888,7 +899,7 @@ begin
 end;
 $$ language plpgsql security definer;
 
-grant execute on function public.inventory_location_adjust(uuid, text, integer, uuid, text) to authenticated, service_role;
+grant execute on function public.inventory_location_adjust(uuid, uuid, text, text, integer) to authenticated, service_role;
 
 create or replace function public.inventory_location_delete(
   p_item_id uuid,
@@ -934,6 +945,106 @@ end;
 $$ language plpgsql security definer;
 
 grant execute on function public.inventory_location_delete(uuid, text, uuid, text) to authenticated, service_role;
+
+create or replace function public.record_movement(
+  p_artist text,
+  p_category text,
+  p_album_version text,
+  p_item_id uuid,
+  p_from_prefix text,
+  p_from_location text,
+  p_to_prefix text,
+  p_to_location text,
+  p_memo text,
+  p_quantity integer
+) returns json as $$
+#variable_conflict use_variable
+declare
+  v_item_id uuid := p_item_id;
+  v_qty int := p_quantity;
+  v_from text := nullif(btrim(p_from_location), '');
+  v_to text := nullif(btrim(p_to_location), '');
+  v_from_qty int := 0;
+  v_to_qty int := 0;
+  v_from_new int := 0;
+  v_to_new int := 0;
+  v_out_id uuid;
+  v_in_id uuid;
+  v_memo text := coalesce(nullif(btrim(p_memo), ''), '');
+begin
+  if v_item_id is null then
+    select id
+      into v_item_id
+      from public.items
+     where lower(btrim(artist)) = lower(btrim(p_artist))
+       and lower(btrim(category)) = lower(btrim(p_category))
+       and lower(btrim(album_version)) = lower(btrim(p_album_version))
+     limit 1;
+  end if;
+
+  if v_item_id is null then
+    raise exception 'item not found';
+  end if;
+
+  if v_from is null or v_to is null then
+    raise exception 'location is required';
+  end if;
+
+  if v_qty is null or v_qty <= 0 then
+    raise exception 'quantity must be positive';
+  end if;
+
+  insert into public.inventory(item_id, location, quantity)
+  values (v_item_id, v_from, 0)
+  on conflict (item_id, location) do nothing;
+
+  insert into public.inventory(item_id, location, quantity)
+  values (v_item_id, v_to, 0)
+  on conflict (item_id, location) do nothing;
+
+  select quantity into v_from_qty from public.inventory where item_id = v_item_id and location = v_from for update;
+  select quantity into v_to_qty from public.inventory where item_id = v_item_id and location = v_to for update;
+
+  if v_from_qty < v_qty then
+    raise exception 'insufficient inventory';
+  end if;
+
+  v_from_new := v_from_qty - v_qty;
+  v_to_new := v_to_qty + v_qty;
+
+  update public.inventory set quantity = v_from_new, updated_at = now() where item_id = v_item_id and location = v_from;
+  update public.inventory set quantity = v_to_new, updated_at = now() where item_id = v_item_id and location = v_to;
+
+  insert into public.movements(
+    item_id, location, direction, quantity, memo, opening, closing, created_at
+  ) values (
+    v_item_id, v_from, 'OUT', v_qty, v_memo, v_from_qty, v_from_new, now()
+  ) returning id into v_out_id;
+
+  insert into public.movements(
+    item_id, location, direction, quantity, memo, opening, closing, created_at
+  ) values (
+    v_item_id, v_to, 'IN', v_qty, v_memo, v_to_qty, v_to_new, now()
+  ) returning id into v_in_id;
+
+  return json_build_object(
+    'ok', true,
+    'item_id', v_item_id,
+    'from_location', v_from,
+    'to_location', v_to,
+    'from_opening', v_from_qty,
+    'from_closing', v_from_new,
+    'to_opening', v_to_qty,
+    'to_closing', v_to_new,
+    'out_movement_id', v_out_id,
+    'in_movement_id', v_in_id
+  );
+end;
+$$ language plpgsql security definer;
+
+grant execute on function public.record_movement(
+  text, text, text, uuid, text, text, text, text, text, integer
+) to authenticated, service_role;
 
 -- diagnostics helper to confirm connected database and counts
 create or replace function public.diag_db_snapshot()

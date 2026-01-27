@@ -40,6 +40,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       );
     }
     const normalizedBarcode = trimmedBarcode === undefined ? undefined : trimmedBarcode === '' ? null : trimmedBarcode;
+    const baseBarcode = baseItem.barcode === undefined || baseItem.barcode === null ? null : String(baseItem.barcode).trim();
+    const baseBarcodeNormalized = baseBarcode ? baseBarcode.toLowerCase() : baseBarcode;
+    const nextBarcodeNormalized =
+      typeof normalizedBarcode === 'string' ? normalizedBarcode.toLowerCase() : normalizedBarcode;
     const nextItem = {
       artist: String(artist ?? baseItem.artist ?? '').trim(),
       category: String(category ?? baseItem.category ?? 'album').trim(),
@@ -53,9 +57,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
     if (
       session.role !== 'admin' &&
-      baseItem.barcode &&
+      baseBarcodeNormalized &&
       trimmedBarcode !== undefined &&
-      normalizedBarcode !== baseItem.barcode
+      nextBarcodeNormalized !== baseBarcodeNormalized
     ) {
       return NextResponse.json(
         { error: 'barcode update not allowed', step: 'barcode_scope' },

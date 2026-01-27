@@ -821,11 +821,8 @@ export default function Home() {
   }
 
   async function fetchLocationPrefixes() {
-    const params = new URLSearchParams();
-    params.set('meta', 'prefixes');
-
     setLocationPrefixStatus('로케이션 목록 불러오는 중...');
-    const res = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
+    const res = await fetch('/api/inventory/prefixes', { cache: 'no-store' });
     if (res.ok) {
       const payload = await res.json().catch(() => null);
       if (payload?.ok) {

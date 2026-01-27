@@ -23,7 +23,7 @@ type BarcodeGroup = {
 };
 
 function normalizeValue(value: unknown) {
-  return String(value ?? '').trim();
+  return String(value ?? '').trim().toLowerCase();
 }
 
 async function loadItemGroup(

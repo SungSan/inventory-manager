@@ -29,10 +29,10 @@ export async function POST(req: Request) {
     }
 
     const { data, error } = await supabaseAdmin.rpc('inventory_location_rename', {
-      p_item_id: itemId,
       p_from_location: fromLocation,
+      p_item_id: itemId,
+      p_merge_p: merge,
       p_to_location: toLocation,
-      p_merge: merge,
     });
 
     if (error) {
