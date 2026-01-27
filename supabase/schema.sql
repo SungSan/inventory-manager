@@ -763,17 +763,38 @@ create or replace function public.find_barcode_conflict(
   category text,
   album_version text
 ) as $$
+declare
+  v_artist text;
+  v_category text;
+  v_album_version text;
+begin
+  if p_current_item_id is not null then
+    select btrim(i.artist), btrim(i.category), btrim(i.album_version)
+      into v_artist, v_category, v_album_version
+      from public.items as i
+     where i.id = p_current_item_id;
+    if v_artist is null then
+      raise exception 'item not found';
+    end if;
+  else
+    v_artist := btrim(p_artist);
+    v_category := btrim(p_category);
+    v_album_version := btrim(p_album_version);
+  end if;
+
+  return query
   select i.id, i.artist, i.category, i.album_version
     from public.items as i
    where btrim(i.barcode) = nullif(btrim(p_barcode), '')
      and (p_current_item_id is null or i.id <> p_current_item_id)
      and not (
-       btrim(i.artist) = btrim(p_artist)
-       and btrim(i.category) = btrim(p_category)
-       and btrim(i.album_version) = btrim(p_album_version)
+       btrim(i.artist) = v_artist
+       and btrim(i.category) = v_category
+       and btrim(i.album_version) = v_album_version
      )
    limit 1;
-$$ language sql stable;
+end;
+$$ language plpgsql stable;
 
 grant execute on function public.find_barcode_conflict(text, uuid, text, text, text) to authenticated, service_role;
 

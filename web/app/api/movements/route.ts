@@ -363,9 +363,6 @@ export async function POST(req: Request) {
           client: supabaseAdmin,
           barcode: normalizedBarcode,
           itemId: item.id,
-          artist: item.artist,
-          category: item.category,
-          albumVersion: item.album_version,
         });
         if (conflict) {
           return NextResponse.json(

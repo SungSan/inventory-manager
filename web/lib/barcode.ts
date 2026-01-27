@@ -10,10 +10,7 @@ export type BarcodeConflict = {
 type FindBarcodeConflictParams = {
   client: SupabaseClient;
   barcode: string;
-  itemId?: string | null;
-  artist: string;
-  category: string;
-  albumVersion: string;
+  itemId: string;
 };
 
 type BarcodeGroup = {
@@ -28,9 +25,8 @@ function normalizeValue(value: unknown) {
 
 async function loadItemGroup(
   client: SupabaseClient,
-  itemId?: string | null
+  itemId: string
 ): Promise<BarcodeGroup | null> {
-  if (!itemId) return null;
   const { data, error } = await client
     .from('items')
     .select('artist, category, album_version')
@@ -50,23 +46,21 @@ async function loadItemGroup(
 }
 
 export async function findBarcodeConflict(params: FindBarcodeConflictParams): Promise<BarcodeConflict | null> {
-  const { client, barcode, itemId, artist, category, albumVersion } = params;
+  const { client, barcode, itemId } = params;
   const trimmedBarcode = normalizeValue(barcode);
   if (!trimmedBarcode) return null;
 
   const itemGroup = await loadItemGroup(client, itemId);
-  const group = itemGroup ?? {
-    artist: normalizeValue(artist),
-    category: normalizeValue(category),
-    album_version: normalizeValue(albumVersion),
-  };
+  if (!itemGroup) {
+    throw new Error('barcode conflict check requires a valid item group');
+  }
 
   const { data, error } = await client.rpc('find_barcode_conflict', {
     p_barcode: trimmedBarcode,
-    p_current_item_id: itemId ?? null,
-    p_artist: group.artist,
-    p_category: group.category,
-    p_album_version: group.album_version,
+    p_current_item_id: itemId,
+    p_artist: itemGroup.artist,
+    p_category: itemGroup.category,
+    p_album_version: itemGroup.album_version,
   });
   if (error) {
     console.error('[barcode] lookup failed', { error: error.message, barcode });

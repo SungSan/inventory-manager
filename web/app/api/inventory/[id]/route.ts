@@ -82,10 +82,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       const conflict = await findBarcodeConflict({
         client: supabaseAdmin,
         barcode: normalizedBarcode,
-        itemId: itemData?.id,
-        artist: itemData?.artist ?? nextItem.artist,
-        category: itemData?.category ?? nextItem.category,
-        albumVersion: itemData?.album_version ?? nextItem.album_version,
+        itemId: itemData.id,
       });
       if (conflict) {
         return NextResponse.json(
