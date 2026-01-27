@@ -28,7 +28,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: 'missing or invalid fields' }, { status: 400 });
     }
 
-    const { data, error } = await supabaseAdmin.rpc('inventory_location_adjust_set', {
+    const { error } = await supabaseAdmin.rpc('inventory_location_adjust_set', {
       p_created_by: session.userId ?? null,
       p_item_id: itemId,
       p_location: location,
@@ -41,6 +41,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
     }
 
-    return NextResponse.json({ ok: true, result: data });
+    return NextResponse.json({ ok: true });
   });
 }

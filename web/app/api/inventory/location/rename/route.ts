@@ -27,7 +27,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: 'missing fields' }, { status: 400 });
     }
 
-    const { data, error } = await supabaseAdmin.rpc('inventory_location_rename', {
+    const { error } = await supabaseAdmin.rpc('inventory_location_rename', {
       p_from_location: fromLocation,
       p_item_id: itemId,
       p_merge: merge,
@@ -36,13 +36,13 @@ export async function POST(req: Request) {
 
     if (error) {
       console.error('[location-rename] failed', { error: error.message, itemId, fromLocation, toLocation });
-      return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
+      const status = error.message.includes('merge required') ? 409 : 400;
+      return NextResponse.json(
+        { ok: false, error: error.message, merge_required: status === 409 },
+        { status }
+      );
     }
 
-    if (data?.merge_required) {
-      return NextResponse.json({ ok: false, merge_required: true, target_location: data.target_location }, { status: 409 });
-    }
-
-    return NextResponse.json({ ok: true, result: data });
+    return NextResponse.json({ ok: true });
   });
 }

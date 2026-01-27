@@ -805,7 +805,7 @@ create or replace function public.inventory_location_rename(
   p_item_id uuid,
   p_merge boolean,
   p_to_location text
-) returns json as $$
+) returns void as $$
 #variable_conflict use_variable
 declare
   v_from text := nullif(btrim(p_from_location), '');
@@ -839,7 +839,7 @@ begin
 
   if v_target_id is not null then
     if not p_merge then
-      return json_build_object('ok', false, 'merge_required', true, 'target_location', v_to);
+      raise exception 'merge required';
     end if;
 
     update public.inventory
@@ -854,15 +854,10 @@ begin
     insert into public.movements(
       item_id, location, direction, quantity, memo, opening, closing, from_location, to_location, created_at
     ) values (
-      p_item_id, v_to, 'RENAME', v_source_qty, 'location_edit:rename', v_source_qty, v_final_qty, v_from, v_to, now()
+      p_item_id, v_to, 'RENAME', v_source_qty, format('RENAME %s -> %s', v_from, v_to), v_source_qty, v_final_qty, v_from, v_to, now()
     );
 
-    return json_build_object(
-      'ok', true,
-      'merged', true,
-      'target_id', v_target_id,
-      'merged_quantity', v_final_qty
-    );
+    return;
   end if;
 
   update public.inventory
@@ -873,13 +868,7 @@ begin
   insert into public.movements(
     item_id, location, direction, quantity, memo, opening, closing, from_location, to_location, created_at
   ) values (
-    p_item_id, v_to, 'RENAME', v_source_qty, 'location_edit:rename', v_source_qty, v_source_qty, v_from, v_to, now()
-  );
-
-  return json_build_object(
-    'ok', true,
-    'merged', false,
-    'target_id', v_source_id
+    p_item_id, v_to, 'RENAME', v_source_qty, format('RENAME %s -> %s', v_from, v_to), v_source_qty, v_source_qty, v_from, v_to, now()
   );
 end;
 $$ language plpgsql security definer;
@@ -893,7 +882,7 @@ create or replace function public.inventory_location_adjust_set(
   p_location text,
   p_memo text,
   p_new_quantity integer
-) returns json as $$
+) returns void as $$
 #variable_conflict use_variable
 declare
   v_location text := nullif(btrim(p_location), '');
@@ -905,6 +894,10 @@ begin
     raise exception 'location is required';
   end if;
 
+  if p_new_quantity is null or p_new_quantity < 0 then
+    raise exception 'quantity must be non-negative';
+  end if;
+
   select id, quantity
     into v_inventory_id, v_existing
     from public.inventory
@@ -913,28 +906,34 @@ begin
    for update;
 
   if v_inventory_id is null then
-    raise exception 'inventory not found';
+    if p_new_quantity = 0 then
+      return;
+    end if;
+    insert into public.inventory(item_id, location, quantity)
+    values (p_item_id, v_location, p_new_quantity)
+    returning id into v_inventory_id;
+    v_delta := p_new_quantity;
+    v_existing := 0;
+  else
+    v_delta := p_new_quantity - v_existing;
+    update public.inventory
+       set quantity = p_new_quantity,
+           updated_at = now()
+     where id = v_inventory_id;
   end if;
-
-  v_delta := p_new_quantity - v_existing;
-
-  update public.inventory
-     set quantity = p_new_quantity,
-         updated_at = now()
-   where id = v_inventory_id;
 
   insert into public.movements(
     item_id, location, direction, quantity, memo, created_by, opening, closing, created_at
   ) values (
-    p_item_id, v_location, 'ADJUST', v_delta, p_memo, p_created_by, v_existing, p_new_quantity, now()
-  );
-
-  return json_build_object(
-    'ok', true,
-    'inventory_id', v_inventory_id,
-    'opening', v_existing,
-    'closing', p_new_quantity,
-    'delta', v_delta
+    p_item_id,
+    v_location,
+    'ADJUST',
+    v_delta,
+    coalesce(nullif(btrim(p_memo), ''), format('SET %s -> %s', v_existing, p_new_quantity)),
+    p_created_by,
+    v_existing,
+    p_new_quantity,
+    now()
   );
 end;
 $$ language plpgsql security definer;
