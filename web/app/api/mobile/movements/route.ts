@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../../lib/supabase';
 import { withAuthMobile } from '../../../../lib/auth_mobile';
@@ -287,8 +286,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
 
-    const idempotencyRaw = idempotency_key ?? idempotencyKey ?? randomUUID();
-    const idempotency = idempotencyRaw ? String(idempotencyRaw).trim() : randomUUID();
+    const idempotencyRaw = idempotency_key ?? idempotencyKey;
+    const idempotency = idempotencyRaw ? String(idempotencyRaw).trim() : '';
+    if (!idempotency) {
+      return NextResponse.json({ ok: false, error: 'idempotencyKey required', step: 'validation' }, { status: 400 });
+    }
     const createdBy = session.userId ?? null;
 
     if (!createdBy) {
