@@ -24,12 +24,12 @@ export async function withAuthMobile(
 ) {
   const token = extractBearerToken(req);
   if (!token) {
-    return NextResponse.json({ error: 'unauthorized', step: 'missing_token' }, { status: 401 });
+    return NextResponse.json({ error: 'unauthorized', step: 'missing_or_invalid_bearer' }, { status: 401 });
   }
 
   const { data: authData, error: authError } = await supabaseAdmin.auth.getUser(token);
   if (authError || !authData?.user) {
-    return NextResponse.json({ error: 'unauthorized', step: 'invalid_token' }, { status: 401 });
+    return NextResponse.json({ error: 'unauthorized', step: 'missing_or_invalid_bearer' }, { status: 401 });
   }
 
   const authUser = authData.user;
