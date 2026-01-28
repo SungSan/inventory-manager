@@ -39,7 +39,9 @@ async function syncUserProfile(payload: UserProfileSyncInput) {
     .eq('user_id', payload.userId)
     .maybeSingle();
 
-  if (existingError) throw new Error(existingError.message);
+  if (existingError) {
+    throw new Error(existingError.message);
+  }
 
   if (!existing) {
     const insertPayload = {
@@ -56,7 +58,9 @@ async function syncUserProfile(payload: UserProfileSyncInput) {
       approved_by: null,
     };
     const { error: insertError } = await supabaseAdmin.from('user_profiles').insert(insertPayload);
-    if (insertError) throw new Error(insertError.message);
+    if (insertError) {
+      throw new Error(insertError.message);
+    }
     return;
   }
 
@@ -67,7 +71,6 @@ async function syncUserProfile(payload: UserProfileSyncInput) {
     full_name: payload.full_name,
     department: payload.department,
     contact: payload.contact,
-    purpose: payload.purpose,
     requested_at: new Date().toISOString(),
     approved_at: payload.approved ? new Date().toISOString() : null,
     approved_by: null,
@@ -76,7 +79,9 @@ async function syncUserProfile(payload: UserProfileSyncInput) {
     .from('user_profiles')
     .update(updatePayload)
     .eq('user_id', payload.userId);
-  if (updateError) throw new Error(updateError.message);
+  if (updateError) {
+    throw new Error(updateError.message);
+  }
 }
 
 export function normalizeUsername(raw: string) {
@@ -88,46 +93,25 @@ export function normalizeUsername(raw: string) {
 }
 
 export function deriveEmail(username: string) {
-  if (username.includes('@')) return username.toLowerCase();
+  if (username.includes('@')) {
+    return username.toLowerCase();
+  }
   return `${username}@${CORPORATE_DOMAIN}`;
 }
 
-/**
- * ✅ 추가: 모바일 앱용 Bearer 토큰 세션 생성
- * - Authorization: Bearer <supabase access_token>
- * - 쿠키 세션과 달리 save/destroy는 no-op(앱은 토큰을 들고 있으므로)
- */
-async function getSessionFromBearer(req: NextRequest): Promise<SessionData | null> {
-  const auth = req.headers.get('authorization') || '';
-  if (!auth.startsWith('Bearer ')) return null;
-
-  const token = auth.slice('Bearer '.length).trim();
-  if (!token) return null;
-
-  const { data, error } = await supabaseAdmin.auth.getUser(token);
-  if (error || !data?.user) return null;
-
-  const user = data.user;
-
-  const now = Date.now();
-  const session: SessionData = {
-    userId: user.id,
-    email: user.email ?? null,
-    role: 'viewer', // 최종 role은 DB(users)에서 withAuth가 확정
-    expiresAt: now + sessionMaxAgeMs,
-    save: async () => {},
-    destroy: async () => {},
-  };
-
-  return session;
-}
-
 export async function loginWithUsername(rawUsername: string, password: string) {
-  if (!password) throw new Error('비밀번호를 입력하세요.');
+  if (!password) {
+    throw new Error('비밀번호를 입력하세요.');
+  }
 
   const trimmedInput = rawUsername.trim();
-  if (!trimmedInput) throw new Error('사내 ID를 입력하세요.');
-  if (/\s/.test(trimmedInput)) throw new Error('사내 ID에는 공백을 포함할 수 없습니다.');
+  if (!trimmedInput) {
+    throw new Error('사내 ID를 입력하세요.');
+  }
+
+  if (/\s/.test(trimmedInput)) {
+    throw new Error('사내 ID에는 공백을 포함할 수 없습니다.');
+  }
 
   const rawLower = trimmedInput.toLowerCase();
   const special = rawLower === SPECIAL_EMAIL || rawLower === SPECIAL_USERNAME;
@@ -137,9 +121,9 @@ export async function loginWithUsername(rawUsername: string, password: string) {
     : hasDomain
       ? trimmedInput.split('@')[0].toLowerCase()
       : normalizeUsername(trimmedInput);
-
-  if (!normalizedUsername) throw new Error('유효한 사내 ID를 입력하세요.');
-
+  if (!normalizedUsername) {
+    throw new Error('유효한 사내 ID를 입력하세요.');
+  }
   const email = special ? SPECIAL_EMAIL : deriveEmail(hasDomain ? trimmedInput : normalizedUsername);
 
   const { data: authResult, error: authError } = await supabaseAuth.auth.signInWithPassword({
@@ -147,10 +131,14 @@ export async function loginWithUsername(rawUsername: string, password: string) {
     password,
   });
 
-  if (authError) throw new Error(authError.message || '로그인에 실패했습니다.');
+  if (authError) {
+    throw new Error(authError.message || '로그인에 실패했습니다.');
+  }
 
   const authUser = authResult?.user;
-  if (!authUser) throw new Error('인증 정보를 확인할 수 없습니다.');
+  if (!authUser) {
+    throw new Error('인증 정보를 확인할 수 없습니다.');
+  }
 
   const { data: userRow, error: userError } = await supabaseAdmin
     .from('users')
@@ -158,7 +146,7 @@ export async function loginWithUsername(rawUsername: string, password: string) {
     .eq('id', authUser.id)
     .maybeSingle();
 
-  if (userError && (userError as any).code !== 'PGRST116') {
+  if (userError && userError.code !== 'PGRST116') {
     throw new Error(userError.message);
   }
 
@@ -177,7 +165,10 @@ export async function loginWithUsername(rawUsername: string, password: string) {
       .select('id, email, role, approved, active')
       .single();
 
-    if (insertUserError) throw new Error(insertUserError.message);
+    if (insertUserError) {
+      throw new Error(insertUserError.message);
+    }
+
     ensuredUser = insertedUser;
   }
 
@@ -218,13 +209,15 @@ export async function loginWithUsername(rawUsername: string, password: string) {
 
   const role: Role = (ensuredUser?.role as Role) ?? (special ? 'admin' : 'viewer');
 
-  await supabaseAdmin.from('users').upsert({
-    id: authUser.id,
-    email,
-    role,
-    approved: approvedFlag,
-    active: ensuredUser?.active ?? true,
-  });
+  await supabaseAdmin
+    .from('users')
+    .upsert({
+      id: authUser.id,
+      email,
+      role,
+      approved: approvedFlag,
+      active: ensuredUser?.active ?? true,
+    });
 
   return {
     id: authUser.id,
@@ -260,7 +253,7 @@ export async function loginWithAccessToken(
     .eq('id', authUser.user.id)
     .maybeSingle();
 
-  if (userError && (userError as any).code !== 'PGRST116') {
+  if (userError && userError.code !== 'PGRST116') {
     throw new Error(userError.message);
   }
 
@@ -279,13 +272,16 @@ export async function loginWithAccessToken(
       .select('id, email, role, approved, active')
       .single();
 
-    if (insertUserError) throw new Error(insertUserError.message);
+    if (insertUserError) {
+      throw new Error(insertUserError.message);
+    }
+
     ensuredUser = insertedUser;
   }
 
   const profilePayload = {
     user_id: authUser.user.id,
-    username,
+    username: username,
     role: (ensuredUser?.role as Role | undefined) ?? 'viewer',
     approved: ensuredUser?.approved ?? false,
     full_name: (authUser.user.user_metadata as any)?.full_name ?? '',
@@ -320,13 +316,15 @@ export async function loginWithAccessToken(
 
   const nextRole: Role = (ensuredUser?.role as Role) ?? (bypassApproval ? 'admin' : 'viewer');
 
-  await supabaseAdmin.from('users').upsert({
-    id: authUser.user.id,
-    email,
-    role: nextRole,
-    approved: approvedFlag,
-    active: ensuredUser?.active ?? true,
-  });
+  await supabaseAdmin
+    .from('users')
+    .upsert({
+      id: authUser.user.id,
+      email,
+      role: nextRole,
+      approved: approvedFlag,
+      active: ensuredUser?.active ?? true,
+    });
 
   return {
     id: authUser.user.id,
@@ -362,16 +360,8 @@ export async function clearSession(req: NextRequest) {
   return response;
 }
 
-/**
- * ✅ 핵심: 웹(쿠키) + 앱(Bearer) 공용 withAuth
- * - Bearer 있으면 bearer 세션 우선
- * - 없으면 기존 getSession() 쿠키 세션
- * - 최종 role/승인/활성은 DB(users)로 확정 (기존 정책 유지)
- */
 export async function withAuth(roles: Role[], handler: (session: SessionData) => Promise<NextResponse>) {
-  const bearer = await getSessionFromBearer(req);
-  const session = bearer ?? (await getSession());
-
+  const session = await getSession();
   if (!session.userId) {
     console.error({ step: 'missing_session_user', sessionUserId: session.userId, sessionRole: session.role });
     return NextResponse.json({ error: 'forbidden', step: 'missing_session_user' }, { status: 403 });
