@@ -798,6 +798,51 @@ $$ language plpgsql stable;
 
 grant execute on function public.find_barcode_conflict(text, uuid, text, text, text) to authenticated, service_role;
 
+create or replace function public.update_items_barcode(
+  p_item_id uuid,
+  p_barcode text
+) returns void as $$
+#variable_conflict use_variable
+declare
+  v_barcode text := nullif(btrim(p_barcode), '');
+  v_artist text;
+  v_category text;
+  v_album_version text;
+begin
+  select btrim(artist), btrim(category), btrim(album_version)
+    into v_artist, v_category, v_album_version
+    from public.items
+   where id = p_item_id;
+
+  if v_artist is null then
+    raise exception 'item not found';
+  end if;
+
+  if v_barcode is not null then
+    if exists (
+      select 1
+        from public.items
+       where btrim(barcode) = v_barcode
+         and id <> p_item_id
+         and not (
+           btrim(artist) = v_artist
+           and btrim(category) = v_category
+           and btrim(album_version) = v_album_version
+         )
+       limit 1
+    ) then
+      raise exception 'barcode conflict';
+    end if;
+  end if;
+
+  update public.items
+     set barcode = v_barcode
+   where id = p_item_id;
+end;
+$$ language plpgsql security definer;
+
+grant execute on function public.update_items_barcode(uuid, text) to authenticated, service_role;
+
 drop function if exists public.inventory_location_rename(text, uuid, boolean, text);
 drop function if exists public.inventory_location_rename(text, uuid, text, boolean, uuid, text);
 create or replace function public.inventory_location_rename(
