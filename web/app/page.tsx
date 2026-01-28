@@ -114,7 +114,7 @@ type MovementPayload = {
   option: string;
   location: string;
   quantity: number;
-  direction: 'IN' | 'OUT';
+  direction: 'IN' | 'OUT' | 'ADJUST';
   memo: string;
   barcode?: string;
   item_id?: string | null;
@@ -392,6 +392,7 @@ export default function Home() {
   const [locationDetailKey, setLocationDetailKey] = useState<string | null>(null);
   const [locationDetailPrefix, setLocationDetailPrefix] = useState<string | null>(null);
   const [locationDetailDrafts, setLocationDetailDrafts] = useState<Record<string, string>>({});
+  const [locationDetailQuantityDrafts, setLocationDetailQuantityDrafts] = useState<Record<string, number>>({});
   const [detailNewLocation, setDetailNewLocation] = useState('');
   const [detailNewQuantity, setDetailNewQuantity] = useState(0);
   const [detailStatus, setDetailStatus] = useState('');
@@ -502,6 +503,7 @@ export default function Home() {
   }, [stock, transferPayload.artist, transferPayload.album_version, transferPayload.category, transferPayload.option]);
 
   const transferBarcodeLocked = sessionRole !== 'admin' && Boolean(transferBarcodeSource?.barcode);
+  const canManageLocations = sessionRole === 'admin' || sessionRole === 'operator';
 
   const notifyMissingSupabase = () => {
     const message = 'Supabase 환경 변수가 설정되지 않았습니다.';
@@ -819,11 +821,8 @@ export default function Home() {
   }
 
   async function fetchLocationPrefixes() {
-    const params = new URLSearchParams();
-    params.set('meta', 'prefixes');
-
     setLocationPrefixStatus('로케이션 목록 불러오는 중...');
-    const res = await fetch(`/api/inventory?${params.toString()}`, { cache: 'no-store' });
+    const res = await fetch('/api/inventory/prefixes', { cache: 'no-store' });
     if (res.ok) {
       const payload = await res.json().catch(() => null);
       if (payload?.ok) {
@@ -1102,13 +1101,20 @@ export default function Home() {
     const categoryValue = movement.category;
     const barcodeValue = movement.barcode?.trim() || '';
 
-    if (!artistValue || !albumVersion || !locationValue || !quantityValue) {
+    if (!artistValue || !albumVersion || !locationValue) {
       alert('아티스트, 앨범/버전, 로케이션 정보를 모두 입력해야 합니다.');
       return;
     }
 
-    if (!Number.isFinite(quantityValue) || quantityValue <= 0) {
-      alert('수량은 1 이상의 양수만 입력 가능합니다.');
+    if (
+      !Number.isFinite(quantityValue) ||
+      (direction === 'ADJUST' ? quantityValue < 0 : quantityValue <= 0)
+    ) {
+      alert(
+        direction === 'ADJUST'
+          ? '조정 수량은 0 이상의 숫자만 입력 가능합니다.'
+          : '수량은 1 이상의 양수만 입력 가능합니다.'
+      );
       return;
     }
 
@@ -1547,6 +1553,7 @@ export default function Home() {
   useEffect(() => {
     if (!locationDetailRow) {
       setLocationDetailDrafts({});
+      setLocationDetailQuantityDrafts({});
       setLocationDetailPrefix(null);
       if (locationDetailKey) {
         setLocationDetailKey(null);
@@ -1554,18 +1561,21 @@ export default function Home() {
       return;
     }
     const drafts: Record<string, string> = {};
+    const quantityDrafts: Record<string, number> = {};
     locationDetailLocations.forEach((loc) => {
       const id = loc.editableId ?? loc.inventory_id ?? loc.id;
       if (!id) return;
       drafts[id] = loc.location;
+      quantityDrafts[id] = Number(loc.quantity ?? 0);
     });
     setLocationDetailDrafts(drafts);
+    setLocationDetailQuantityDrafts(quantityDrafts);
   }, [locationDetailLocations, locationDetailRow]);
 
   async function addLocationDetail() {
     if (!locationDetailRow) return;
-    if (sessionRole === 'viewer') {
-      alert('조회 권한만 있습니다.');
+    if (!canManageLocations) {
+      alert('수정 권한이 없습니다.');
       return;
     }
     const locationValue = detailNewLocation.trim();
@@ -1619,57 +1629,114 @@ export default function Home() {
     }
   }
 
-  async function renameLocationDetail(id: string, nextLocation: string, quantity: number) {
-    if (sessionRole === 'viewer') {
-      alert('조회 권한만 있습니다.');
+  async function renameLocationDetail(id: string, itemId: string, fromLocation: string, nextLocation: string) {
+    if (!canManageLocations) {
+      alert('수정 권한이 없습니다.');
       return;
     }
     if (!id) return;
-    if (quantity > 0) {
-      alert('수량이 0인 경우에만 로케이션을 변경할 수 있습니다.');
-      return;
-    }
     const trimmed = nextLocation.trim();
     if (!trimmed) {
       alert('로케이션을 입력하세요.');
       return;
     }
-    setDetailStatus('로케이션 변경 중...');
-    const res = await fetch(`/api/inventory/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ location: trimmed }),
-    });
-    if (res.ok) {
-      setDetailStatus('로케이션 변경 완료');
-      await refresh();
-    } else {
-      const text = await res.text();
-      setDetailStatus(`로케이션 변경 실패: ${text || res.status}`);
-      alert(text || '로케이션 변경 실패');
-    }
-  }
-
-  async function deleteLocationDetail(id: string, quantity: number) {
-    if (sessionRole !== 'admin') {
-      alert('로케이션 삭제는 관리자만 가능합니다.');
+    if (selectedDetailPrefix && getLocationPrefix(trimmed) !== selectedDetailPrefix) {
+      alert(`${selectedDetailPrefix} 프리픽스에 맞는 로케이션을 입력하세요.`);
       return;
     }
-    if (quantity > 0) {
-      alert('수량이 0인 경우에만 로케이션을 삭제할 수 있습니다.');
+    setDetailStatus('로케이션 변경 중...');
+    const basePayload = {
+      itemId,
+      fromLocation,
+      toLocation: trimmed,
+      merge: false,
+      memo: 'location_edit:rename',
+    };
+    let res = await fetch('/api/inventory/location/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(basePayload),
+    });
+    let payload = await res.json().catch(() => null);
+    if (res.status === 409 && payload?.merge_required) {
+      const shouldMerge = confirm('동일 로케이션이 존재합니다. 수량을 합쳐 병합할까요?');
+      if (!shouldMerge) {
+        setDetailStatus('로케이션 변경 취소');
+        return;
+      }
+      res = await fetch('/api/inventory/location/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...basePayload, merge: true }),
+      });
+      payload = await res.json().catch(() => null);
+    }
+    if (!res.ok || payload?.ok !== true) {
+      const message = payload?.error || payload?.message || `로케이션 변경 실패 (${res.status})`;
+      setDetailStatus(message);
+      alert(message);
+      return;
+    }
+    setDetailStatus('로케이션 변경 완료');
+    await refresh();
+  }
+
+  async function setLocationQuantity(itemId: string, location: string, quantity: number) {
+    if (!canManageLocations) {
+      alert('수정 권한이 없습니다.');
+      return;
+    }
+    if (!Number.isFinite(quantity)) {
+      alert('수량을 입력하세요.');
+      return;
+    }
+    setDetailStatus('수량 수정 중...');
+    const res = await fetch('/api/inventory/location/set_quantity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        itemId,
+        location,
+        newQuantity: quantity,
+        memo: 'location_edit:adjust_set',
+      }),
+    });
+    const payload = await res.json().catch(() => null);
+    if (!res.ok || payload?.ok !== true) {
+      const message = payload?.error || payload?.message || `수량 수정 실패 (${res.status})`;
+      setDetailStatus(message);
+      alert(message);
+      return;
+    }
+    setDetailStatus('수량 수정 완료');
+    await refresh();
+  }
+
+  async function deleteLocationDetail(itemId: string, location: string, quantity: number) {
+    if (!canManageLocations) {
+      alert('수정 권한이 없습니다.');
+      return;
+    }
+    if (quantity !== 0) {
+      alert('수량이 남아 있어 삭제할 수 없습니다. 먼저 수량을 0으로 조정하세요.');
       return;
     }
     if (!confirm('해당 로케이션을 삭제하시겠습니까?')) return;
     setDetailStatus('로케이션 삭제 중...');
-    const res = await fetch(`/api/inventory/${id}`, { method: 'DELETE' });
-    if (res.ok) {
-      setDetailStatus('로케이션 삭제 완료');
-      await refresh();
-    } else {
-      const text = await res.text();
-      setDetailStatus(`로케이션 삭제 실패: ${text || res.status}`);
-      alert(text || '로케이션 삭제 실패');
+    const res = await fetch('/api/inventory/location/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_id: itemId, location }),
+    });
+    const payload = await res.json().catch(() => null);
+    if (!res.ok || payload?.ok !== true) {
+      const message = payload?.error || payload?.message || `로케이션 삭제 실패 (${res.status})`;
+      setDetailStatus(message);
+      alert(message);
+      return;
     }
+    setDetailStatus('로케이션 삭제 완료');
+    await refresh();
   }
 
   async function saveInventoryEdit() {
@@ -2731,7 +2798,7 @@ export default function Home() {
                   placeholder={
                     selectedDetailPrefix ? `${selectedDetailPrefix}-S-P01-00` : '예: DA-S-P01-00'
                   }
-                  disabled={sessionRole === 'viewer'}
+                  disabled={!canManageLocations}
                 />
               </label>
               <label className="compact">
@@ -2741,11 +2808,11 @@ export default function Home() {
                   min={0}
                   value={detailNewQuantity}
                   onChange={(e) => setDetailNewQuantity(Number(e.target.value))}
-                  disabled={sessionRole === 'viewer'}
+                  disabled={!canManageLocations}
                 />
               </label>
               <div className="actions-row">
-                <button type="button" onClick={addLocationDetail} disabled={sessionRole === 'viewer'}>
+                <button type="button" onClick={addLocationDetail} disabled={!canManageLocations}>
                   로케이션 추가
                 </button>
                 <span className="muted small-text">입고 수량을 입력하면 신규 로케이션이 생성됩니다.</span>
@@ -2757,7 +2824,8 @@ export default function Home() {
               )}
               {locationDetailLocations.map((loc) => {
                 const locationId = loc.editableId ?? loc.inventory_id ?? loc.id ?? '';
-                const isEditable = Number(loc.quantity ?? 0) === 0 && sessionRole !== 'viewer';
+                const itemId = loc.item_id ?? locationDetailRow.item_id ?? '';
+                const canEdit = Boolean(locationId) && Boolean(itemId) && canManageLocations;
                 return (
                   <div key={`detail-${locationId}-${loc.location}`} className="detail-location-row">
                     <div>
@@ -2767,7 +2835,7 @@ export default function Home() {
                     <div className="detail-location-actions">
                       <input
                         value={locationDetailDrafts[locationId] ?? loc.location}
-                        disabled={!isEditable || !locationId}
+                        disabled={!canEdit}
                         onChange={(e) =>
                           setLocationDetailDrafts((prev) => ({ ...prev, [locationId]: e.target.value }))
                         }
@@ -2776,18 +2844,49 @@ export default function Home() {
                       <button
                         type="button"
                         className="ghost"
-                        disabled={!isEditable || !locationId}
+                        disabled={!canEdit}
                         onClick={() =>
-                          renameLocationDetail(locationId, locationDetailDrafts[locationId] ?? loc.location, Number(loc.quantity ?? 0))
+                          renameLocationDetail(
+                            locationId,
+                            itemId,
+                            loc.location,
+                            locationDetailDrafts[locationId] ?? loc.location
+                          )
                         }
                       >
                         변경
                       </button>
+                      <input
+                        type="number"
+                        value={locationDetailQuantityDrafts[locationId] ?? Number(loc.quantity ?? 0)}
+                        disabled={!canEdit}
+                        onChange={(e) =>
+                          setLocationDetailQuantityDrafts((prev) => ({
+                            ...prev,
+                            [locationId]: Number(e.target.value),
+                          }))
+                        }
+                        placeholder="수량 설정(SET)"
+                      />
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={!canEdit}
+                        onClick={() =>
+                          setLocationQuantity(
+                            itemId,
+                            loc.location,
+                            locationDetailQuantityDrafts[locationId] ?? Number(loc.quantity ?? 0)
+                          )
+                        }
+                      >
+                        수량 설정
+                      </button>
                       <button
                         type="button"
                         className="ghost danger"
-                        disabled={sessionRole !== 'admin' || Number(loc.quantity ?? 0) !== 0 || !locationId}
-                        onClick={() => deleteLocationDetail(locationId, Number(loc.quantity ?? 0))}
+                        disabled={!canEdit || Number(loc.quantity ?? 0) !== 0}
+                        onClick={() => deleteLocationDetail(itemId, loc.location, Number(loc.quantity ?? 0))}
                       >
                         삭제
                       </button>
@@ -4179,6 +4278,9 @@ export default function Home() {
         flex-direction: column;
         gap: 0.75rem;
         margin-top: 0.75rem;
+        max-height: 55vh;
+        overflow-y: auto;
+        padding-right: 0.25rem;
       }
 
       .detail-location-row {

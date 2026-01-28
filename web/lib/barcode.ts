@@ -10,37 +10,62 @@ export type BarcodeConflict = {
 type FindBarcodeConflictParams = {
   client: SupabaseClient;
   barcode: string;
-  itemId?: string | null;
-  artist: string;
-  category: string;
-  albumVersion: string;
+  itemId: string;
 };
 
-export async function findBarcodeConflict(params: FindBarcodeConflictParams): Promise<BarcodeConflict | null> {
-  const { client, barcode, itemId, artist, category, albumVersion } = params;
-  let query = client
-    .from('items')
-    .select('id, artist, category, album_version')
-    .eq('barcode', barcode);
+type BarcodeGroup = {
+  artist: string;
+  category: string;
+  album_version: string;
+};
 
-  if (itemId) {
-    query = query.neq('id', itemId);
+function normalizeValue(value: unknown) {
+  return String(value ?? '').trim();
+}
+
+async function loadItemGroup(
+  client: SupabaseClient,
+  itemId: string
+): Promise<BarcodeGroup | null> {
+  const { data, error } = await client
+    .from('items')
+    .select('artist, category, album_version')
+    .eq('id', itemId)
+    .maybeSingle();
+  if (error || !data) {
+    if (error) {
+      console.error('[barcode] item lookup failed', { error: error.message, itemId });
+    }
+    return null;
+  }
+  return {
+    artist: normalizeValue(data.artist),
+    category: normalizeValue(data.category),
+    album_version: normalizeValue(data.album_version),
+  };
+}
+
+export async function findBarcodeConflict(params: FindBarcodeConflictParams): Promise<BarcodeConflict | null> {
+  const { client, barcode, itemId } = params;
+  const trimmedBarcode = normalizeValue(barcode);
+  if (!trimmedBarcode) return null;
+
+  const itemGroup = await loadItemGroup(client, itemId);
+  if (!itemGroup) {
+    throw new Error('barcode conflict check requires a valid item group');
   }
 
-  query = query.or(`artist.neq.${artist},category.neq.${category},album_version.neq.${albumVersion}`);
-
-  const { data, error } = await query;
+  const { data, error } = await client.rpc('find_barcode_conflict', {
+    p_barcode: trimmedBarcode,
+    p_current_item_id: itemId,
+    p_artist: itemGroup.artist,
+    p_category: itemGroup.category,
+    p_album_version: itemGroup.album_version,
+  });
   if (error) {
     console.error('[barcode] lookup failed', { error: error.message, barcode });
     return null;
   }
 
-  return (
-    data || []
-  ).find(
-    (row) =>
-      row.artist !== artist ||
-      row.category !== category ||
-      row.album_version !== albumVersion
-  ) ?? null;
+  return (data || [])[0] ?? null;
 }
