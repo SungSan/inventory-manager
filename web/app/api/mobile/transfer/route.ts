@@ -1,8 +1,9 @@
 import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
-import { withAuth } from '../../../lib/auth';
-import { supabaseAdmin } from '../../../lib/supabase';
-import { findBarcodeConflict } from '../../../lib/barcode';
+import { supabaseAdmin } from '../../../../lib/supabase';
+import { withAuthMobile } from '../../../../lib/auth_mobile';
+import { findBarcodeConflict } from '../../../../lib/barcode';
+import type { Role } from '../../../../lib/session';
 
 async function loadLocationScope(userId: string) {
   const { data, error } = await supabaseAdmin
@@ -142,9 +143,10 @@ async function recordMovement(params: {
     return { ok: false, error: 'inventory lookup failed' };
   }
 
-  const nextQty = params.direction === 'IN'
-    ? existingQty + params.quantity
-    : existingQty - params.quantity;
+  const nextQty =
+    params.direction === 'IN'
+      ? existingQty + params.quantity
+      : existingQty - params.quantity;
 
   const { error: invError } = await supabaseAdmin
     .from('inventory')
@@ -181,17 +183,18 @@ async function recordMovement(params: {
     return { ok: false, error: moveError.message };
   }
 
-  return { ok: true, movementId: movement?.id };
+  return { ok: true, movementId: movement?.id, opening: existingQty, closing: nextQty };
 }
 
 export async function POST(req: Request) {
-  return withAuth(['admin', 'operator', 'l_operator', 'manager'], async (session) => {
+  const roles: Role[] = ['admin', 'operator', 'l_operator', 'manager'];
+  return withAuthMobile(roles, req, async (session) => {
     let body: any;
     try {
       body = await req.json();
     } catch (error) {
       console.error({ step: 'parse_body', error });
-      return NextResponse.json({ ok: false, error: 'invalid json body', step: 'parse_body' }, { status: 400 });
+      return NextResponse.json({ ok: false, error: 'invalid json body' }, { status: 400 });
     }
 
     const {
@@ -199,8 +202,8 @@ export async function POST(req: Request) {
       category,
       album_version,
       option,
-      fromLocation,
-      toLocation,
+      from_location,
+      to_location,
       quantity,
       memo,
       barcode,
@@ -209,43 +212,40 @@ export async function POST(req: Request) {
 
     const trimmedArtist = String(artist ?? '').trim();
     const trimmedAlbum = String(album_version ?? '').trim();
+    const normalizedQuantity = parseInt(quantity, 10);
+    const normalizedMemo = String(memo ?? '').trim();
     const normalizedCategory = String(category ?? '').trim();
     const normalizedOption = normalizeOption(option);
-    const from_location = String(fromLocation ?? '').trim();
-    const to_location = String(toLocation ?? '').trim();
-    const normalizedMemo = String(memo ?? '').trim();
-    const normalizedQuantity = parseInt(quantity, 10);
     const normalizedBarcode = String(barcode ?? '').trim();
+    const fromLocation = String(from_location ?? '').trim();
+    const toLocation = String(to_location ?? '').trim();
 
-    if (!trimmedArtist || !normalizedCategory || !trimmedAlbum || !from_location || !to_location || !normalizedQuantity) {
-      return NextResponse.json(
-        { ok: false, error: 'missing fields', step: 'validation' },
-        { status: 400 }
-      );
-    }
-
-    if (!normalizedMemo) {
-      return NextResponse.json(
-        { ok: false, error: 'memo is required for transfer', step: 'validation' },
-        { status: 400 }
-      );
+    if (!trimmedArtist || !normalizedCategory || !trimmedAlbum || !fromLocation || !toLocation) {
+      const error = 'missing fields';
+      console.error({ step: 'validation', error });
+      return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
 
     if (!Number.isFinite(normalizedQuantity) || normalizedQuantity <= 0) {
-      return NextResponse.json(
-        { ok: false, error: 'quantity must be a positive number', step: 'validation' },
-        { status: 400 }
-      );
+      const error = 'quantity must be a positive number';
+      console.error({ step: 'validation', error, payload: { quantity } });
+      return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
 
-    if (normalizedBarcode && (normalizedBarcode.length > 64 || /\s/.test(normalizedBarcode))) {
+    if (!normalizedMemo) {
+      const error = 'memo is required for transfer';
+      console.error({ step: 'validation', error });
+      return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
+    }
+
+    if (normalizedBarcode && (normalizedBarcode.length > 64 || /\\s/.test(normalizedBarcode))) {
       return NextResponse.json(
         { ok: false, error: 'barcode must be 1~64 characters with no spaces', step: 'validation' },
         { status: 400 }
       );
     }
 
-    const createdBy = session.userId ?? (session as any)?.user?.id ?? (session as any)?.user_id ?? null;
+    const createdBy = session.userId ?? null;
     if (!createdBy) {
       return NextResponse.json(
         { ok: false, error: 'missing created_by', step: 'validation' },
@@ -261,14 +261,14 @@ export async function POST(req: Request) {
           { status: 403 }
         );
       }
-      if (from_location !== scope.primary_location) {
+      if (fromLocation !== scope.primary_location) {
         return NextResponse.json(
           { ok: false, error: 'from_location not allowed', step: 'location_scope' },
           { status: 403 }
         );
       }
       const subs = Array.isArray(scope.sub_locations) ? scope.sub_locations.filter(Boolean) : [];
-      if (!subs.includes(to_location)) {
+      if (!subs.includes(toLocation)) {
         return NextResponse.json(
           { ok: false, error: 'to_location not allowed', step: 'location_scope' },
           { status: 403 }
@@ -342,14 +342,14 @@ export async function POST(req: Request) {
       const baseIdempotency = String(idempotencyKey ?? '').trim() || `transfer-${randomUUID()}`;
       const outResult = await recordMovement({
         itemId: item.id,
-        location: from_location,
+        location: fromLocation,
         direction: 'OUT',
         quantity: normalizedQuantity,
         memo: normalizedMemo,
         createdBy,
         idempotencyKey: `${baseIdempotency}-out`,
-        fromLocation: from_location,
-        toLocation: to_location,
+        fromLocation,
+        toLocation,
       });
       if (!outResult.ok) {
         return NextResponse.json(
@@ -360,14 +360,14 @@ export async function POST(req: Request) {
 
       const inResult = await recordMovement({
         itemId: item.id,
-        location: to_location,
+        location: toLocation,
         direction: 'IN',
         quantity: normalizedQuantity,
         memo: normalizedMemo,
         createdBy,
         idempotencyKey: `${baseIdempotency}-in`,
-        fromLocation: from_location,
-        toLocation: to_location,
+        fromLocation,
+        toLocation,
       });
       if (!inResult.ok) {
         return NextResponse.json(
@@ -376,13 +376,11 @@ export async function POST(req: Request) {
         );
       }
 
-      return NextResponse.json({ ok: true, result: { out: outResult, in: inResult } });
+      return NextResponse.json({ ok: true });
     } catch (error: any) {
-      console.error('transfer unexpected error', { error, from_location, to_location });
-      return NextResponse.json(
-        { ok: false, step: 'exception', error: error?.message || 'transfer failed' },
-        { status: 500 }
-      );
+      console.error({ step: 'transfer_unexpected', payload: { artist: trimmedArtist, fromLocation, toLocation }, error });
+      const message = error?.message || '전산 이관 처리 중 오류가 발생했습니다.';
+      return NextResponse.json({ ok: false, error: message, step: 'exception' }, { status: 500 });
     }
   });
 }

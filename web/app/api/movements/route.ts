@@ -56,12 +56,19 @@ function normalizeOption(value: unknown) {
   return normalized === '-' ? '' : normalized;
 }
 
+type ResolvedItem = {
+  id: string;
+  artist: string;
+  category: string;
+  album_version: string;
+};
+
 async function resolveItemId(params: {
   artist: string;
   category: string;
   album_version: string;
   option: string;
-}) {
+}): Promise<ResolvedItem | null> {
   const normalizedOption = normalizeOption(params.option);
   const { data, error } = await supabaseAdmin
     .from('items')
@@ -74,7 +81,7 @@ async function resolveItemId(params: {
       },
       { onConflict: 'artist,category,album_version,option' }
     )
-    .select('id')
+    .select('id, artist, category, album_version')
     .single();
   if (error || !data) {
     console.error('[movements] item resolve failed', {
@@ -89,7 +96,12 @@ async function resolveItemId(params: {
     });
     return null;
   }
-  return data.id as string;
+  return {
+    id: data.id as string,
+    artist: String(data.artist ?? ''),
+    category: String(data.category ?? ''),
+    album_version: String(data.album_version ?? ''),
+  };
 }
 
 async function loadInventoryQuantity(itemId: string, location: string) {
@@ -242,8 +254,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
 
-    if (!Number.isFinite(normalizedQuantity) || normalizedQuantity <= 0) {
-      const error = 'quantity must be a positive number';
+    if (
+      !Number.isFinite(normalizedQuantity) ||
+      (normalizedDirection === 'ADJUST' ? normalizedQuantity < 0 : normalizedQuantity <= 0)
+    ) {
+      const error =
+        normalizedDirection === 'ADJUST'
+          ? 'quantity must be a non-negative number'
+          : 'quantity must be a positive number';
       console.error({ step: 'validation', error, payload: { quantity } });
       return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
@@ -255,8 +273,8 @@ export async function POST(req: Request) {
       );
     }
 
-    if (!['IN', 'OUT'].includes(normalizedDirection)) {
-      const error = 'direction must be IN or OUT';
+    if (!['IN', 'OUT', 'ADJUST'].includes(normalizedDirection)) {
+      const error = 'direction must be IN, OUT, or ADJUST';
       console.error({ step: 'validation', error, payload: { direction } });
       return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
@@ -309,13 +327,13 @@ export async function POST(req: Request) {
     }
 
     try {
-      const itemId = await resolveItemId({
+      const item = await resolveItemId({
         artist: trimmedArtist,
         category: normalizedCategory,
         album_version: trimmedAlbum,
         option: normalizedOption,
       });
-      if (!itemId) {
+      if (!item) {
         return NextResponse.json(
           { ok: false, error: 'item resolve failed', step: 'resolve_item' },
           { status: 500 }
@@ -323,7 +341,7 @@ export async function POST(req: Request) {
       }
 
       const result = await recordMovement({
-        itemId,
+        itemId: item.id,
         location: effectiveLocation,
         direction: normalizedDirection as 'IN' | 'OUT' | 'ADJUST',
         quantity: normalizedQuantity,
@@ -344,10 +362,7 @@ export async function POST(req: Request) {
         const conflict = await findBarcodeConflict({
           client: supabaseAdmin,
           barcode: normalizedBarcode,
-          itemId,
-          artist: trimmedArtist,
-          category: normalizedCategory,
-          albumVersion: trimmedAlbum,
+          itemId: item.id,
         });
         if (conflict) {
           return NextResponse.json(
@@ -363,13 +378,13 @@ export async function POST(req: Request) {
         const { error: barcodeError } = await supabaseAdmin
           .from('items')
           .update({ barcode: normalizedBarcode })
-          .eq('id', itemId);
+          .eq('id', item.id);
         if (barcodeError) {
           const message =
             barcodeError.code === '23505'
               ? '동일 바코드는 다른 아티스트/카테고리/앨범에서는 사용할 수 없습니다.'
               : barcodeError.message;
-          console.error('barcode update failed', { barcodeError, itemId });
+          console.error('barcode update failed', { barcodeError, itemId: item.id });
           return NextResponse.json(
             { ok: false, error: message, step: 'update_items_barcode' },
             { status: barcodeError.code === '23505' ? 409 : 500 }

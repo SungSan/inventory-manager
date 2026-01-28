@@ -1,8 +1,28 @@
 import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
-import { withAuth } from '../../../lib/auth';
-import { supabaseAdmin } from '../../../lib/supabase';
-import { findBarcodeConflict } from '../../../lib/barcode';
+import { supabaseAdmin } from '../../../../lib/supabase';
+import { withAuthMobile } from '../../../../lib/auth_mobile';
+import { findBarcodeConflict } from '../../../../lib/barcode';
+import type { Role } from '../../../../lib/session';
+
+const supabaseUrl = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
+const supabaseProjectRef = (() => {
+  try {
+    const hostname = new URL(supabaseUrl).hostname;
+    return hostname.split('.')[0];
+  } catch (error) {
+    console.warn('[movements] unable to parse supabase project ref', { error: (error as any)?.message });
+    return '';
+  }
+})();
+
+let supabaseRefLogged = false;
+function logSupabaseRef() {
+  if (!supabaseRefLogged) {
+    console.info('[movements] supabase project ref detected', { ref: supabaseProjectRef || 'unknown' });
+    supabaseRefLogged = true;
+  }
+}
 
 async function loadLocationScope(userId: string) {
   const { data, error } = await supabaseAdmin
@@ -65,7 +85,7 @@ async function resolveItemId(params: {
     .select('id, artist, category, album_version')
     .single();
   if (error || !data) {
-    console.error('[transfer] item resolve failed', {
+    console.error('[movements] item resolve failed', {
       error: error?.message,
       input: {
         artist: params.artist,
@@ -93,7 +113,7 @@ async function loadInventoryQuantity(itemId: string, location: string) {
     .eq('location', location)
     .maybeSingle();
   if (error) {
-    console.error('[transfer] inventory read failed', { error: error.message });
+    console.error('[movements] inventory read failed', { error: error.message });
     return null;
   }
   if (!data) {
@@ -101,7 +121,7 @@ async function loadInventoryQuantity(itemId: string, location: string) {
       .from('inventory')
       .insert({ item_id: itemId, location, quantity: 0 });
     if (insertError) {
-      console.error('[transfer] inventory create failed', { error: insertError.message });
+      console.error('[movements] inventory create failed', { error: insertError.message });
       return null;
     }
     return 0;
@@ -116,7 +136,7 @@ async function hasIdempotentMovement(key: string) {
     .eq('idempotency_key', key)
     .maybeSingle();
   if (error) {
-    console.error('[transfer] idempotency lookup failed', { error: error.message });
+    console.error('[movements] idempotency lookup failed', { error: error.message });
     return false;
   }
   return Boolean(data?.id);
@@ -125,13 +145,11 @@ async function hasIdempotentMovement(key: string) {
 async function recordMovement(params: {
   itemId: string;
   location: string;
-  direction: 'IN' | 'OUT';
+  direction: 'IN' | 'OUT' | 'ADJUST';
   quantity: number;
   memo: string;
   createdBy: string;
   idempotencyKey: string;
-  fromLocation: string;
-  toLocation: string;
 }) {
   if (await hasIdempotentMovement(params.idempotencyKey)) {
     return { ok: true, idempotent: true };
@@ -142,9 +160,12 @@ async function recordMovement(params: {
     return { ok: false, error: 'inventory lookup failed' };
   }
 
-  const nextQty = params.direction === 'IN'
-    ? existingQty + params.quantity
-    : existingQty - params.quantity;
+  const nextQty =
+    params.direction === 'IN'
+      ? existingQty + params.quantity
+      : params.direction === 'OUT'
+      ? existingQty - params.quantity
+      : params.quantity;
 
   const { error: invError } = await supabaseAdmin
     .from('inventory')
@@ -153,7 +174,7 @@ async function recordMovement(params: {
     .eq('location', params.location);
 
   if (invError) {
-    console.error('[transfer] inventory update failed', { error: invError.message });
+    console.error('[movements] inventory update failed', { error: invError.message });
     return { ok: false, error: invError.message };
   }
 
@@ -169,29 +190,29 @@ async function recordMovement(params: {
       idempotency_key: params.idempotencyKey,
       opening: existingQty,
       closing: nextQty,
-      from_location: params.fromLocation,
-      to_location: params.toLocation,
       created_at: new Date().toISOString(),
     })
     .select('id')
     .single();
 
   if (moveError) {
-    console.error('[transfer] movement insert failed', { error: moveError.message });
+    console.error('[movements] movement insert failed', { error: moveError.message });
     return { ok: false, error: moveError.message };
   }
 
-  return { ok: true, movementId: movement?.id };
+  return { ok: true, movementId: movement?.id, opening: existingQty, closing: nextQty };
 }
 
 export async function POST(req: Request) {
-  return withAuth(['admin', 'operator', 'l_operator', 'manager'], async (session) => {
+  const roles: Role[] = ['admin', 'operator', 'l_operator', 'manager'];
+  return withAuthMobile(roles, req, async (session) => {
+    logSupabaseRef();
     let body: any;
     try {
       body = await req.json();
     } catch (error) {
       console.error({ step: 'parse_body', error });
-      return NextResponse.json({ ok: false, error: 'invalid json body', step: 'parse_body' }, { status: 400 });
+      return NextResponse.json({ ok: false, error: 'invalid json body' }, { status: 400 });
     }
 
     const {
@@ -199,80 +220,96 @@ export async function POST(req: Request) {
       category,
       album_version,
       option,
-      fromLocation,
-      toLocation,
+      location,
       quantity,
+      direction,
       memo,
       barcode,
       idempotencyKey,
+      idempotency_key
     } = body ?? {};
 
     const trimmedArtist = String(artist ?? '').trim();
     const trimmedAlbum = String(album_version ?? '').trim();
+    const normalizedQuantity = parseInt(quantity, 10);
+    const normalizedMemo = String(memo ?? '').trim();
+    const normalizedDirection = String(direction ?? '').toUpperCase();
     const normalizedCategory = String(category ?? '').trim();
     const normalizedOption = normalizeOption(option);
-    const from_location = String(fromLocation ?? '').trim();
-    const to_location = String(toLocation ?? '').trim();
-    const normalizedMemo = String(memo ?? '').trim();
-    const normalizedQuantity = parseInt(quantity, 10);
     const normalizedBarcode = String(barcode ?? '').trim();
+    const rawLocation = String(location ?? '').trim();
+    const effectiveLocation = rawLocation || normalizedOption;
 
-    if (!trimmedArtist || !normalizedCategory || !trimmedAlbum || !from_location || !to_location || !normalizedQuantity) {
-      return NextResponse.json(
-        { ok: false, error: 'missing fields', step: 'validation' },
-        { status: 400 }
-      );
+    if (!trimmedArtist || !normalizedCategory || !trimmedAlbum || (!effectiveLocation && normalizedDirection !== 'TRANSFER') || !normalizedDirection) {
+      const error = 'missing fields';
+      console.error({
+        step: 'validation',
+        error,
+        payload: {
+          artist: trimmedArtist,
+          category: normalizedCategory,
+          album_version: trimmedAlbum,
+          location: effectiveLocation,
+          direction: normalizedDirection
+        }
+      });
+      return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
 
-    if (!normalizedMemo) {
-      return NextResponse.json(
-        { ok: false, error: 'memo is required for transfer', step: 'validation' },
-        { status: 400 }
-      );
+    if (
+      !Number.isFinite(normalizedQuantity) ||
+      (normalizedDirection === 'ADJUST' ? normalizedQuantity < 0 : normalizedQuantity <= 0)
+    ) {
+      const error =
+        normalizedDirection === 'ADJUST'
+          ? 'quantity must be a non-negative number'
+          : 'quantity must be a positive number';
+      console.error({ step: 'validation', error, payload: { quantity } });
+      return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
     }
 
-    if (!Number.isFinite(normalizedQuantity) || normalizedQuantity <= 0) {
-      return NextResponse.json(
-        { ok: false, error: 'quantity must be a positive number', step: 'validation' },
-        { status: 400 }
-      );
-    }
-
-    if (normalizedBarcode && (normalizedBarcode.length > 64 || /\s/.test(normalizedBarcode))) {
+    if (normalizedBarcode && (normalizedBarcode.length > 64 || /\\s/.test(normalizedBarcode))) {
       return NextResponse.json(
         { ok: false, error: 'barcode must be 1~64 characters with no spaces', step: 'validation' },
         { status: 400 }
       );
     }
 
-    const createdBy = session.userId ?? (session as any)?.user?.id ?? (session as any)?.user_id ?? null;
+    if (!['IN', 'OUT', 'ADJUST'].includes(normalizedDirection)) {
+      const error = 'direction must be IN, OUT, or ADJUST';
+      console.error({ step: 'validation', error, payload: { direction } });
+      return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
+    }
+
+    if (normalizedDirection === 'OUT' && !normalizedMemo) {
+      const error = 'memo is required for outbound movements';
+      console.error({ step: 'validation', error });
+      return NextResponse.json({ ok: false, error, step: 'validation' }, { status: 400 });
+    }
+
+    const idempotencyRaw = idempotency_key ?? idempotencyKey ?? randomUUID();
+    const idempotency = idempotencyRaw ? String(idempotencyRaw).trim() : randomUUID();
+    const createdBy = session.userId ?? null;
+
     if (!createdBy) {
       return NextResponse.json(
-        { ok: false, error: 'missing created_by', step: 'validation' },
+        { ok: false, step: 'validation', error: 'missing created_by' },
         { status: 401 }
       );
     }
-
+    const scope = session.role === 'l_operator' || session.role === 'manager' ? await loadLocationScope(createdBy) : null;
     if (session.role === 'l_operator' || session.role === 'manager') {
-      const scope = await loadLocationScope(createdBy);
-      if (!scope?.primary_location) {
-        return NextResponse.json(
-          { ok: false, error: 'location scope missing', step: 'location_scope' },
-          { status: 403 }
-        );
+      const primaryLocation = String(scope?.primary_location ?? '').trim();
+      const subLocations = Array.isArray(scope?.sub_locations)
+        ? scope?.sub_locations.map((value) => String(value ?? '').trim()).filter(Boolean)
+        : [];
+      const allowedLocations = Array.from(new Set([primaryLocation, ...subLocations].filter(Boolean)));
+
+      if (allowedLocations.length === 0) {
+        return NextResponse.json({ ok: false, error: 'location scope missing', step: 'location_scope' }, { status: 403 });
       }
-      if (from_location !== scope.primary_location) {
-        return NextResponse.json(
-          { ok: false, error: 'from_location not allowed', step: 'location_scope' },
-          { status: 403 }
-        );
-      }
-      const subs = Array.isArray(scope.sub_locations) ? scope.sub_locations.filter(Boolean) : [];
-      if (!subs.includes(to_location)) {
-        return NextResponse.json(
-          { ok: false, error: 'to_location not allowed', step: 'location_scope' },
-          { status: 403 }
-        );
+      if (!allowedLocations.includes(effectiveLocation)) {
+        return NextResponse.json({ ok: false, error: 'location not allowed', step: 'location_scope' }, { status: 403 });
       }
     }
 
@@ -300,11 +337,29 @@ export async function POST(req: Request) {
       });
       if (!item) {
         return NextResponse.json(
-          { ok: false, step: 'resolve_item', error: 'item resolve failed' },
+          { ok: false, error: 'item resolve failed', step: 'resolve_item' },
           { status: 500 }
         );
       }
 
+      const result = await recordMovement({
+        itemId: item.id,
+        location: effectiveLocation,
+        direction: normalizedDirection as 'IN' | 'OUT' | 'ADJUST',
+        quantity: normalizedQuantity,
+        memo: normalizedMemo,
+        createdBy,
+        idempotencyKey: idempotency,
+      });
+
+      if (!result.ok) {
+        return NextResponse.json(
+          { ok: false, error: result.error ?? 'movement failed', step: 'movement_write' },
+          { status: 500 }
+        );
+      }
+
+      let barcodeUpdateError: string | null = null;
       if (normalizedBarcode) {
         const conflict = await findBarcodeConflict({
           client: supabaseAdmin,
@@ -331,58 +386,18 @@ export async function POST(req: Request) {
             barcodeError.code === '23505'
               ? '동일 바코드는 다른 아티스트/카테고리/앨범에서는 사용할 수 없습니다.'
               : barcodeError.message;
-          console.error('transfer barcode update failed', { error: barcodeError.message, itemId: item.id });
+          console.error('barcode update failed', { barcodeError, itemId: item.id });
           return NextResponse.json(
-            { ok: false, step: 'update_items_barcode', error: message },
+            { ok: false, error: message, step: 'update_items_barcode' },
             { status: barcodeError.code === '23505' ? 409 : 500 }
           );
         }
       }
-
-      const baseIdempotency = String(idempotencyKey ?? '').trim() || `transfer-${randomUUID()}`;
-      const outResult = await recordMovement({
-        itemId: item.id,
-        location: from_location,
-        direction: 'OUT',
-        quantity: normalizedQuantity,
-        memo: normalizedMemo,
-        createdBy,
-        idempotencyKey: `${baseIdempotency}-out`,
-        fromLocation: from_location,
-        toLocation: to_location,
-      });
-      if (!outResult.ok) {
-        return NextResponse.json(
-          { ok: false, step: 'record_out', error: outResult.error ?? 'transfer failed' },
-          { status: 500 }
-        );
-      }
-
-      const inResult = await recordMovement({
-        itemId: item.id,
-        location: to_location,
-        direction: 'IN',
-        quantity: normalizedQuantity,
-        memo: normalizedMemo,
-        createdBy,
-        idempotencyKey: `${baseIdempotency}-in`,
-        fromLocation: from_location,
-        toLocation: to_location,
-      });
-      if (!inResult.ok) {
-        return NextResponse.json(
-          { ok: false, step: 'record_in', error: inResult.error ?? 'transfer failed' },
-          { status: 500 }
-        );
-      }
-
-      return NextResponse.json({ ok: true, result: { out: outResult, in: inResult } });
+      return NextResponse.json({ ok: true, result, barcodeUpdateError });
     } catch (error: any) {
-      console.error('transfer unexpected error', { error, from_location, to_location });
-      return NextResponse.json(
-        { ok: false, step: 'exception', error: error?.message || 'transfer failed' },
-        { status: 500 }
-      );
+      console.error({ step: 'movement_unexpected', payload: { artist: trimmedArtist, location: effectiveLocation }, error });
+      const message = error?.message || '입출고 처리 중 오류가 발생했습니다.';
+      return NextResponse.json({ ok: false, error: message, step: 'exception' }, { status: 500 });
     }
   });
 }
