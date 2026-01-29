@@ -12,6 +12,9 @@ const publicPaths = [
 const cookieName = process.env.SESSION_COOKIE_NAME || 'inventory_session';
 
 export function middleware(req: NextRequest) {
+  if (req.nextUrl.pathname.startsWith('/api/')) {
+    return NextResponse.next();
+  }
   if (publicPaths.some((p) => req.nextUrl.pathname === p)) return NextResponse.next();
 
   const hasSession = Boolean(req.cookies.get(cookieName)?.value);
@@ -23,5 +26,5 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)']
+  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)']
 };
